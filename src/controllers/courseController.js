@@ -1103,3 +1103,32 @@ const checkEnrollment = async (req, res) => {
     });
   }
 };
+
+module.exports = {
+  getAllCourses,
+  getCourseById,
+  getCourseBySlug,
+  createCourse,
+  updateCourse,
+  deleteCourse,
+  addLesson,
+  updateLesson,
+  deleteLesson,
+  getCoursesByCategory,
+  searchCourses,
+  getFeaturedCourses,
+  getPopularCourses,
+  getRecommendedCourses,
+  getMyCourses,
+  getCourseLessons,
+  getCourseProgress,
+  checkEnrollment,
+  addToFavorites,
+  removeFromFavorites,
+  getFavoriteCourses,
+  addReview,
+  getCourseReviews,
+  updateReview,
+  deleteReview,
+  getInstructorCourses
+};

@@ -25,6 +25,10 @@ router.get('/instructor/:instructorId', authenticateToken, courseController.getI
 
 // Routes avec paramètres (après les routes spécifiques)
 router.get('/category/:categoryId', courseController.getCoursesByCategory);
+router.get('/popular', courseController.getPopularCourses);
+router.get('/recommended', authenticateToken, courseController.getRecommendedCourses);
+router.get('/slug/:slug', courseController.getCourseBySlug);
+router.get('/:id/check-enrollment', authenticateToken, courseController.checkEnrollment);
 router.get('/:id', courseController.getCourseById);
 
 // Routes protégées pour les cours (instructeurs/admins)

@@ -18,17 +18,21 @@ const createLesson = async (req, res) => {
       });
     }
 
-    // Insérer la leçon
+    // Insérer la leçon avec support modules et content_type
+    const { module_id, content_type = 'text', media_file_id, content_url, content_text, is_required = true } = req.body;
+
     const insertQuery = `
       INSERT INTO lessons (
-        course_id, title, description, content, video_url, 
-        duration_minutes, order_index, is_published, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        course_id, module_id, title, content_type, media_file_id, content_url, 
+        description, content, content_text, video_url, 
+        duration_minutes, order_index, is_required, is_published, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
     `;
 
     const [result] = await pool.execute(insertQuery, [
-      courseId, title, description, content, video_url,
-      duration_minutes, order_index, is_published || false
+      courseId, module_id || null, title, content_type, media_file_id || null, content_url || null,
+      description, content || null, content_text || null, video_url || null,
+      duration_minutes || 0, order_index || 0, is_required, is_published || false
     ]);
 
     res.status(201).json({
@@ -68,15 +72,20 @@ const getCourseLessons = async (req, res) => {
       });
     }
 
-    // Récupérer les leçons
+    // Récupérer les leçons avec modules et médias
     const lessonsQuery = `
       SELECT 
-        id, title, description, content, video_url, 
-        duration_minutes, order_index, is_published, 
-        created_at, updated_at
-      FROM lessons 
-      WHERE course_id = ?
-      ORDER BY order_index ASC, created_at ASC
+        l.id, l.module_id, l.title, l.content_type, l.media_file_id, 
+        l.content_url, l.description, l.content, l.content_text, l.video_url, 
+        l.duration_minutes, l.order_index, l.is_required, l.is_published, 
+        l.created_at, l.updated_at,
+        m.title as module_title, m.order_index as module_order,
+        mf.url as media_url, mf.thumbnail_url, mf.file_category
+      FROM lessons l
+      LEFT JOIN modules m ON l.module_id = m.id
+      LEFT JOIN media_files mf ON l.media_file_id = mf.id
+      WHERE l.course_id = ?
+      ORDER BY COALESCE(m.order_index, 0), l.order_index ASC, l.created_at ASC
     `;
 
     const [lessons] = await pool.execute(lessonsQuery, [courseId]);
@@ -112,14 +121,18 @@ const getLesson = async (req, res) => {
       });
     }
 
-    // Récupérer la leçon
+    // Récupérer la leçon avec détails
     const lessonQuery = `
       SELECT 
-        id, title, description, content, video_url, 
-        duration_minutes, order_index, is_published, 
-        created_at, updated_at
-      FROM lessons 
-      WHERE id = ? AND course_id = ?
+        l.*,
+        m.title as module_title, m.order_index as module_order,
+        mf.url as media_url, mf.thumbnail_url, mf.file_category, mf.file_type,
+        q.id as quiz_id, q.title as quiz_title
+      FROM lessons l
+      LEFT JOIN modules m ON l.module_id = m.id
+      LEFT JOIN media_files mf ON l.media_file_id = mf.id
+      LEFT JOIN quizzes q ON l.id = q.lesson_id
+      WHERE l.id = ? AND l.course_id = ?
     `;
 
     const [lessons] = await pool.execute(lessonQuery, [lessonId, courseId]);
@@ -174,20 +187,35 @@ const updateLesson = async (req, res) => {
       });
     }
 
-    // Mettre à jour la leçon
+    // Mettre à jour la leçon avec support modules
+    const { module_id, content_type, media_file_id, content_url, content_text, is_required } = req.body;
+
+    const updateFields = [];
+    const params = [];
+
+    if (title !== undefined) { updateFields.push('title = ?'); params.push(title); }
+    if (module_id !== undefined) { updateFields.push('module_id = ?'); params.push(module_id || null); }
+    if (content_type !== undefined) { updateFields.push('content_type = ?'); params.push(content_type); }
+    if (media_file_id !== undefined) { updateFields.push('media_file_id = ?'); params.push(media_file_id || null); }
+    if (content_url !== undefined) { updateFields.push('content_url = ?'); params.push(content_url || null); }
+    if (description !== undefined) { updateFields.push('description = ?'); params.push(description); }
+    if (content !== undefined) { updateFields.push('content = ?'); params.push(content); }
+    if (content_text !== undefined) { updateFields.push('content_text = ?'); params.push(content_text); }
+    if (video_url !== undefined) { updateFields.push('video_url = ?'); params.push(video_url); }
+    if (duration_minutes !== undefined) { updateFields.push('duration_minutes = ?'); params.push(duration_minutes); }
+    if (order_index !== undefined) { updateFields.push('order_index = ?'); params.push(order_index); }
+    if (is_required !== undefined) { updateFields.push('is_required = ?'); params.push(is_required); }
+    if (is_published !== undefined) { updateFields.push('is_published = ?'); params.push(is_published); }
+
+    updateFields.push('updated_at = NOW()');
+    params.push(lessonId, courseId);
+
     const updateQuery = `
-      UPDATE lessons SET
-        title = ?, description = ?, content = ?, video_url = ?,
-        duration_minutes = ?, order_index = ?, is_published = ?,
-        updated_at = NOW()
+      UPDATE lessons SET ${updateFields.join(', ')}
       WHERE id = ? AND course_id = ?
     `;
 
-    await pool.execute(updateQuery, [
-      title, description, content, video_url,
-      duration_minutes, order_index, is_published,
-      lessonId, courseId
-    ]);
+    await pool.execute(updateQuery, params);
 
     res.json({
       success: true,

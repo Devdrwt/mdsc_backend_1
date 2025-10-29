@@ -908,27 +908,198 @@ const getInstructorCourses = async (req, res) => {
   }
 };
 
-module.exports = {
-  getAllCourses,
-  getCourseById,
-  createCourse,
-  updateCourse,
-  deleteCourse,
-  addLesson,
-  updateLesson,
-  deleteLesson,
-  getCoursesByCategory,
-  searchCourses,
-  getFeaturedCourses,
-  getMyCourses,
-  getCourseLessons,
-  getCourseProgress,
-  addToFavorites,
-  removeFromFavorites,
-  getFavoriteCourses,
-  addReview,
-  getCourseReviews,
-  updateReview,
-  deleteReview,
-  getInstructorCourses
+// Récupérer les cours populaires
+const getPopularCourses = async (req, res) => {
+  try {
+    const { limit = 10 } = req.query;
+
+    const query = `
+      SELECT 
+        c.*,
+        cat.name as category_name,
+        cat.color as category_color,
+        u.first_name as instructor_first_name,
+        u.last_name as instructor_last_name,
+        AVG(cr.rating) as average_rating,
+        COUNT(cr.id) as review_count,
+        COUNT(e.id) as enrollment_count
+      FROM courses c
+      LEFT JOIN categories cat ON c.category_id = cat.id
+      LEFT JOIN users u ON c.instructor_id = u.id
+      LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
+      LEFT JOIN enrollments e ON c.id = e.course_id
+      WHERE c.is_published = TRUE
+      GROUP BY c.id
+      ORDER BY enrollment_count DESC, average_rating DESC
+      LIMIT ?
+    `;
+
+    const [courses] = await pool.execute(query, [parseInt(limit)]);
+
+    res.json({
+      success: true,
+      data: courses
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la récupération des cours populaires:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des cours populaires'
+    });
+  }
+};
+
+// Récupérer les cours recommandés pour un utilisateur
+const getRecommendedCourses = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const { limit = 10 } = req.query;
+
+    let query = `
+      SELECT 
+        c.*,
+        cat.name as category_name,
+        cat.color as category_color,
+        u.first_name as instructor_first_name,
+        u.last_name as instructor_last_name,
+        AVG(cr.rating) as average_rating,
+        COUNT(cr.id) as review_count,
+        COUNT(e.id) as enrollment_count
+      FROM courses c
+      LEFT JOIN categories cat ON c.category_id = cat.id
+      LEFT JOIN users u ON c.instructor_id = u.id
+      LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
+      LEFT JOIN enrollments e ON c.id = e.course_id
+      WHERE c.is_published = TRUE
+    `;
+
+    // Exclure les cours déjà suivis par l'utilisateur
+    if (userId) {
+      query += ` AND c.id NOT IN (SELECT course_id FROM enrollments WHERE user_id = ?)`;
+    }
+
+    query += `
+      GROUP BY c.id
+      ORDER BY average_rating DESC, enrollment_count DESC
+      LIMIT ?
+    `;
+
+    const params = userId ? [userId, parseInt(limit)] : [parseInt(limit)];
+    const [courses] = await pool.execute(query, params);
+
+    res.json({
+      success: true,
+      data: courses
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la récupération des cours recommandés:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des cours recommandés'
+    });
+  }
+};
+
+// Récupérer un cours par slug
+const getCourseBySlug = async (req, res) => {
+  try {
+    const { slug } = req.params;
+
+    const query = `
+      SELECT 
+        c.*,
+        cat.name as category_name,
+        cat.color as category_color,
+        u.first_name as instructor_first_name,
+        u.last_name as instructor_last_name,
+        AVG(cr.rating) as average_rating,
+        COUNT(cr.id) as review_count,
+        COUNT(e.id) as enrollment_count,
+        cp.title as prerequisite_title,
+        cp.id as prerequisite_id
+      FROM courses c
+      LEFT JOIN categories cat ON c.category_id = cat.id
+      LEFT JOIN users u ON c.instructor_id = u.id
+      LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
+      LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN courses cp ON c.prerequisite_course_id = cp.id
+      WHERE c.slug = ? AND c.is_published = TRUE
+      GROUP BY c.id
+    `;
+
+    const [courses] = await pool.execute(query, [slug]);
+
+    if (courses.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Cours non trouvé'
+      });
+    }
+
+    const course = courses[0];
+
+    // Récupérer les modules du cours
+    const modulesQuery = `
+      SELECT 
+        m.*,
+        COUNT(l.id) as lessons_count
+      FROM modules m
+      LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+      WHERE m.course_id = ?
+      GROUP BY m.id
+      ORDER BY m.order_index ASC
+    `;
+    const [modules] = await pool.execute(modulesQuery, [course.id]);
+
+    res.json({
+      success: true,
+      data: {
+        course,
+        modules
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la récupération du cours:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération du cours'
+    });
+  }
+};
+
+// Vérifier si l'utilisateur est inscrit à un cours
+const checkEnrollment = async (req, res) => {
+  try {
+    const { id: courseId } = req.params;
+    const userId = req.user.id;
+
+    const query = `
+      SELECT 
+        e.*,
+        c.title as course_title
+      FROM enrollments e
+      JOIN courses c ON e.course_id = c.id
+      WHERE e.user_id = ? AND e.course_id = ?
+    `;
+
+    const [enrollments] = await pool.execute(query, [userId, courseId]);
+
+    res.json({
+      success: true,
+      data: {
+        is_enrolled: enrollments.length > 0,
+        enrollment: enrollments.length > 0 ? enrollments[0] : null
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la vérification de l\'inscription:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la vérification de l\'inscription'
+    });
+  }
 };

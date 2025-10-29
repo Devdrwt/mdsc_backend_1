@@ -32,7 +32,7 @@ const getCourseQuizzes = async (req, res) => {
       LEFT JOIN quiz_attempts qa ON q.id = qa.quiz_id AND qa.user_id = ?
       WHERE q.course_id = ? AND q.is_published = TRUE
       GROUP BY q.id
-      ORDER BY q.created_at ASC
+      ORDER BY q.is_final DESC, q.created_at ASC
     `;
 
     const [quizzes] = await pool.execute(query, [userId, courseId]);
@@ -332,18 +332,44 @@ const submitQuizAttempt = async (req, res) => {
     const percentage = totalPoints > 0 ? (earnedPoints / totalPoints) * 100 : 0;
     const isPassed = percentage >= attempt.passing_score;
 
-    // Mettre à jour la tentative
+    // Préparer le JSON des réponses (pour compatibilité avec architecture)
+    const answersJson = {};
+    answers.forEach(answer => {
+      answersJson[answer.question_id] = answer.answer_id || answer.answer_text || '';
+    });
+
+    // Mettre à jour la tentative avec JSON answers
     const timeSpent = Math.round((new Date() - new Date(attempt.started_at)) / (1000 * 60));
     
     const updateAttemptQuery = `
       UPDATE quiz_attempts 
-      SET completed_at = NOW(), score = ?, total_points = ?, 
+      SET completed_at = NOW(), answers = ?, score = ?, total_points = ?, 
           percentage = ?, is_passed = ?, time_spent_minutes = ?
       WHERE id = ?
     `;
     await pool.execute(updateAttemptQuery, [
-      earnedPoints, totalPoints, percentage, isPassed, timeSpent, attemptId
+      JSON.stringify(answersJson),
+      earnedPoints, 
+      totalPoints, 
+      percentage, 
+      isPassed, 
+      timeSpent, 
+      attemptId
     ]);
+
+    // Si le quiz est final et réussi, vérifier si on peut générer le certificat
+    const quizQuery = 'SELECT is_final, course_id FROM quizzes WHERE id = ?';
+    const [quizzes] = await pool.execute(quizQuery, [attempt.quiz_id]);
+    
+    if (quizzes.length > 0 && quizzes[0].is_final && isPassed) {
+      const { generateCertificateForCourse } = require('./certificateController');
+      try {
+        await generateCertificateForCourse(userId, quizzes[0].course_id);
+      } catch (certError) {
+        console.warn('Erreur lors de la génération automatique du certificat:', certError.message);
+        // Ne pas faire échouer la soumission du quiz si le certificat ne peut pas être généré
+      }
+    }
 
     res.json({
       success: true,

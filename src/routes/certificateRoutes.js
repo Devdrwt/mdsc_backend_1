@@ -3,6 +3,9 @@ const router = express.Router();
 const certificateController = require('../controllers/certificateController');
 const { authenticateToken } = require('../middleware/auth');
 
+// Route publique pour vérifier un certificat par code (QR code)
+router.get('/verify/:code', certificateController.verifyCertificate);
+
 // Routes pour les certificats (avec authentification)
 router.get('/my-certificates', authenticateToken, certificateController.getMyCertificates);
 router.get('/:certificateId', authenticateToken, certificateController.getCertificateById);

@@ -21,6 +21,10 @@ const lessonRoutes = require('./routes/lessonRoutes');
 const messageRoutes = require('./routes/messageRoutes');
 const fileRoutes = require('./routes/fileRoutes');
 const professionalRoutes = require('./routes/professionalRoutes');
+const moduleRoutes = require('./routes/moduleRoutes');
+const mediaRoutes = require('./routes/mediaRoutes');
+const badgeRoutes = require('./routes/badgeRoutes');
+const progressRoutes = require('./routes/progressRoutes');
 
 const app = express();
 
@@ -81,6 +85,10 @@ app.use('/api/lessons', lessonRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/files', fileRoutes);
 app.use('/api/professional', professionalRoutes);
+app.use('/api/modules', moduleRoutes);
+app.use('/api/media', mediaRoutes);
+app.use('/api/badges', badgeRoutes);
+app.use('/api/progress', progressRoutes);
 
 // Gestion des erreurs 404
 app.use((req, res) => {

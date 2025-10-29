@@ -38,11 +38,11 @@ Copiez le fichier `.env` et configurez vos paramètres :
 DB_HOST=localhost
 DB_PORT=3306
 DB_USER=root
-DB_PASSWORD=YOUR_DB_PASSWORD_HERE
+DB_PASSWORD=
 DB_NAME=mdsc_auth
 
 # JWT Secrets (CHANGEZ CES VALEURS EN PRODUCTION !)
-JWT_SECRET=m
+JWT_SECRET=mdsc_secret_key_2024_super_secure_change_in_production
 JWT_EXPIRE=7d
 JWT_REFRESH_SECRET=mdsc_refresh_secret_key_2024_super_secure_change_in_production
 JWT_REFRESH_EXPIRE=30d
@@ -56,13 +56,11 @@ EMAIL_PASSWORD=fkhcewbxenfmixhx
 FRONTEND_URL=http://localhost:3000
 
 # Google OAuth (optionnel)
-GOOGLE_OAUTH_CLIENT_ID=YOUR_CLIENT_ID_HERE
-GOOGLE_OAUTH_CLIENT_SECRET=YOUR_CLIENT_SECRET_HERE
-OPENAI_API_KEY=YOUR_OPENAI_KEY_HERE
-
+GOOGLE_CLIENT_ID=your_google_client_id_here
+GOOGLE_CLIENT_SECRET=your_google_client_secret_here
 
 # OpenAI (pour les fonctionnalités IA)
-OPENAI_API_KEY=YOUR_OPENAI_API_KEY_HERE
+OPENAI_API_KEY=your_openai_api_key_here
 # Serveur
 PORT=5000
 NODE_ENV=development
@@ -72,9 +70,9 @@ NODE_ENV=development
 
 1. Activez la validation en 2 étapes sur votre compte Gmail
 2. Générez un "Mot de passe d'application" :
-  - https://myaccount.google.com/apppasswords
-  - Sélectionnez "Autre" et nommez-le "MdSC Auth"
-  - Utilisez ce mot de passe dans `EMAIL_PASSWORD`
+   - https://myaccount.google.com/apppasswords
+   - Sélectionnez "Autre" et nommez-le "MdSC Auth"
+   - Utilisez ce mot de passe dans `EMAIL_PASSWORD`
 
 ### 3. Démarrer le serveur
 

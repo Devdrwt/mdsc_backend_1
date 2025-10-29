@@ -8,7 +8,7 @@ const enrollInCourse = async (req, res) => {
 
     // Vérifier que le cours existe et est publié
     const courseQuery = `
-      SELECT id, max_students, enrollment_deadline, course_start_date 
+      SELECT id, max_students, enrollment_deadline, course_start_date, prerequisite_course_id
       FROM courses 
       WHERE id = ? AND is_published = TRUE
     `;
@@ -44,6 +44,31 @@ const enrollInCourse = async (req, res) => {
       }
     }
 
+    // Vérifier les prérequis si nécessaire
+    if (course.prerequisite_course_id) {
+      const prerequisiteQuery = `
+        SELECT id FROM enrollments 
+        WHERE user_id = ? AND course_id = ? AND status = 'completed'
+      `;
+      const [prerequisiteEnrollments] = await pool.execute(prerequisiteQuery, [
+        userId, 
+        course.prerequisite_course_id
+      ]);
+
+      if (prerequisiteEnrollments.length === 0) {
+        // Récupérer le titre du cours prérequis
+        const prereqCourseQuery = 'SELECT title FROM courses WHERE id = ?';
+        const [prereqCourses] = await pool.execute(prereqCourseQuery, [course.prerequisite_course_id]);
+        const prereqTitle = prereqCourses.length > 0 ? prereqCourses[0].title : 'cours prérequis';
+
+        return res.status(400).json({
+          success: false,
+          message: `Vous devez d'abord compléter le cours prérequis: ${prereqTitle}`,
+          prerequisite_course_id: course.prerequisite_course_id
+        });
+      }
+    }
+
     // Vérifier si l'utilisateur est déjà inscrit
     const existingEnrollmentQuery = 'SELECT id FROM enrollments WHERE user_id = ? AND course_id = ?';
     const [existingEnrollments] = await pool.execute(existingEnrollmentQuery, [userId, courseId]);
@@ -55,10 +80,10 @@ const enrollInCourse = async (req, res) => {
       });
     }
 
-    // Créer l'inscription
+    // Créer l'inscription avec status 'enrolled'
     const enrollmentQuery = `
-      INSERT INTO enrollments (user_id, course_id, enrolled_at)
-      VALUES (?, ?, NOW())
+      INSERT INTO enrollments (user_id, course_id, status, enrolled_at)
+      VALUES (?, ?, 'enrolled', NOW())
     `;
     await pool.execute(enrollmentQuery, [userId, courseId]);
 

@@ -30,6 +30,8 @@ router.get('/recommended', authenticateToken, courseController.getRecommendedCou
 router.get('/slug/:slug', courseController.getCourseBySlug);
 router.get('/:id/check-enrollment', authenticateToken, courseController.checkEnrollment);
 router.get('/:id', courseController.getCourseById);
+// Liste des inscrits d'un cours (protégée)
+router.get('/:courseId/enrollments', authenticateToken, courseController.getCourseEnrollments);
 
 // Routes protégées pour les cours (instructeurs/admins)
 router.post('/', authenticateToken, validateCourse, handleValidationErrors, courseController.createCourse);

@@ -56,10 +56,45 @@ const progressRoutes = require('./routes/progressRoutes');
 const app = express();
 
 // Middleware
+// CORS avancé: support liste d'origines (FRONTEND_URLS=sep par virgules) et credentials
+const allowedOrigins = ((process.env.FRONTEND_URLS || '')
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean));
+if (!allowedOrigins.length) {
+  // Valeurs par défaut en local
+  allowedOrigins.push('http://localhost:3000', 'http://localhost:5173', 'http://127.0.0.1:3000', 'http://127.0.0.1:5173');
+}
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  credentials: true
+  origin: function(origin, callback) {
+    // Autoriser requêtes sans origin (Postman/curl) ou si origin dans la liste
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+  methods: ['GET','HEAD','PUT','PATCH','POST','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept'],
+  exposedHeaders: ['Content-Disposition']
 }));
+
+// En-têtes CORS explicites + preflight global
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Vary', 'Origin');
+  }
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));

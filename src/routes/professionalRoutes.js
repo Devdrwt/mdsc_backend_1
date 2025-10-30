@@ -34,37 +34,11 @@ router.post('/modules',
 );
 
 // ========================================
-// ROUTES SÉQUENCES (Structure du contenu)
+// ROUTES SÉQUENCES - SUPPRIMÉES
 // ========================================
-
-// Routes publiques (pour les étudiants inscrits)
-router.get('/courses/:courseId/sequences', 
-  authenticateToken, 
-  professionalController.getCourseSequences
-);
-
-// Routes instructeur/admin
-router.post('/courses/:courseId/sequences', 
-  authenticateToken, 
-  authorize(['instructor', 'admin']), 
-  professionalController.createSequence
-);
-
-// ========================================
-// ROUTES CONTENUS (PDF, Vidéos, Live)
-// ========================================
-
-// Routes publiques (pour les étudiants inscrits)
-router.get('/sequences/:sequenceId/contents', 
-  authenticateToken, 
-  professionalController.getSequenceContents
-);
-
-// Routes instructeur/admin
-router.post('/sequences/:sequenceId/contents', 
-  authenticateToken, 
-  authorize(['instructor', 'admin']), 
-  professionalController.createContent
-);
+// NOTE: Les routes séquences et contenus ont été supprimées car les tables
+// correspondantes (sequences, contents, mini_controls) ont été supprimées
+// de la base de données. Le système utilise maintenant uniquement 
+// l'architecture Modules/Lessons.
 
 module.exports = router;

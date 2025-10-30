@@ -1,11 +1,10 @@
 const nodemailer = require('nodemailer');
-require('dotenv').config();
 
 // Configuration du transporteur d'emails
 const transporter = nodemailer.createTransport({
-  host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-  port: process.env.EMAIL_PORT || 587,
-  secure: process.env.EMAIL_SECURE === 'true',
+  host: (process.env.EMAIL_HOST || 'smtp.gmail.com').trim(),
+  port: parseInt(process.env.EMAIL_PORT, 10) || 587,
+  secure: String(process.env.EMAIL_SECURE).trim() === 'true',
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASSWORD,
@@ -14,19 +13,30 @@ const transporter = nodemailer.createTransport({
 
 // Vérification de la configuration email
 const verifyEmailConfig = async () => {
-  // Si les variables email ne sont pas définies, on ignore la vérification
-  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
-    console.log('⚠️  Configuration email non définie - emails désactivés');
+  // Possibilité de désactiver volontairement l'email via .env
+  if (process.env.EMAIL_ENABLED === 'false') {
+    console.log('ℹ️  Emails désactivés par configuration (EMAIL_ENABLED=false)');
     return true;
+  }
+
+  // Normaliser/valider les variables (.trim pour éviter valeurs avec espaces)
+  const emailUser = (process.env.EMAIL_USER || '').trim();
+  const emailPass = (process.env.EMAIL_PASSWORD || '').trim();
+
+  if (!emailUser || !emailPass) {
+    console.log('ℹ️  Configuration email absente - les emails ne seront pas envoyés.');
+    return true; // Ne pas bloquer le démarrage du serveur
   }
   
   try {
     await transporter.verify();
-    console.log('✅ Configuration email valide');
+    const maskedUser = emailUser.replace(/.(?=.{2})/g, '*');
+    console.log(`✅ Configuration email valide (user=${maskedUser})`);
     return true;
   } catch (error) {
-    console.error('❌ Erreur de configuration email:', error.message);
-    return false;
+    console.warn('⚠️  Impossible de vérifier la configuration email, tentative d\'envoi au runtime:', error.message);
+    // Ne pas bloquer le serveur; on tentera l'envoi lors des appels réels
+    return true;
   }
 };
 

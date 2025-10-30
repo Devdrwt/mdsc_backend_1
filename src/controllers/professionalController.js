@@ -299,166 +299,18 @@ const createModule = async (req, res) => {
 };
 
 // ========================================
-// SÉQUENCES (Structure du contenu)
+// SÉQUENCES (Structure du contenu) - SUPPRIMÉ
 // ========================================
+// NOTE: Les tables sequences, contents, mini_controls ont été supprimées
+// car elles étaient une fonctionnalité alternative non utilisée.
+// Le système utilise maintenant uniquement l'architecture Modules/Lessons.
 
-// Récupérer les séquences d'un cours
-const getCourseSequences = async (req, res) => {
-  try {
-    const { courseId } = req.params;
-    
-    const query = `
-      SELECT 
-        s.*,
-        COUNT(c.id) as contents_count,
-        COUNT(mc.id) as mini_controls_count
-      FROM sequences s
-      LEFT JOIN contents c ON s.id = c.sequence_id
-      LEFT JOIN mini_controls mc ON s.id = mc.sequence_id
-      WHERE s.course_id = ?
-      GROUP BY s.id
-      ORDER BY s.sequence_order
-    `;
-    
-    const [sequences] = await pool.execute(query, [courseId]);
-    
-    res.json({
-      success: true,
-      data: sequences
-    });
-    
-  } catch (error) {
-    console.error('Erreur lors de la récupération des séquences:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Erreur lors de la récupération des séquences'
-    });
-  }
-};
-
-// Créer une séquence (Instructeur)
-const createSequence = async (req, res) => {
-  try {
-    const { courseId } = req.params;
-    const {
-      title,
-      description,
-      sequence_order,
-      estimated_duration_minutes,
-      has_mini_control,
-      mini_control_points,
-      is_required
-    } = req.body;
-    
-    const query = `
-      INSERT INTO sequences (
-        course_id, title, description, sequence_order,
-        estimated_duration_minutes, has_mini_control, mini_control_points, is_required
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `;
-    
-    const [result] = await pool.execute(query, [
-      courseId, title, description, sequence_order,
-      estimated_duration_minutes, has_mini_control, mini_control_points, is_required
-    ]);
-    
-    res.status(201).json({
-      success: true,
-      message: 'Séquence créée avec succès',
-      data: {
-        id: result.insertId
-      }
-    });
-    
-  } catch (error) {
-    console.error('Erreur lors de la création de la séquence:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Erreur lors de la création de la séquence'
-    });
-  }
-};
-
-// ========================================
-// CONTENUS (PDF, Vidéos, Live)
-// ========================================
-
-// Récupérer les contenus d'une séquence
-const getSequenceContents = async (req, res) => {
-  try {
-    const { sequenceId } = req.params;
-    
-    const query = `
-      SELECT * FROM contents 
-      WHERE sequence_id = ? 
-      ORDER BY content_order
-    `;
-    
-    const [contents] = await pool.execute(query, [sequenceId]);
-    
-    res.json({
-      success: true,
-      data: contents
-    });
-    
-  } catch (error) {
-    console.error('Erreur lors de la récupération des contenus:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Erreur lors de la récupération des contenus'
-    });
-  }
-};
-
-// Créer un contenu (Instructeur)
-const createContent = async (req, res) => {
-  try {
-    const { sequenceId } = req.params;
-    const {
-      title,
-      description,
-      content_type,
-      content_url,
-      file_path,
-      file_size_bytes,
-      mime_type,
-      duration_minutes,
-      content_order,
-      is_downloadable,
-      is_required,
-      access_level
-    } = req.body;
-    
-    const query = `
-      INSERT INTO contents (
-        sequence_id, title, description, content_type, content_url,
-        file_path, file_size_bytes, mime_type, duration_minutes,
-        content_order, is_downloadable, is_required, access_level
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `;
-    
-    const [result] = await pool.execute(query, [
-      sequenceId, title, description, content_type, content_url,
-      file_path, file_size_bytes, mime_type, duration_minutes,
-      content_order, is_downloadable, is_required, access_level
-    ]);
-    
-    res.status(201).json({
-      success: true,
-      message: 'Contenu créé avec succès',
-      data: {
-        id: result.insertId
-      }
-    });
-    
-  } catch (error) {
-    console.error('Erreur lors de la création du contenu:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Erreur lors de la création du contenu'
-    });
-  }
-};
+// Ces fonctions ont été désactivées car les tables correspondantes n'existent plus:
+// - sequences
+// - sequence_progress  
+// - contents
+// - mini_controls
+// - mini_control_results
 
 module.exports = {
   // Domaines
@@ -471,11 +323,11 @@ module.exports = {
   getModuleById,
   createModule,
   
-  // Séquences
-  getCourseSequences,
-  createSequence,
+  // Séquences - SUPPRIMÉES (tables non utilisées)
+  // getCourseSequences,
+  // createSequence,
   
-  // Contenus
-  getSequenceContents,
-  createContent
+  // Contenus - SUPPRIMÉES (tables non utilisées)
+  // getSequenceContents,
+  // createContent
 };

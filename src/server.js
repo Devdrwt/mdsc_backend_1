@@ -1,11 +1,38 @@
+require('dotenv').config({ override: true });
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const session = require('express-session');
-const passport = require('./config/passport');
-require('dotenv').config();
+
+// Fallback loader: si certaines variables manquent, lire manuellement le .env
+try {
+  const envPath = path.resolve(process.cwd(), '.env');
+  if (fs.existsSync(envPath)) {
+    const content = fs.readFileSync(envPath, 'utf8');
+    const whitelist = new Set([
+      'GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','API_URL','FRONTEND_URL',
+      'EMAIL_ENABLED','EMAIL_HOST','EMAIL_PORT','EMAIL_SECURE','EMAIL_USER','EMAIL_PASSWORD','EMAIL_FROM'
+    ]);
+    content.split(/\r?\n/).forEach(line => {
+      if (!line || line.trim().startsWith('#')) return;
+      const idx = line.indexOf('=');
+      if (idx === -1) return;
+      const key = line.slice(0, idx).trim();
+      const val = line.slice(idx + 1).trim();
+      if (whitelist.has(key)) {
+        process.env[key] = val; // forcer l'affectation
+      }
+    });
+  }
+} catch (e) {
+  // ignore fallback errors
+}
 
 const { testConnection } = require('./config/database');
+// Charger emailService et passport APRES le chargement .env
 const { verifyEmailConfig } = require('./services/emailService');
+const passport = require('./config/passport');
 const authRoutes = require('./routes/authRoutes');
 const googleAuthRoutes = require('./routes/googleAuthRoutes');
 const courseRoutes = require('./routes/courseRoutes');
@@ -121,6 +148,14 @@ const startServer = async () => {
       process.exit(1);
     }
 
+    // Debug minimal sur la config
+    const gid = (process.env.GOOGLE_CLIENT_ID || '').trim();
+    const gsec = (process.env.GOOGLE_CLIENT_SECRET || '').trim();
+    const hasGoogle = !!(gid && gsec);
+    const emailUserRaw = (process.env.EMAIL_USER || '').trim();
+    const maskedEmailUser = emailUserRaw ? emailUserRaw.replace(/.(?=.{2})/g, '*') : '';
+    console.log(`Config check → Google:${hasGoogle ? 'OK' : 'KO'}(idLen=${gid.length},secLen=${gsec.length}) EmailUser:${maskedEmailUser || 'NONE'}(len=${emailUserRaw.length})`);
+
     // Vérifier la configuration email (optionnel)
     await verifyEmailConfig().catch(err => {
       console.warn('⚠️ Configuration email non valide. Les emails ne seront pas envoyés.');
@@ -133,8 +168,8 @@ const startServer = async () => {
       console.log('='.repeat(60));
       console.log(`📡 URL: http://localhost:${PORT}`);
       console.log(`🌍 Environnement: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`🗄️ Base de données: ${process.env.DB_NAME}`);
-      console.log(`🔗 Frontend: ${process.env.FRONTEND_URL}`);
+      console.log(`🗄️ Base de données: ${process.env.DB_NAME || 'mdsc_auth'}`);
+      console.log(`🔗 Frontend: ${process.env.FRONTEND_URL || 'http://localhost:3000'}`);
       console.log('='.repeat(60) + '\n');
     });
 

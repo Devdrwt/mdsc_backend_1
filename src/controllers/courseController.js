@@ -694,6 +694,130 @@ const deleteReview = async (req, res) => {
   // Supprimer un avis
 };
 
+// Récupérer les inscrits d'un cours avec infos étudiant et progression (pagination + filtres)
+const getCourseEnrollments = async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    const requesterId = req.user.id;
+    const requesterRole = req.user.role;
+    const {
+      page = 1,
+      limit = 10,
+      search = '', // first/last/email
+      status,      // enrolled/completed/cancelled etc.
+      sort = 'enrolled_at', // enrolled_at | progress | last_accessed_at | completed_at
+      order = 'DESC'        // ASC | DESC
+    } = req.query;
+
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const perPage = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
+    const offset = (pageNum - 1) * perPage;
+
+    // Vérifier permissions: propriétaire du cours ou admin
+    const [courseRows] = await pool.execute('SELECT instructor_id FROM courses WHERE id = ?', [courseId]);
+    if (courseRows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Cours non trouvé' });
+    }
+    if (requesterRole !== 'admin' && courseRows[0].instructor_id !== requesterId) {
+      return res.status(403).json({ success: false, message: 'Non autorisé à consulter les inscrits de ce cours' });
+    }
+
+    // Construire filtres
+    const whereClauses = ['e.course_id = ?'];
+    const params = [courseId];
+    if (status) {
+      whereClauses.push('e.status = ?');
+      params.push(status);
+    }
+    if (search) {
+      whereClauses.push('(u.first_name LIKE ? OR u.last_name LIKE ? OR u.email LIKE ?)');
+      const like = `%${search}%`;
+      params.push(like, like, like);
+    }
+
+    // Tri autorisé
+    const sortMap = {
+      enrolled_at: 'e.enrolled_at',
+      progress: 'e.progress_percentage',
+      last_accessed_at: 'e.last_accessed_at',
+      completed_at: 'e.completed_at',
+      first_name: 'u.first_name',
+      last_name: 'u.last_name'
+    };
+    const sortColumn = sortMap[sort] || 'e.enrolled_at';
+    const sortOrder = (String(order).toUpperCase() === 'ASC') ? 'ASC' : 'DESC';
+
+    const baseSelect = `
+      SELECT 
+        u.id as user_id,
+        u.first_name,
+        u.last_name,
+        u.email,
+        u.avatar_url,
+        e.id as enrollment_id,
+        e.status,
+        e.enrolled_at,
+        e.progress_percentage,
+        e.completed_at,
+        e.last_accessed_at,
+        COALESCE(lp_completed.completed_lessons, 0) as lessons_completed,
+        COALESCE(l_counts.total_lessons, 0) as total_lessons,
+        COALESCE(qa_stats.quiz_attempts, 0) as quiz_attempts,
+        qa_stats.avg_quiz_score
+      FROM enrollments e
+      JOIN users u ON e.user_id = u.id
+      LEFT JOIN (
+        SELECT lp.user_id, lp.course_id, COUNT(DISTINCT lp.lesson_id) as completed_lessons
+        FROM lesson_progress lp
+        WHERE lp.is_completed = TRUE
+        GROUP BY lp.user_id, lp.course_id
+      ) lp_completed ON lp_completed.user_id = e.user_id AND lp_completed.course_id = e.course_id
+      LEFT JOIN (
+        SELECT l.course_id, COUNT(*) as total_lessons
+        FROM lessons l
+        GROUP BY l.course_id
+      ) l_counts ON l_counts.course_id = e.course_id
+      LEFT JOIN (
+        SELECT qa.user_id, qa.course_id, COUNT(qa.id) as quiz_attempts, AVG(qa.percentage) as avg_quiz_score
+        FROM quiz_attempts qa
+        GROUP BY qa.user_id, qa.course_id
+      ) qa_stats ON qa_stats.user_id = e.user_id AND qa_stats.course_id = e.course_id
+      WHERE ${whereClauses.join(' AND ')}
+    `;
+    const dataQuery = `${baseSelect} ORDER BY ${sortColumn} ${sortOrder} LIMIT ? OFFSET ?`;
+    const dataParams = params.concat([perPage, offset]);
+
+    const countQuery = `
+      SELECT COUNT(*) as total
+      FROM enrollments e
+      JOIN users u ON e.user_id = u.id
+      WHERE ${whereClauses.join(' AND ')}
+    `;
+    const [countRows] = await pool.execute(countQuery, params);
+    const total = countRows[0]?.total || 0;
+
+    const [rows] = await pool.execute(dataQuery, dataParams);
+
+    res.json({
+      success: true,
+      data: rows,
+      pagination: {
+        page: pageNum,
+        limit: perPage,
+        total,
+        pages: Math.ceil(total / perPage)
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la récupération des inscrits du cours:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des inscrits du cours'
+    });
+  }
+};
+
 // Récupérer les cours de l'utilisateur connecté
 const getMyCourses = async (req, res) => {
   try {
@@ -1130,5 +1254,6 @@ module.exports = {
   getCourseReviews,
   updateReview,
   deleteReview,
-  getInstructorCourses
+  getInstructorCourses,
+  getCourseEnrollments
 };

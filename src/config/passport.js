@@ -4,11 +4,15 @@ const { pool } = require('./database');
 const bcrypt = require('bcryptjs');
 
 // Configuration de la stratégie Google OAuth (optionnel)
-if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || '').trim();
+const GOOGLE_CLIENT_SECRET = (process.env.GOOGLE_CLIENT_SECRET || '').trim();
+const API_URL = (process.env.API_URL || 'http://localhost:5000').trim();
+
+if (GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET) {
   passport.use(new GoogleStrategy({
-      clientID: process.env.GOOGLE_CLIENT_ID,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-      callbackURL: `${process.env.API_URL || 'http://localhost:5000'}/api/auth/google/callback`,
+      clientID: GOOGLE_CLIENT_ID,
+      clientSecret: GOOGLE_CLIENT_SECRET,
+      callbackURL: `${API_URL}/api/auth/google/callback`,
       passReqToCallback: true
     },
   async function(request, accessToken, refreshToken, profile, done) {
@@ -87,6 +91,7 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
     }
   }
   ));
+  console.log('✅ Google OAuth configuré');
 } else {
   console.log('⚠️  Google OAuth non configuré - GOOGLE_CLIENT_ID et GOOGLE_CLIENT_SECRET requis');
 }

@@ -269,6 +269,40 @@ const getModulesUnlockStatus = async (req, res) => {
   }
 };
 
+// Réorganiser les modules d'un cours (DnD)
+const reorderModules = async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    const { modules } = req.body; // Array of { id, order_index }
+    const userId = req.user.id;
+
+    if (!Array.isArray(modules) || modules.length === 0) {
+      return res.status(400).json({ success: false, message: 'Liste des modules invalide' });
+    }
+
+    // Vérifier que l'utilisateur est propriétaire du cours
+    const [courses] = await pool.execute('SELECT instructor_id FROM courses WHERE id = ?', [courseId]);
+    if (courses.length === 0) {
+      return res.status(404).json({ success: false, message: 'Cours non trouvé' });
+    }
+    if (courses[0].instructor_id !== userId && req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Non autorisé à réordonner ces modules' });
+    }
+
+    // Mettre à jour l'ordre en batch
+    const updates = modules.map(m => (
+      pool.execute('UPDATE modules SET order_index = ?, updated_at = NOW() WHERE id = ? AND course_id = ?', [m.order_index, m.id, courseId])
+    ));
+    await Promise.all(updates);
+
+    res.json({ success: true, message: 'Ordre des modules mis à jour avec succès' });
+
+  } catch (error) {
+    console.error('Erreur lors de la réorganisation des modules:', error);
+    res.status(500).json({ success: false, message: 'Erreur lors de la réorganisation des modules' });
+  }
+};
+
 module.exports = {
   getCourseModules,
   getModuleById,
@@ -276,6 +310,7 @@ module.exports = {
   updateModule,
   deleteModule,
   unlockModule,
-  getModulesUnlockStatus
+  getModulesUnlockStatus,
+  reorderModules
 };
 

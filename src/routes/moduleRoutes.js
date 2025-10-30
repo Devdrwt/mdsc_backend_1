@@ -30,5 +30,12 @@ router.delete('/:id',
 // Route pour déverrouiller un module
 router.post('/:id/unlock', authenticateToken, moduleController.unlockModule);
 
+// Réordonner les modules d'un cours (DnD persistence)
+router.put('/courses/:courseId/reorder', 
+  authenticateToken,
+  authorize(['instructor', 'admin']),
+  moduleController.reorderModules
+);
+
 module.exports = router;
 

@@ -1,4 +1,5 @@
 const { pool } = require('../config/database');
+const { eventEmitter, EVENTS } = require('../middleware/eventEmitter');
 
 // Récupérer les quiz d'un cours
 const getCourseQuizzes = async (req, res) => {
@@ -362,9 +363,9 @@ const submitQuizAttempt = async (req, res) => {
     const [quizzes] = await pool.execute(quizQuery, [attempt.quiz_id]);
     
     if (quizzes.length > 0 && quizzes[0].is_final && isPassed) {
-      const { generateCertificateForCourse } = require('./certificateController');
+      const { generateCertificateForCourseInternal } = require('./certificateController');
       try {
-        await generateCertificateForCourse(userId, quizzes[0].course_id);
+        await generateCertificateForCourseInternal(userId, quizzes[0].course_id);
       } catch (certError) {
         console.warn('Erreur lors de la génération automatique du certificat:', certError.message);
         // Ne pas faire échouer la soumission du quiz si le certificat ne peut pas être généré
@@ -384,6 +385,18 @@ const submitQuizAttempt = async (req, res) => {
         time_spent_minutes: timeSpent
       }
     });
+
+    // Émettre l'événement en arrière-plan
+    try {
+      if (isPassed) {
+        const isPerfect = Math.round(percentage) === 100;
+        eventEmitter.emit(EVENTS.QUIZ_PASSED, { userId, quizId: attempt.quiz_id, score: percentage, isPerfect });
+      } else {
+        eventEmitter.emit(EVENTS.QUIZ_FAILED, { userId, quizId: attempt.quiz_id, score: percentage });
+      }
+    } catch (e) {
+      // ignorer
+    }
 
   } catch (error) {
     console.error('Erreur lors de la soumission du quiz:', error);

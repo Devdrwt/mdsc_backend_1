@@ -1,4 +1,5 @@
 const ProgressService = require('../services/progressService');
+const { pool } = require('../config/database');
 
 /**
  * Contrôleur pour la gestion de la progression
@@ -11,7 +12,6 @@ const getProgressByEnrollment = async (req, res) => {
     const userId = req.user.id;
 
     // Vérifier que l'utilisateur peut accéder à cette inscription
-    const { pool } = require('../config/database');
     const enrollmentQuery = 'SELECT user_id FROM enrollments WHERE id = ?';
     const [enrollments] = await pool.execute(enrollmentQuery, [enrollmentId]);
 
@@ -61,7 +61,6 @@ const markLessonCompleted = async (req, res) => {
     const userId = req.user.id;
 
     // Vérifier que l'inscription appartient à l'utilisateur
-    const { pool } = require('../config/database');
     const enrollmentQuery = 'SELECT user_id FROM enrollments WHERE id = ?';
     const [enrollments] = await pool.execute(enrollmentQuery, [enrollmentId]);
 
@@ -116,7 +115,6 @@ const updateLessonProgress = async (req, res) => {
     const userId = req.user.id;
 
     // Vérifier les permissions
-    const { pool } = require('../config/database');
     const enrollmentQuery = 'SELECT user_id FROM enrollments WHERE id = ?';
     const [enrollments] = await pool.execute(enrollmentQuery, [enrollmentId]);
 

@@ -9,7 +9,10 @@ const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 const createConversation = async (req, res) => {
   try {
     const { title, context = 'general' } = req.body;
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Utilisateur non authentifié' });
+    }
 
     const query = `
       INSERT INTO ai_conversations (user_id, title, context)
@@ -41,7 +44,10 @@ const createConversation = async (req, res) => {
 const sendMessage = async (req, res) => {
   try {
     const { conversationId, message, context = 'general' } = req.body;
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Utilisateur non authentifié' });
+    }
 
     // Vérifier que la conversation appartient à l'utilisateur
     const conversationQuery = `
@@ -135,7 +141,10 @@ const sendMessage = async (req, res) => {
 const getConversationHistory = async (req, res) => {
   try {
     const { conversationId } = req.params;
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Utilisateur non authentifié' });
+    }
 
     // Vérifier les permissions
     const conversationQuery = `
@@ -180,7 +189,10 @@ const getConversationHistory = async (req, res) => {
 // Récupérer toutes les conversations de l'utilisateur
 const getUserConversations = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Utilisateur non authentifié' });
+    }
     const { context } = req.query;
 
     let whereClause = 'WHERE user_id = ?';
@@ -223,7 +235,10 @@ const getUserConversations = async (req, res) => {
 const generateCourseSummary = async (req, res) => {
   try {
     const { courseId } = req.params;
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Utilisateur non authentifié' });
+    }
 
     // Vérifier que l'utilisateur a accès au cours
     const courseQuery = `
@@ -311,7 +326,10 @@ ${lessons.map(lesson => `
 // Obtenir des recommandations personnalisées
 const getPersonalizedRecommendations = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Utilisateur non authentifié' });
+    }
     const { type = 'course' } = req.query;
 
     // Analyser le profil de l'utilisateur

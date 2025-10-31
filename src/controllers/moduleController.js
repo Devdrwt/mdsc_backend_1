@@ -79,7 +79,7 @@ const createModule = async (req, res) => {
   try {
     const { courseId } = req.params;
     const { title, description, order_index } = req.body;
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
 
     // Vérifier que l'utilisateur est propriétaire du cours
     const courseQuery = 'SELECT id, instructor_id FROM courses WHERE id = ?';
@@ -92,7 +92,7 @@ const createModule = async (req, res) => {
       });
     }
 
-    if (courses[0].instructor_id !== userId && req.user.role !== 'admin') {
+    if (parseInt(courses[0].instructor_id) !== parseInt(userId) && req.user.role !== 'admin') {
       return res.status(403).json({
         success: false,
         message: 'Vous n\'êtes pas autorisé à modifier ce cours'
@@ -132,7 +132,7 @@ const updateModule = async (req, res) => {
   try {
     const { id } = req.params;
     const { title, description, order_index, is_unlocked } = req.body;
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
 
     // Vérifier les permissions
     const module = await ModuleService.getModuleById(id);
@@ -146,7 +146,7 @@ const updateModule = async (req, res) => {
       });
     }
 
-    if (courses[0].instructor_id !== userId && req.user.role !== 'admin') {
+    if (parseInt(courses[0].instructor_id) !== parseInt(userId) && req.user.role !== 'admin') {
       return res.status(403).json({
         success: false,
         message: 'Vous n\'êtes pas autorisé à modifier ce module'
@@ -187,14 +187,14 @@ const updateModule = async (req, res) => {
 const deleteModule = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
 
     // Vérifier les permissions
     const module = await ModuleService.getModuleById(id);
     const courseQuery = 'SELECT instructor_id FROM courses WHERE id = ?';
     const [courses] = await pool.execute(courseQuery, [module.course_id]);
 
-    if (courses[0].instructor_id !== userId && req.user.role !== 'admin') {
+    if (parseInt(courses[0].instructor_id) !== parseInt(userId) && req.user.role !== 'admin') {
       return res.status(403).json({
         success: false,
         message: 'Vous n\'êtes pas autorisé à supprimer ce module'
@@ -229,7 +229,7 @@ const deleteModule = async (req, res) => {
 const unlockModule = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
 
     const unlockStatus = await ModuleService.unlockModuleForUser(id, userId);
 
@@ -251,7 +251,7 @@ const unlockModule = async (req, res) => {
 const getModulesUnlockStatus = async (req, res) => {
   try {
     const { courseId } = req.params;
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
 
     const status = await ModuleService.getModulesUnlockStatus(courseId, userId);
 
@@ -285,7 +285,7 @@ const reorderModules = async (req, res) => {
     if (courses.length === 0) {
       return res.status(404).json({ success: false, message: 'Cours non trouvé' });
     }
-    if (courses[0].instructor_id !== userId && req.user.role !== 'admin') {
+    if (parseInt(courses[0].instructor_id) !== parseInt(userId) && req.user.role !== 'admin') {
       return res.status(403).json({ success: false, message: 'Non autorisé à réordonner ces modules' });
     }
 

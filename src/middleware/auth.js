@@ -61,13 +61,19 @@ exports.authorize = (...roles) => {
       });
     }
 
-    if (!roles.includes(req.user.role)) {
+    const allowedRoles = Array.isArray(roles[0]) ? roles[0] : roles;
+    const userRole = req.user.role;
+    console.log(`🔐 Authorization check: user role="${userRole}", allowed roles=[${allowedRoles.join(', ')}]`);
+    
+    if (!allowedRoles.includes(userRole)) {
+      console.log(`❌ Access denied: user role "${userRole}" not in allowed roles [${allowedRoles.join(', ')}]`);
       return res.status(403).json({
         success: false,
         message: 'Accès interdit - Permissions insuffisantes'
       });
     }
 
+    console.log(`✅ Access granted for role "${userRole}"`);
     next();
   };
 };

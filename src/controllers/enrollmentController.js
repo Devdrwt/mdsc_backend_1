@@ -1,4 +1,5 @@
 const { pool } = require('../config/database');
+const { eventEmitter, EVENTS } = require('../middleware/eventEmitter');
 
 // S'inscrire à un cours
 const enrollInCourse = async (req, res) => {
@@ -280,6 +281,16 @@ const updateLessonProgress = async (req, res) => {
       userId, lessonId, courseId, is_completed, 
       completedAt, time_spent_minutes, last_position_seconds
     ]);
+
+    if (is_completed) {
+      eventEmitter.emit(EVENTS.LESSON_COMPLETED, {
+        userId,
+        courseId,
+        lessonId,
+        lessonTitle: undefined,
+        timeSpent: time_spent_minutes || 0
+      });
+    }
 
     res.json({
       success: true,

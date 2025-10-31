@@ -52,6 +52,7 @@ const moduleRoutes = require('./routes/moduleRoutes');
 const mediaRoutes = require('./routes/mediaRoutes');
 const badgeRoutes = require('./routes/badgeRoutes');
 const progressRoutes = require('./routes/progressRoutes');
+const userRoutes = require('./routes/userRoutes');
 
 const app = express();
 
@@ -122,6 +123,9 @@ if (process.env.NODE_ENV === 'development') {
   });
 }
 
+// Servir les fichiers statiques (uploads)
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+
 // Routes
 app.get('/health', (req, res) => {
   res.json({
@@ -151,6 +155,7 @@ app.use('/api/modules', moduleRoutes);
 app.use('/api/media', mediaRoutes);
 app.use('/api/badges', badgeRoutes);
 app.use('/api/progress', progressRoutes);
+app.use('/api/users', userRoutes);
 
 // Gestion des erreurs 404
 app.use((req, res) => {
@@ -226,3 +231,13 @@ process.on('SIGINT', () => {
   console.log('\n👋 SIGINT reçu. Arrêt du serveur...');
   process.exit(0);
 });
+
+// Initialiser les event listeners (après démarrage app)
+try {
+  require('./services/eventListeners/LessonEventListener');
+  require('./services/eventListeners/QuizEventListener');
+  require('./services/eventListeners/CourseEventListener');
+  console.log('✅ Event listeners initialisés');
+} catch (e) {
+  console.warn('⚠️ Impossible d\'initialiser certains listeners:', e.message);
+}

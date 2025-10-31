@@ -17,23 +17,26 @@ const storage = multer.diskStorage({
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
     const ext = path.extname(file.originalname);
-    cb(null, `${req.user.userId}-${file.fieldname}-${uniqueSuffix}${ext}`);
+    const userId = req.user?.id ?? req.user?.userId ?? 'anon';
+    cb(null, `${userId}-${file.fieldname}-${uniqueSuffix}${ext}`);
   }
 });
 
 const fileFilter = (req, file, cb) => {
-  const allowedTypes = {
-    'profile_picture': ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
-    'identity_document': ['image/jpeg', 'image/png', 'application/pdf']
-  };
+  // Accepter tous les types MIME autorisés (profile_picture et identity_document)
+  // La validation spécifique sera faite dans le contrôleur
+  const allowedMimes = [
+    'image/jpeg', 
+    'image/png', 
+    'image/gif', 
+    'image/webp',
+    'application/pdf'
+  ];
   
-  const fileType = req.body.file_type || 'profile_picture';
-  const allowedMimes = allowedTypes[fileType] || allowedTypes['profile_picture'];
-  
-  if (allowedMimes.includes(file.mimeType)) {
+  if (allowedMimes.includes(file.mimetype)) {
     cb(null, true);
   } else {
-    cb(new Error(`Type de fichier non autorisé pour ${fileType}`), false);
+    cb(new Error(`Type de fichier non autorisé. Types acceptés: ${allowedMimes.join(', ')}`), false);
   }
 };
 
@@ -48,8 +51,12 @@ const upload = multer({
 // Upload d'un fichier de profil
 const uploadProfileFile = async (req, res) => {
   try {
-    const { file_type } = req.body;
-    const userId = req.user.userId;
+    const userId = req.user?.id ?? req.user?.userId;
+    const file_type = (req.body && req.body.file_type) ? req.body.file_type : 'profile_picture';
+
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Non authentifié' });
+    }
 
     if (!req.file) {
       return res.status(400).json({
@@ -58,11 +65,26 @@ const uploadProfileFile = async (req, res) => {
       });
     }
 
+    // Vérifier que le type de fichier correspond au MIME type
+    const allowedTypes = {
+      'profile_picture': ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+      'identity_document': ['image/jpeg', 'image/png', 'application/pdf']
+    };
+
+    const allowedMimes = allowedTypes[file_type] || allowedTypes['profile_picture'];
+    
+    if (!allowedMimes.includes(req.file.mimetype)) {
+      return res.status(400).json({
+        success: false,
+        message: `Type de fichier non autorisé pour ${file_type}. Types acceptés: ${allowedMimes.join(', ')}`
+      });
+    }
+
     // Vérifier que l'utilisateur peut uploader ce type de fichier
-    if (file_type === 'identity_document' && req.user.role !== 'instructor') {
+    if (file_type === 'identity_document' && !['instructor', 'student'].includes(req.user.role)) {
       return res.status(403).json({
         success: false,
-        message: 'Seuls les instructeurs peuvent uploader des pièces d\'identité'
+        message: 'Seuls les instructeurs et étudiants peuvent uploader des pièces d\'identité'
       });
     }
 
@@ -91,12 +113,16 @@ const uploadProfileFile = async (req, res) => {
     const [result] = await pool.execute(insertQuery, [
       userId,
       file_type,
-      req.file.filename,
-      req.file.originalname,
-      req.file.path,
-      req.file.size,
-      req.file.mimetype
+      req.file.filename || null,
+      req.file.originalname || null,
+      req.file.path || null,
+      req.file.size || 0,
+      req.file.mimetype || null
     ]);
+
+    // Construire l'URL complète du fichier
+    const apiUrl = process.env.API_URL || `http://localhost:${process.env.PORT || 5000}`;
+    const fileUrl = `${apiUrl}/uploads/profiles/${req.file.filename}`;
 
     res.status(201).json({
       success: true,
@@ -107,7 +133,8 @@ const uploadProfileFile = async (req, res) => {
         file_name: req.file.filename,
         original_name: req.file.originalname,
         file_size: req.file.size,
-        mime_type: req.file.mimetype
+        mime_type: req.file.mimetype,
+        url: fileUrl
       }
     });
 
@@ -123,7 +150,7 @@ const uploadProfileFile = async (req, res) => {
 // Récupérer les fichiers de profil d'un utilisateur
 const getUserFiles = async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const userId = req.user?.id ?? req.user?.userId;
 
     const query = `
       SELECT 
@@ -136,6 +163,9 @@ const getUserFiles = async (req, res) => {
 
     const [files] = await pool.execute(query, [userId]);
 
+    // Construire l'URL complète pour chaque fichier
+    const apiUrl = process.env.API_URL || `http://localhost:${process.env.PORT || 5000}`;
+
     res.json({
       success: true,
       data: files.map(file => ({
@@ -147,7 +177,8 @@ const getUserFiles = async (req, res) => {
         mime_type: file.mime_type,
         is_verified: file.is_verified,
         verified_at: file.verified_at,
-        created_at: file.created_at
+        created_at: file.created_at,
+        url: file.file_name ? `${apiUrl}/uploads/profiles/${file.file_name}` : null
       }))
     });
 
@@ -164,7 +195,7 @@ const getUserFiles = async (req, res) => {
 const deleteProfileFile = async (req, res) => {
   try {
     const { fileId } = req.params;
-    const userId = req.user.userId;
+    const userId = req.user?.id ?? req.user?.userId;
 
     // Vérifier que le fichier appartient à l'utilisateur
     const fileQuery = 'SELECT file_path FROM user_files WHERE id = ? AND user_id = ?';

@@ -101,7 +101,10 @@ const getStudentDashboard = async (req, res) => {
 // Dashboard Analytics pour Formateur
 const getInstructorDashboard = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId ?? null;
+    if (userId == null) {
+      return res.status(401).json({ success: false, message: 'Utilisateur non authentifié' });
+    }
 
     // Statistiques des cours créés
     const coursesStatsQuery = `
@@ -153,17 +156,27 @@ const getInstructorDashboard = async (req, res) => {
         a.id,
         a.title,
         a.due_date,
-        COUNT(as.id) as total_submissions,
-        COUNT(CASE WHEN as.grade IS NULL THEN 1 END) as pending_grades
+        COUNT(sub.id) as total_submissions,
+        COUNT(CASE WHEN sub.grade IS NULL THEN 1 END) as pending_grades
       FROM assignments a
-      LEFT JOIN assignment_submissions as ON a.id = as.assignment_id
+      LEFT JOIN assignment_submissions sub ON a.id = sub.assignment_id
       JOIN courses c ON a.course_id = c.id
       WHERE c.instructor_id = ?
       GROUP BY a.id, a.title, a.due_date
       HAVING pending_grades > 0
       ORDER BY a.due_date ASC
     `;
-    const [pendingEvaluations] = await pool.execute(pendingEvaluationsQuery, [userId]);
+    let pendingEvaluations = [];
+    try {
+      const [rows] = await pool.execute(pendingEvaluationsQuery, [userId]);
+      pendingEvaluations = rows;
+    } catch (e) {
+      if (e && (e.code === 'ER_NO_SUCH_TABLE' || String(e.sqlMessage || '').includes('doesn\'t exist'))) {
+        pendingEvaluations = [];
+      } else {
+        throw e;
+      }
+    }
 
     // Performance des quiz
     const quizPerformanceQuery = `

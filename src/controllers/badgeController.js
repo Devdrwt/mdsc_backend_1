@@ -1,4 +1,4 @@
-const BadgeService = require('../services/badgeService');
+const BadgeService = require('../services/badges.service');
 
 /**
  * Contrôleur pour la gestion des badges
@@ -54,7 +54,14 @@ const getBadgeById = async (req, res) => {
 // Récupérer les badges d'un utilisateur
 const getUserBadges = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Non authentifié'
+      });
+    }
 
     const badges = await BadgeService.getUserBadges(userId);
 
@@ -76,7 +83,7 @@ const getUserBadges = async (req, res) => {
 const checkBadgeEligibility = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
 
     const eligibility = await BadgeService.checkBadgeEligibility(userId, id);
 
@@ -147,7 +154,7 @@ const awardBadge = async (req, res) => {
 // Vérifier et attribuer automatiquement les badges éligibles
 const checkAndAwardBadges = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
 
     const awarded = await BadgeService.checkAndAwardBadges(userId);
 

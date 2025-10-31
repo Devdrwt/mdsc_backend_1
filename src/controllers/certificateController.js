@@ -8,7 +8,7 @@ const path = require('path');
 // Récupérer mes certificats
 const getMyCertificates = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
     const { courseId } = req.query;
 
     let whereClause = 'WHERE c.user_id = ?';
@@ -54,7 +54,7 @@ const getMyCertificates = async (req, res) => {
 const getCertificateById = async (req, res) => {
   try {
     const { certificateId } = req.params;
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
 
     const query = `
       SELECT 
@@ -158,7 +158,7 @@ const verifyCertificate = async (req, res) => {
 const downloadCertificate = async (req, res) => {
   try {
     const { certificateId } = req.params;
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
 
     const query = `
       SELECT 
@@ -341,6 +341,36 @@ const generateCertificatePDF = async (certificate) => {
   });
 };
 
+// Wrapper HTTP pour générer un certificat
+const generateCertificateForCourseHTTP = async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    const userId = req.user?.id ?? req.user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Non authentifié'
+      });
+    }
+
+    const certificateId = await generateCertificateForCourse(userId, courseId);
+
+    res.json({
+      success: true,
+      message: 'Certificat généré avec succès',
+      data: { certificateId }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la génération du certificat:', error);
+    res.status(400).json({
+      success: false,
+      message: error.message || 'Erreur lors de la génération du certificat'
+    });
+  }
+};
+
 // Générer automatiquement un certificat (appelé quand un cours est complété)
 const generateCertificateForCourse = async (userId, courseId) => {
   try {
@@ -478,6 +508,7 @@ module.exports = {
   getCertificateById,
   verifyCertificate,
   downloadCertificate,
-  generateCertificateForCourse,
+  generateCertificateForCourse: generateCertificateForCourseHTTP,
+  generateCertificateForCourseInternal: generateCertificateForCourse,
   revokeCertificate
 };

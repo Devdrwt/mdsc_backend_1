@@ -7,6 +7,7 @@ const { authenticateToken } = require('../middleware/auth');
 router.get('/verify/:code', certificateController.verifyCertificate);
 
 // Routes pour les certificats (avec authentification)
+router.get('/', authenticateToken, certificateController.getMyCertificates); // Alias pour GET /api/certificates
 router.get('/my-certificates', authenticateToken, certificateController.getMyCertificates);
 router.get('/:certificateId', authenticateToken, certificateController.getCertificateById);
 router.get('/:certificateId/download', authenticateToken, certificateController.downloadCertificate);

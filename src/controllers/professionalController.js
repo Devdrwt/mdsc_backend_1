@@ -4,37 +4,34 @@ const { pool } = require('../config/database');
 // DOMAINES (Secteurs professionnels)
 // ========================================
 
-// Récupérer tous les domaines
+// Récupérer tous les domaines (compat: map vers categories)
 const getAllDomains = async (req, res) => {
   try {
     const { is_active } = req.query;
-    
-    let whereClause = '';
-    let params = [];
-    
-    if (is_active !== undefined) {
-      whereClause = 'WHERE is_active = ?';
-      params.push(is_active === 'true' ? 1 : 0);
-    }
-    
+    const whereClause = is_active !== undefined ? 'WHERE c.is_active = ?' : '';
+    const params = is_active !== undefined ? [is_active === 'true' ? 1 : 0] : [];
+
+    // Mapper domains -> categories (nommage legacy côté front)
     const query = `
       SELECT 
-        d.*,
-        COUNT(m.id) as modules_count,
-        COUNT(CASE WHEN m.is_published = TRUE THEN 1 END) as published_modules_count
-      FROM domains d
-      LEFT JOIN modules m ON d.id = m.domain_id
+        c.id,
+        c.name,
+        c.description,
+        c.color,
+        c.icon,
+        c.is_active,
+        COUNT(DISTINCT co.id) as modules_count,
+        COUNT(DISTINCT CASE WHEN co.is_published = TRUE THEN co.id END) as published_modules_count
+      FROM categories c
+      LEFT JOIN courses co ON co.category_id = c.id
       ${whereClause}
-      GROUP BY d.id
-      ORDER BY d.name
+      GROUP BY c.id, c.name, c.description, c.color, c.icon, c.is_active
+      ORDER BY c.name
     `;
-    
-    const [domains] = await pool.execute(query, params);
-    
-    res.json({
-      success: true,
-      data: domains
-    });
+
+    const [rows] = await pool.execute(query, params);
+
+    res.json({ success: true, data: rows });
     
   } catch (error) {
     console.error('Erreur lors de la récupération des domaines:', error);
@@ -45,35 +42,37 @@ const getAllDomains = async (req, res) => {
   }
 };
 
-// Récupérer un domaine par ID
+// Récupérer un domaine par ID (compat: categories)
 const getDomainById = async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const query = `
       SELECT 
-        d.*,
-        COUNT(m.id) as modules_count,
-        COUNT(CASE WHEN m.is_published = TRUE THEN 1 END) as published_modules_count
-      FROM domains d
-      LEFT JOIN modules m ON d.id = m.domain_id
-      WHERE d.id = ?
-      GROUP BY d.id
+        c.id,
+        c.name,
+        c.description,
+        c.color,
+        c.icon,
+        c.is_active,
+        COUNT(DISTINCT co.id) as modules_count,
+        COUNT(DISTINCT CASE WHEN co.is_published = TRUE THEN co.id END) as published_modules_count
+      FROM categories c
+      LEFT JOIN courses co ON co.category_id = c.id
+      WHERE c.id = ?
+      GROUP BY c.id, c.name, c.description, c.color, c.icon, c.is_active
     `;
-    
-    const [domains] = await pool.execute(query, [id]);
-    
-    if (domains.length === 0) {
+
+    const [rows] = await pool.execute(query, [id]);
+
+    if (rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: 'Domaine non trouvé'
       });
     }
-    
-    res.json({
-      success: true,
-      data: domains[0]
-    });
+
+    res.json({ success: true, data: rows[0] });
     
   } catch (error) {
     console.error('Erreur lors de la récupération du domaine:', error);
@@ -117,48 +116,38 @@ const createDomain = async (req, res) => {
 // MODULES (Regroupement de cours)
 // ========================================
 
-// Récupérer tous les modules d'un domaine
+// Récupérer tous les modules d'un domaine (compat: via courses.category_id)
 const getModulesByDomain = async (req, res) => {
   try {
     const { domainId } = req.params;
-    const { is_published, difficulty } = req.query;
-    
-    let whereClause = 'WHERE m.domain_id = ?';
-    let params = [domainId];
-    
-    if (is_published !== undefined) {
-      whereClause += ' AND m.is_published = ?';
-      params.push(is_published === 'true' ? 1 : 0);
-    }
-    
-    if (difficulty) {
-      whereClause += ' AND m.difficulty = ?';
-      params.push(difficulty);
-    }
-    
+    const { is_published } = req.query;
+
+    const whereClause = `WHERE co.category_id = ? ${is_published !== undefined ? 'AND co.is_published = ?' : ''}`;
+    const params = [domainId, ...(is_published !== undefined ? [is_published === 'true' ? 1 : 0] : [])];
+
+    // Ici on retourne les cours de la catégorie comme "modules" (compat front)
     const query = `
       SELECT 
-        m.*,
-        d.name as domain_name,
-        d.color as domain_color,
-        COUNT(c.id) as courses_count,
-        COUNT(CASE WHEN c.is_published = TRUE THEN 1 END) as published_courses_count,
-        COUNT(me.id) as enrollments_count
-      FROM modules m
-      LEFT JOIN domains d ON m.domain_id = d.id
-      LEFT JOIN courses c ON m.id = c.module_id
-      LEFT JOIN module_enrollments me ON m.id = me.module_id
+        co.id,
+        co.title,
+        co.description,
+        co.thumbnail_url,
+        co.duration_minutes,
+        co.difficulty,
+        co.language,
+        co.is_published,
+        co.created_at,
+        COUNT(DISTINCT e.id) as enrollments_count
+      FROM courses co
+      LEFT JOIN enrollments e ON e.course_id = co.id
       ${whereClause}
-      GROUP BY m.id
-      ORDER BY m.title
+      GROUP BY co.id
+      ORDER BY co.created_at DESC
     `;
-    
-    const [modules] = await pool.execute(query, params);
-    
-    res.json({
-      success: true,
-      data: modules
-    });
+
+    const [rows] = await pool.execute(query, params);
+
+    res.json({ success: true, data: rows });
     
   } catch (error) {
     console.error('Erreur lors de la récupération des modules:', error);

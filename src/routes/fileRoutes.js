@@ -15,6 +15,12 @@ router.get('/my-files',
   fileController.getUserFiles
 );
 
+// Alias attendu par le front
+router.get('/my', 
+  authenticateToken, 
+  fileController.getUserFiles
+);
+
 router.delete('/:fileId', 
   authenticateToken, 
   fileController.deleteProfileFile

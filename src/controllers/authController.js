@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 const { pool } = require('../config/database');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('../services/emailService');
 
@@ -67,25 +68,26 @@ exports.register = async (req, res) => {
 
     const userId = result.insertId;
 
-    // Générer un token de vérification d'email
+    // Générer un token de vérification d'email (hashé en base et envoyé en hash)
     const verificationToken = uuidv4();
+    const verificationTokenHash = crypto.createHash('sha256').update(verificationToken).digest('hex');
     const expiresAt = new Date();
     expiresAt.setHours(expiresAt.getHours() + parseInt(process.env.EMAIL_VERIFICATION_EXPIRE || 24));
 
     await connection.query(
       'INSERT INTO email_verification_tokens (user_id, token, expires_at) VALUES (?, ?, ?)',
-      [userId, verificationToken, expiresAt]
+      [userId, verificationTokenHash, expiresAt]
     );
 
     // Envoyer l'email de vérification (optionnel - ne fait pas échouer l'inscription si erreur)
     try {
-      await sendVerificationEmail(email, firstName, verificationToken);
+      await sendVerificationEmail(email, firstName, verificationTokenHash);
       console.log('✅ Email de vérification envoyé à:', email);
     } catch (emailError) {
       console.error('❌ Erreur envoi email de vérification:', emailError.message);
       console.log('⚠️  L\'utilisateur devra vérifier son email manuellement');
-      console.log('📧 Token de vérification:', verificationToken);
-      console.log('🔗 Lien de vérification:', `${process.env.VERIFY_EMAIL_URL}?token=${verificationToken}`);
+      console.log('📧 Token de vérification (hash):', verificationTokenHash);
+      console.log('🔗 Lien de vérification:', `${process.env.VERIFY_EMAIL_URL}?token=${verificationTokenHash}`);
     }
 
     res.status(201).json({
@@ -122,11 +124,12 @@ exports.verifyEmail = async (req, res) => {
   
   try {
     const { token } = req.body;
+    const providedHash = crypto.createHash('sha256').update(String(token)).digest('hex');
 
     // Vérifier le token
     const [tokens] = await connection.query(
       'SELECT user_id, expires_at FROM email_verification_tokens WHERE token = ?',
-      [token]
+      [providedHash]
     );
 
     if (tokens.length === 0) {
@@ -140,7 +143,7 @@ exports.verifyEmail = async (req, res) => {
 
     // Vérifier l'expiration
     if (new Date() > new Date(expires_at)) {
-      await connection.query('DELETE FROM email_verification_tokens WHERE token = ?', [token]);
+      await connection.query('DELETE FROM email_verification_tokens WHERE token = ?', [providedHash]);
       return res.status(400).json({
         success: false,
         message: 'Le token de vérification a expiré. Veuillez demander un nouveau lien.'
@@ -154,7 +157,7 @@ exports.verifyEmail = async (req, res) => {
     );
 
     // Supprimer le token utilisé
-    await connection.query('DELETE FROM email_verification_tokens WHERE token = ?', [token]);
+    await connection.query('DELETE FROM email_verification_tokens WHERE token = ?', [providedHash]);
 
     res.json({
       success: true,
@@ -302,18 +305,19 @@ exports.resendVerificationEmail = async (req, res) => {
     // Supprimer les anciens tokens
     await connection.query('DELETE FROM email_verification_tokens WHERE user_id = ?', [user.id]);
 
-    // Générer un nouveau token
+    // Générer un nouveau token (hashé)
     const verificationToken = uuidv4();
+    const verificationTokenHash = crypto.createHash('sha256').update(verificationToken).digest('hex');
     const expiresAt = new Date();
     expiresAt.setHours(expiresAt.getHours() + parseInt(process.env.EMAIL_VERIFICATION_EXPIRE || 24));
 
     await connection.query(
       'INSERT INTO email_verification_tokens (user_id, token, expires_at) VALUES (?, ?, ?)',
-      [user.id, verificationToken, expiresAt]
+      [user.id, verificationTokenHash, expiresAt]
     );
 
     // Envoyer l'email
-    await sendVerificationEmail(email, user.first_name, verificationToken);
+    await sendVerificationEmail(email, user.first_name, verificationTokenHash);
 
     res.json({
       success: true,
@@ -367,18 +371,19 @@ exports.forgotPassword = async (req, res) => {
       [user.id]
     );
 
-    // Générer un nouveau token
+    // Générer un nouveau token (hashé)
     const resetToken = uuidv4();
+    const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
     const expiresAt = new Date();
     expiresAt.setHours(expiresAt.getHours() + parseInt(process.env.PASSWORD_RESET_EXPIRE || 1));
 
     await connection.query(
       'INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES (?, ?, ?)',
-      [user.id, resetToken, expiresAt]
+      [user.id, resetTokenHash, expiresAt]
     );
 
     // Envoyer l'email
-    await sendPasswordResetEmail(email, user.first_name, resetToken);
+    await sendPasswordResetEmail(email, user.first_name, resetTokenHash);
 
     res.json({
       success: true,
@@ -402,11 +407,12 @@ exports.resetPassword = async (req, res) => {
   
   try {
     const { token, newPassword } = req.body;
+    const providedHash = crypto.createHash('sha256').update(String(token)).digest('hex');
 
     // Vérifier le token
     const [tokens] = await connection.query(
       'SELECT user_id, expires_at, used_at FROM password_reset_tokens WHERE token = ?',
-      [token]
+      [providedHash]
     );
 
     if (tokens.length === 0) {
@@ -428,7 +434,7 @@ exports.resetPassword = async (req, res) => {
 
     // Vérifier l'expiration
     if (new Date() > new Date(expires_at)) {
-      await connection.query('DELETE FROM password_reset_tokens WHERE token = ?', [token]);
+      await connection.query('DELETE FROM password_reset_tokens WHERE token = ?', [providedHash]);
       return res.status(400).json({
         success: false,
         message: 'Le token de réinitialisation a expiré. Veuillez faire une nouvelle demande.'
@@ -447,7 +453,7 @@ exports.resetPassword = async (req, res) => {
     // Marquer le token comme utilisé
     await connection.query(
       'UPDATE password_reset_tokens SET used_at = NOW() WHERE token = ?',
-      [token]
+      [providedHash]
     );
 
     // Révoquer tous les refresh tokens de l'utilisateur (sécurité)
@@ -608,9 +614,11 @@ exports.getProfile = async (req, res) => {
   const connection = await pool.getConnection();
   
   try {
+    const userId = req.user?.id ?? req.user?.userId;
+
     const [users] = await connection.query(
       'SELECT id, email, first_name, last_name, role, is_email_verified, created_at, last_login_at FROM users WHERE id = ?',
-      [req.user.userId]
+      [userId]
     );
 
     if (users.length === 0) {
@@ -619,6 +627,21 @@ exports.getProfile = async (req, res) => {
         message: 'Utilisateur non trouvé'
       });
     }
+
+    // Récupérer le dernier avatar depuis user_files
+    const [avatarRows] = await connection.query(
+      `SELECT file_name
+       FROM user_files
+       WHERE user_id = ? AND file_type = 'profile_picture'
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [userId]
+    );
+
+    const apiUrl = process.env.API_URL || `http://localhost:${process.env.PORT || 5000}`;
+    const avatarUrl = avatarRows.length && avatarRows[0].file_name
+      ? `${apiUrl}/uploads/profiles/${avatarRows[0].file_name}`
+      : null;
 
     res.json({
       success: true,
@@ -631,7 +654,8 @@ exports.getProfile = async (req, res) => {
           role: users[0].role,
           isEmailVerified: users[0].is_email_verified,
           createdAt: users[0].created_at,
-          lastLoginAt: users[0].last_login_at
+          lastLoginAt: users[0].last_login_at,
+          avatarUrl
         }
       }
     });

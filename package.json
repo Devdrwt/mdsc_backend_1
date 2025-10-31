@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "seed:demo": "node database/seed_demo_data.js",
+    "seed:dashboard": "node database/seed_instructor_dashboard.js",
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "build": "echo 'No build step required'",

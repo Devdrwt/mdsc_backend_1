@@ -40,6 +40,15 @@ const verifyEmailConfig = async () => {
   }
 };
 
+// Préheader invisible (aperçu dans les boîtes mail)
+const buildPreheader = (text) => {
+  return `
+    <span style="display:none!important;opacity:0;color:transparent;visibility:hidden;height:0;width:0;overflow:hidden;mso-hide:all;">
+      ${text}
+    </span>
+  `;
+};
+
 // Template HTML pour l'email de vérification
 const getVerificationEmailTemplate = (firstName, verificationUrl) => {
   return `
@@ -50,14 +59,16 @@ const getVerificationEmailTemplate = (firstName, verificationUrl) => {
       <style>
         body { font-family: 'Open Sans', Arial, sans-serif; line-height: 1.6; color: #333; }
         .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-        .header { background: #3B7C8A; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+        .header { background: #3380AA; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
         .content { background: #ffffff; padding: 30px; border: 1px solid #e0e0e0; }
-        .button { display: inline-block; padding: 15px 30px; background: #0C3C5C; color: white; text-decoration: none; border-radius: 5px; margin: 20px 0; }
+        .button { display: inline-block; padding: 15px 30px; background: #3380AA; color: #ffffff; text-decoration: none; border-radius: 5px; margin: 20px 0; transition: all .2s ease; }
+        .button:hover { background: transparent !important; color: #F8C37B !important; text-decoration: underline; }
         .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
       </style>
     </head>
     <body>
       <div class="container">
+        ${buildPreheader('Vérifiez votre adresse email pour activer votre compte MdSC.')}
         <div class="header">
           <h1>Maison de la Société Civile</h1>
           <p>Plateforme MOOC</p>
@@ -70,7 +81,7 @@ const getVerificationEmailTemplate = (firstName, verificationUrl) => {
             <a href="${verificationUrl}" class="button">Vérifier mon email</a>
           </div>
           <p>Ou copiez ce lien dans votre navigateur :</p>
-          <p style="word-break: break-all; color: #3B7C8A;">${verificationUrl}</p>
+          <p style="word-break: break-all; color: #3380AA;">${verificationUrl}</p>
           <p><strong>Ce lien expirera dans 24 heures.</strong></p>
           <p>Si vous n'avez pas créé de compte, vous pouvez ignorer cet email.</p>
         </div>
@@ -94,15 +105,17 @@ const getPasswordResetEmailTemplate = (firstName, resetUrl) => {
       <style>
         body { font-family: 'Open Sans', Arial, sans-serif; line-height: 1.6; color: #333; }
         .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-        .header { background: #0C3C5C; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+        .header { background: #3380AA; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
         .content { background: #ffffff; padding: 30px; border: 1px solid #e0e0e0; }
-        .button { display: inline-block; padding: 15px 30px; background: #D79A49; color: white; text-decoration: none; border-radius: 5px; margin: 20px 0; }
+        .button { display: inline-block; padding: 15px 30px; background: #3380AA; color: #ffffff; text-decoration: none; border-radius: 5px; margin: 20px 0; transition: all .2s ease; }
+        .button:hover { background: transparent !important; color: #F8C37B !important; text-decoration: underline; }
         .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
         .warning { background: #fff3cd; border: 1px solid #ffc107; padding: 15px; border-radius: 5px; margin: 15px 0; }
       </style>
     </head>
     <body>
       <div class="container">
+        ${buildPreheader('Réinitialisez votre mot de passe MdSC - lien valable 1 heure.')}
         <div class="header">
           <h1>Réinitialisation du mot de passe</h1>
         </div>
@@ -114,7 +127,7 @@ const getPasswordResetEmailTemplate = (firstName, resetUrl) => {
             <a href="${resetUrl}" class="button">Réinitialiser mon mot de passe</a>
           </div>
           <p>Ou copiez ce lien dans votre navigateur :</p>
-          <p style="word-break: break-all; color: #0C3C5C;">${resetUrl}</p>
+          <p style="word-break: break-all; color: #3380AA;">${resetUrl}</p>
           <div class="warning">
             <p><strong>⚠️ Ce lien expirera dans 1 heure.</strong></p>
             <p>Si vous n'avez pas demandé cette réinitialisation, veuillez ignorer cet email et votre mot de passe restera inchangé.</p>
@@ -130,16 +143,39 @@ const getPasswordResetEmailTemplate = (firstName, resetUrl) => {
   `;
 };
 
+// Version texte (plain text) - Vérification
+const getVerificationText = (firstName, url) => (
+  `Bonjour ${firstName},\n\n` +
+  `Merci pour votre inscription sur la plateforme MdSC.\n` +
+  `Pour activer votre compte, veuillez cliquer sur le lien suivant (valable 24h):\n` +
+  `${url}\n\n` +
+  `Si vous n'êtes pas à l'origine de cette demande, ignorez cet email.\n\n` +
+  `Maison de la Société Civile`
+);
+
+// Version texte (plain text) - Réinitialisation
+const getPasswordResetText = (firstName, url) => (
+  `Bonjour ${firstName},\n\n` +
+  `Vous avez demandé la réinitialisation de votre mot de passe MdSC.\n` +
+  `Cliquez sur le lien suivant pour créer un nouveau mot de passe (valable 1h):\n` +
+  `${url}\n\n` +
+  `Si vous n'êtes pas à l'origine de cette demande, ignorez cet email.\n\n` +
+  `Maison de la Société Civile`
+);
+
 // Envoyer l'email de vérification
 const sendVerificationEmail = async (email, firstName, token) => {
-  const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/verify-email?token=${token}`;
+  const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
+  const baseVerify = (process.env.VERIFY_EMAIL_URL || `${frontendUrl}/verify-email`).replace(/\/$/, '');
+  const verificationUrl = `${baseVerify}?token=${token}`;
   
   try {
     await transporter.sendMail({
       from: process.env.EMAIL_FROM,
       to: email,
-      subject: 'Vérifiez votre adresse email - MdSC',
+      subject: '[MdSC] Vérification de votre adresse email',
       html: getVerificationEmailTemplate(firstName, verificationUrl),
+      text: getVerificationText(firstName, verificationUrl)
     });
     console.log(`✅ Email de vérification envoyé à ${email}`);
     return true;
@@ -151,14 +187,17 @@ const sendVerificationEmail = async (email, firstName, token) => {
 
 // Envoyer l'email de réinitialisation de mot de passe
 const sendPasswordResetEmail = async (email, firstName, token) => {
-  const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;
+  const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
+  const baseReset = (process.env.RESET_PASSWORD_URL || `${frontendUrl}/reset-password`).replace(/\/$/, '');
+  const resetUrl = `${baseReset}?token=${token}`;
   
   try {
     await transporter.sendMail({
       from: process.env.EMAIL_FROM,
       to: email,
-      subject: 'Réinitialisation de votre mot de passe - MdSC',
+      subject: '[MdSC] Réinitialisation de votre mot de passe',
       html: getPasswordResetEmailTemplate(firstName, resetUrl),
+      text: getPasswordResetText(firstName, resetUrl)
     });
     console.log(`✅ Email de réinitialisation envoyé à ${email}`);
     return true;

@@ -4,8 +4,29 @@ const { eventEmitter, EVENTS } = require('../middleware/eventEmitter');
 // S'inscrire à un cours
 const enrollInCourse = async (req, res) => {
   try {
-    const { courseId } = req.body;
-    const userId = req.user.id;
+    // Accepter courseId (camelCase) ou course_id (snake_case)
+    const courseId = req.body.courseId || req.body.course_id;
+    const userId = req.user?.id ?? req.user?.userId;
+
+    // Debug: logger le body reçu
+    console.log('🔍 [ENROLLMENT] Body reçu:', JSON.stringify(req.body));
+    console.log('🔍 [ENROLLMENT] courseId extrait:', courseId);
+    console.log('🔍 [ENROLLMENT] userId:', userId);
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Non authentifié'
+      });
+    }
+
+    if (!courseId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID du cours requis (courseId ou course_id)',
+        receivedBody: req.body
+      });
+    }
 
     // Vérifier que le cours existe et est publié
     const courseQuery = `
@@ -109,7 +130,7 @@ const enrollInCourse = async (req, res) => {
 // Récupérer mes cours
 const getMyCourses = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
     const { status = 'all' } = req.query; // all, active, completed
 
     let whereClause = 'WHERE e.user_id = ?';
@@ -160,7 +181,7 @@ const getMyCourses = async (req, res) => {
 const getCourseProgress = async (req, res) => {
   try {
     const { courseId } = req.params;
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
 
     // Vérifier que l'utilisateur est inscrit au cours
     const enrollmentQuery = `
@@ -230,7 +251,7 @@ const getCourseProgress = async (req, res) => {
 const updateLessonProgress = async (req, res) => {
   try {
     const { courseId, lessonId } = req.params;
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
     const { is_completed, time_spent_minutes, last_position_seconds } = req.body;
 
     // Vérifier que l'utilisateur est inscrit au cours
@@ -310,7 +331,7 @@ const updateLessonProgress = async (req, res) => {
 const unenrollFromCourse = async (req, res) => {
   try {
     const { courseId } = req.params;
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
 
     // Vérifier que l'utilisateur est inscrit au cours
     const enrollmentQuery = `

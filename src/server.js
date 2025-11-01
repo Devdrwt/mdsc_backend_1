@@ -11,8 +11,9 @@ try {
   if (fs.existsSync(envPath)) {
     const content = fs.readFileSync(envPath, 'utf8');
     const whitelist = new Set([
-      'GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','API_URL','FRONTEND_URL',
-      'EMAIL_ENABLED','EMAIL_HOST','EMAIL_PORT','EMAIL_SECURE','EMAIL_USER','EMAIL_PASSWORD','EMAIL_FROM'
+      'GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','API_URL','FRONTEND_URL','FRONTEND_URLS',
+      'EMAIL_ENABLED','EMAIL_HOST','EMAIL_PORT','EMAIL_SECURE','EMAIL_USER','EMAIL_PASSWORD','EMAIL_FROM',
+      'VERIFY_EMAIL_URL','RESET_PASSWORD_URL','EMAIL_VERIFICATION_EXPIRE','PASSWORD_RESET_EXPIRE'
     ]);
     content.split(/\r?\n/).forEach(line => {
       if (!line || line.trim().startsWith('#')) return;
@@ -58,7 +59,7 @@ const app = express();
 
 // Middleware
 // CORS avancé: support liste d'origines (FRONTEND_URLS=sep par virgules) et credentials
-const allowedOrigins = ((process.env.FRONTEND_URLS || '')
+const allowedOrigins = ((process.env.FRONTEND_URLS || process.env.FRONTEND_URL || '')
   .split(',')
   .map(o => o.trim())
   .filter(Boolean));
@@ -67,12 +68,18 @@ if (!allowedOrigins.length) {
   allowedOrigins.push('http://localhost:3000', 'http://localhost:5173', 'http://127.0.0.1:3000', 'http://127.0.0.1:5173');
 }
 
+console.log('🌐 CORS: Origines autorisées:', allowedOrigins);
+
 app.use(cors({
   origin: function(origin, callback) {
     // Autoriser requêtes sans origin (Postman/curl) ou si origin dans la liste
     if (!origin || allowedOrigins.includes(origin)) {
+      if (origin) {
+        console.log('✅ CORS: Origin autorisé:', origin);
+      }
       return callback(null, true);
     }
+    console.error('❌ CORS: Origin non autorisé:', origin, '- Listes autorisées:', allowedOrigins);
     return callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
@@ -81,9 +88,43 @@ app.use(cors({
   exposedHeaders: ['Content-Disposition']
 }));
 
-// En-têtes CORS explicites + preflight global
+// En-têtes CORS explicites + preflight global avec logging
 app.use((req, res, next) => {
   const origin = req.headers.origin;
+  
+  // Log détaillé pour les requêtes OPTIONS (preflight)
+  if (req.method === 'OPTIONS') {
+    console.log('\n🔵 CORS PREFLIGHT OPTIONS:');
+    console.log('   Origin:', origin || '(aucun)');
+    console.log('   Requested-Method:', req.headers['access-control-request-method']);
+    console.log('   Requested-Headers:', req.headers['access-control-request-headers']);
+    console.log('   URL:', req.url);
+    
+    if (origin && allowedOrigins.includes(origin)) {
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Vary', 'Origin');
+      console.log('   ✅ Origin autorisé, envoi 204');
+    } else if (!origin) {
+      // Autoriser les requêtes sans origin (curl, Postman)
+      console.log('   ✅ Aucun origin (curl/Postman), envoi 204');
+    } else {
+      console.error('   ❌ Origin non autorisé:', origin);
+      return res.status(403).json({
+        success: false,
+        message: 'Not allowed by CORS',
+        origin: origin,
+        allowedOrigins: allowedOrigins
+      });
+    }
+    
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
+    res.header('Access-Control-Max-Age', '86400'); // Cache preflight pour 24h
+    return res.sendStatus(204);
+  }
+  
+  // Pour les autres requêtes, ajouter les en-têtes CORS
   if (origin && allowedOrigins.includes(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
     res.header('Vary', 'Origin');
@@ -91,14 +132,28 @@ app.use((req, res, next) => {
   res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(204);
-  }
+  
   next();
 });
 
-app.use(express.json());
+// Configuration express.json() avec options pour accepter différents Content-Type
+app.use(express.json({ 
+  type: ['application/json', 'application/json; charset=utf-8', 'text/json'],
+  strict: false 
+}));
 app.use(express.urlencoded({ extended: true }));
+
+// Middleware pour logger si le body n'est pas parsé correctement
+app.use((req, res, next) => {
+  if (req.method === 'POST' && req.headers['content-type'] && req.headers['content-type'].includes('json')) {
+    if (!req.body || Object.keys(req.body).length === 0) {
+      console.warn('⚠️ Body JSON potentiellement non parsé pour', req.method, req.path);
+      console.warn('   Content-Type:', req.headers['content-type']);
+      console.warn('   Body:', req.body);
+    }
+  }
+  next();
+});
 
 // Configuration de la session (nécessaire pour Passport)
 app.use(session({
@@ -115,13 +170,25 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
-// Log des requêtes en développement
-if (process.env.NODE_ENV === 'development') {
-  app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
-    next();
-  });
-}
+// Log des requêtes (toujours actif pour diagnostiquer les problèmes CORS/email)
+app.use((req, res, next) => {
+  // Log détaillé pour les requêtes POST importantes
+  if (req.method === 'POST' && (
+    req.path.includes('/forgot-password') || 
+    req.path.includes('/register') || 
+    req.path.includes('/verify-email') ||
+    req.path.includes('/reset-password')
+  )) {
+    console.log(`\n🌐 ${req.method} ${req.path}`);
+    console.log('   Origin:', req.headers.origin || '(aucun)');
+    console.log('   Content-Type:', req.headers['content-type'] || '(aucun)');
+    console.log('   IP:', req.ip || req.connection.remoteAddress);
+    console.log('   Body keys:', req.body ? Object.keys(req.body).join(', ') : 'body is empty/undefined');
+    console.log('   Body:', req.body ? JSON.stringify(req.body) : 'N/A');
+    console.log('   User-Agent:', req.get('user-agent') || '(aucun)');
+  }
+  next();
+});
 
 // Servir les fichiers statiques (uploads)
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));

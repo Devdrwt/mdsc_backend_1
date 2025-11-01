@@ -78,8 +78,11 @@ exports.validateEmailVerification = [
   body('token')
     .notEmpty()
     .withMessage('Token de vérification requis')
-    .isUUID()
-    .withMessage('Format de token invalide'),
+    .trim()
+    .isLength({ min: 64, max: 64 })
+    .withMessage('Format de token invalide')
+    .matches(/^[a-f0-9]{64}$/i)
+    .withMessage('Format de token invalide (doit être un hash SHA-256)'),
 ];
 
 // Validation pour le renvoi d'email de vérification

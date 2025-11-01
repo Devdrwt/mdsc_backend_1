@@ -26,6 +26,10 @@ router.post('/login',
   authController.login
 );
 
+// Route GET pour la vérification d'email (lien dans l'email)
+router.get('/verify-email', authController.verifyEmail);
+
+// Route POST pour la vérification d'email (via API)
 router.post('/verify-email', 
   validateEmailVerification, 
   handleValidationErrors, 

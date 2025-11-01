@@ -123,13 +123,31 @@ exports.verifyEmail = async (req, res) => {
   const connection = await pool.getConnection();
   
   try {
-    const { token } = req.body;
-    const providedHash = crypto.createHash('sha256').update(String(token)).digest('hex');
+    // Le token peut venir de req.query (GET) ou req.body (POST)
+    const token = req.query.token || req.body.token;
+    
+    if (!token) {
+      return res.status(400).json({
+        success: false,
+        message: 'Token de vérification requis'
+      });
+    }
+
+    // Le token dans l'email est déjà un hash SHA-256, pas besoin de le re-hasher
+    const tokenHash = String(token).trim();
+
+    // Vérifier que c'est bien un hash SHA-256 (64 caractères hexadécimaux)
+    if (!/^[a-f0-9]{64}$/i.test(tokenHash)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Format de token invalide'
+      });
+    }
 
     // Vérifier le token
     const [tokens] = await connection.query(
       'SELECT user_id, expires_at FROM email_verification_tokens WHERE token = ?',
-      [providedHash]
+      [tokenHash]
     );
 
     if (tokens.length === 0) {
@@ -143,7 +161,7 @@ exports.verifyEmail = async (req, res) => {
 
     // Vérifier l'expiration
     if (new Date() > new Date(expires_at)) {
-      await connection.query('DELETE FROM email_verification_tokens WHERE token = ?', [providedHash]);
+      await connection.query('DELETE FROM email_verification_tokens WHERE token = ?', [tokenHash]);
       return res.status(400).json({
         success: false,
         message: 'Le token de vérification a expiré. Veuillez demander un nouveau lien.'
@@ -157,7 +175,7 @@ exports.verifyEmail = async (req, res) => {
     );
 
     // Supprimer le token utilisé
-    await connection.query('DELETE FROM email_verification_tokens WHERE token = ?', [providedHash]);
+    await connection.query('DELETE FROM email_verification_tokens WHERE token = ?', [tokenHash]);
 
     res.json({
       success: true,

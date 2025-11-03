@@ -28,12 +28,19 @@ const enrollInCourse = async (req, res) => {
       });
     }
 
-    // Vérifier que le cours existe et est publié
-    const courseQuery = `
-      SELECT id, max_students, enrollment_deadline, course_start_date, prerequisite_course_id
+    // Vérifier que le cours existe et est publié (ou si l'utilisateur est l'instructeur/admin)
+    const userRole = req.user?.role;
+    let courseQuery = `
+      SELECT id, max_students, enrollment_deadline, course_start_date, prerequisite_course_id, instructor_id
       FROM courses 
-      WHERE id = ? AND is_published = TRUE
+      WHERE id = ?
     `;
+    
+    // Si l'utilisateur n'est pas instructeur/admin, ne montrer que les cours publiés
+    if (userRole !== 'instructor' && userRole !== 'admin') {
+      courseQuery += ' AND is_published = TRUE';
+    }
+    
     const [courses] = await pool.execute(courseQuery, [courseId]);
 
     if (courses.length === 0) {
@@ -66,11 +73,16 @@ const enrollInCourse = async (req, res) => {
       }
     }
 
-    // Vérifier les prérequis si nécessaire
-    if (course.prerequisite_course_id) {
+    // Vérifier les prérequis si nécessaire (sauf pour les admins et instructeurs du cours)
+    const isInstructor = course.instructor_id && parseInt(course.instructor_id) === parseInt(userId);
+    const isAdmin = userRole === 'admin';
+    
+    if (course.prerequisite_course_id && !isAdmin && !isInstructor) {
+      // Vérifier si l'utilisateur a complété le prérequis OU est au moins inscrit
       const prerequisiteQuery = `
-        SELECT id FROM enrollments 
-        WHERE user_id = ? AND course_id = ? AND status = 'completed'
+        SELECT id, status, progress_percentage 
+        FROM enrollments 
+        WHERE user_id = ? AND course_id = ?
       `;
       const [prerequisiteEnrollments] = await pool.execute(prerequisiteQuery, [
         userId, 
@@ -85,9 +97,38 @@ const enrollInCourse = async (req, res) => {
 
         return res.status(400).json({
           success: false,
-          message: `Vous devez d'abord compléter le cours prérequis: ${prereqTitle}`,
-          prerequisite_course_id: course.prerequisite_course_id
+          message: `Vous devez d'abord vous inscrire au cours prérequis: ${prereqTitle}`,
+          prerequisite_course_id: course.prerequisite_course_id,
+          prerequisite_title: prereqTitle
         });
+      }
+      
+      // Vérifier si le prérequis est complété
+      const prerequisiteEnrollment = prerequisiteEnrollments[0];
+      if (prerequisiteEnrollment.status !== 'completed') {
+        const prereqCourseQuery = 'SELECT title FROM courses WHERE id = ?';
+        const [prereqCourses] = await pool.execute(prereqCourseQuery, [course.prerequisite_course_id]);
+        const prereqTitle = prereqCourses.length > 0 ? prereqCourses[0].title : 'cours prérequis';
+        
+        const progress = prerequisiteEnrollment.progress_percentage || 0;
+        
+        // Option: permettre l'inscription même si le prérequis n'est pas complété
+        // Définir cette variable d'environnement pour activer l'inscription avec avertissement
+        const allowEnrollmentWithWarning = process.env.ALLOW_ENROLLMENT_WITH_INCOMPLETE_PREREQUISITE === 'true';
+        
+        if (!allowEnrollmentWithWarning) {
+          return res.status(400).json({
+            success: false,
+            message: `Vous devez d'abord compléter le cours prérequis: ${prereqTitle} (Progression: ${progress}%)`,
+            prerequisite_course_id: course.prerequisite_course_id,
+            prerequisite_title: prereqTitle,
+            prerequisite_status: prerequisiteEnrollment.status,
+            prerequisite_progress: progress
+          });
+        }
+        
+        // Si autorisé, on continue avec un avertissement (le message sera ajouté dans la réponse)
+        console.log(`⚠️  Inscription autorisée malgré prérequis incomplet: ${prereqTitle} (${progress}%)`);
       }
     }
 

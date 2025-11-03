@@ -421,13 +421,13 @@ const deleteCourse = async (req, res) => {
 // Ajouter une leçon
 const addLesson = async (req, res) => {
   try {
-    const { courseId } = req.params;
+    const courseId = req.params.id || req.params.courseId; // Support both :id and :courseId routes
     const { title, description, content, video_url, duration_minutes, module_id } = req.body;
     const userId = req.user?.id ?? req.user?.userId;
 
     // Vérifier que l'utilisateur est l'instructeur du cours
     const checkQuery = 'SELECT instructor_id FROM courses WHERE id = ?';
-    const [courses] = await pool.execute(checkQuery, [courseId]);
+    const [courses] = await pool.execute(checkQuery, [sanitizeValue(courseId)]);
 
     if (courses.length === 0) {
       return res.status(404).json({
@@ -447,8 +447,8 @@ const addLesson = async (req, res) => {
     let orderQuery, nextOrder;
     if (module_id) {
       orderQuery = 'SELECT MAX(order_index) as max_order FROM lessons WHERE module_id = ?';
-      const [orderResult] = await pool.execute(orderQuery, [module_id]);
-      nextOrder = (orderResult[0].max_order || 0) + 1;
+      const [orderResult] = await pool.execute(orderQuery, [sanitizeValue(module_id)]);
+      nextOrder = (orderResult[0]?.max_order || 0) + 1;
       const query = `
         INSERT INTO lessons (course_id, module_id, title, description, content, video_url, duration_minutes, order_index, is_published)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE)
@@ -461,7 +461,7 @@ const addLesson = async (req, res) => {
         sanitizeValue(content),
         sanitizeValue(video_url),
         sanitizeValue(duration_minutes),
-        nextOrder
+        sanitizeValue(nextOrder)
       ]);
       return res.status(201).json({
         success: true,
@@ -472,8 +472,8 @@ const addLesson = async (req, res) => {
       });
     } else {
       orderQuery = 'SELECT MAX(order_index) as max_order FROM lessons WHERE course_id = ? AND (module_id IS NULL OR module_id = 0)';
-      const [orderResult] = await pool.execute(orderQuery, [courseId]);
-      nextOrder = (orderResult[0].max_order || 0) + 1;
+      const [orderResult] = await pool.execute(orderQuery, [sanitizeValue(courseId)]);
+      nextOrder = (orderResult[0]?.max_order || 0) + 1;
       const query = `
         INSERT INTO lessons (course_id, title, description, content, video_url, duration_minutes, order_index, is_published)
         VALUES (?, ?, ?, ?, ?, ?, ?, TRUE)
@@ -485,7 +485,7 @@ const addLesson = async (req, res) => {
         sanitizeValue(content),
         sanitizeValue(video_url),
         sanitizeValue(duration_minutes),
-        nextOrder
+        sanitizeValue(nextOrder)
       ]);
       return res.status(201).json({
         success: true,
@@ -648,13 +648,14 @@ const getFeaturedCourses = async (req, res) => {
 // Mettre à jour une leçon
 const updateLesson = async (req, res) => {
   try {
-    const { courseId, lessonId } = req.params;
+    const courseId = req.params.courseId || req.params.id; // Support both :id and :courseId routes
+    const { lessonId } = req.params;
     const userId = req.user?.id ?? req.user?.userId;
     const { title, description, content, video_url, duration_minutes, order_index, module_id } = req.body;
 
     // Vérifier que l'utilisateur est l'instructeur du cours
     const checkQuery = 'SELECT instructor_id FROM courses WHERE id = ?';
-    const [courses] = await pool.execute(checkQuery, [courseId]);
+    const [courses] = await pool.execute(checkQuery, [sanitizeValue(courseId)]);
 
     if (courses.length === 0) {
       return res.status(404).json({
@@ -743,12 +744,13 @@ const updateLesson = async (req, res) => {
 // Supprimer une leçon
 const deleteLesson = async (req, res) => {
   try {
-    const { courseId, lessonId } = req.params;
+    const courseId = req.params.courseId || req.params.id; // Support both :id and :courseId routes
+    const { lessonId } = req.params;
     const userId = req.user?.id ?? req.user?.userId;
 
     // Vérifier que l'utilisateur est l'instructeur du cours
     const checkQuery = 'SELECT instructor_id FROM courses WHERE id = ?';
-    const [courses] = await pool.execute(checkQuery, [courseId]);
+    const [courses] = await pool.execute(checkQuery, [sanitizeValue(courseId)]);
 
     if (courses.length === 0) {
       return res.status(404).json({
@@ -822,7 +824,7 @@ const deleteReview = async (req, res) => {
 // Récupérer les inscrits d'un cours avec infos étudiant et progression (pagination + filtres)
 const getCourseEnrollments = async (req, res) => {
   try {
-    const { courseId } = req.params;
+    const courseId = req.params.courseId || req.params.id; // Support both :id and :courseId routes
     const requesterId = req.user?.id ?? req.user?.userId ?? null;
     const requesterRole = req.user?.role;
     const {
@@ -988,24 +990,54 @@ const getMyCourses = async (req, res) => {
 // Récupérer les leçons d'un cours
 const getCourseLessons = async (req, res) => {
   try {
-    const { courseId } = req.params;
+    const courseId = req.params.courseId || req.params.id; // Support both :id and :courseId routes
     const userId = req.user?.id ?? req.user?.userId;
+    const userRole = req.user?.role;
 
-    // Vérifier que l'utilisateur est inscrit au cours
-    const [enrollment] = await pool.execute(
-      'SELECT * FROM enrollments WHERE course_id = ? AND user_id = ?',
-      [courseId, userId]
+    // Vérifier que le cours existe et récupérer l'instructeur
+    const [courses] = await pool.execute(
+      'SELECT id, instructor_id FROM courses WHERE id = ?',
+      [sanitizeValue(courseId)]
     );
 
-    if (enrollment.length === 0) {
-      return res.status(403).json({
+    if (courses.length === 0) {
+      return res.status(404).json({
         success: false,
-        message: 'Vous n\'êtes pas inscrit à ce cours'
+        message: 'Cours non trouvé'
       });
     }
 
+    const course = courses[0];
+    const isInstructor = course.instructor_id && parseInt(course.instructor_id) === parseInt(userId);
+    const isAdmin = userRole === 'admin';
+
+    // Autoriser l'accès si l'utilisateur est l'instructeur du cours ou un admin
+    // Sinon, vérifier l'inscription
+    if (!isInstructor && !isAdmin) {
+      const [enrollment] = await pool.execute(
+        'SELECT * FROM enrollments WHERE course_id = ? AND user_id = ?',
+        [courseId, userId]
+      );
+
+      if (enrollment.length === 0) {
+        return res.status(403).json({
+          success: false,
+          message: 'Vous n\'êtes pas inscrit à ce cours'
+        });
+      }
+    }
+
     // Récupérer les leçons du cours
-    const [lessons] = await pool.execute(`
+    // Pour les instructeurs/admins, on ne récupère pas la progression (car ils ne sont pas inscrits)
+    const query = isInstructor || isAdmin ? `
+      SELECT 
+        l.*,
+        NULL as is_completed,
+        NULL as completed_at
+      FROM lessons l
+      WHERE l.course_id = ?
+      ORDER BY l.order_index ASC
+    ` : `
       SELECT 
         l.*,
         lp.is_completed,
@@ -1014,7 +1046,11 @@ const getCourseLessons = async (req, res) => {
       LEFT JOIN lesson_progress lp ON l.id = lp.lesson_id AND lp.user_id = ?
       WHERE l.course_id = ?
       ORDER BY l.order_index ASC
-    `, [userId, courseId]);
+    `;
+
+    const [lessons] = isInstructor || isAdmin 
+      ? await pool.execute(query, [courseId])
+      : await pool.execute(query, [userId, courseId]);
 
     res.json({
       success: true,

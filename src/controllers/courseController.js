@@ -1,4 +1,7 @@
 const { pool } = require('../config/database');
+
+// Fonction utilitaire pour convertir undefined en null (requis pour MySQL2)
+const sanitizeValue = (value) => value === undefined ? null : value;
 const { v4: uuidv4 } = require('uuid');
 
 // Récupérer tous les cours (avec pagination et filtres)
@@ -104,7 +107,48 @@ const getCourseById = async (req, res) => {
     const userId = req.user?.id ?? req.user?.userId;
     const userRole = req.user?.role;
 
-    // Vérifier si l'utilisateur est l'instructeur ou admin (pour voir les cours non publiés)
+    // Vérifier d'abord si le cours existe et récupérer ses informations de base
+    const [courseExists] = await pool.execute(
+      'SELECT id, instructor_id, is_published FROM courses WHERE id = ?', 
+      [id]
+    );
+    
+    if (courseExists.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Cours non trouvé'
+      });
+    }
+    
+    const courseInfo = courseExists[0];
+    
+    // Extraire l'ID utilisateur du token (peut être 'id' ou 'userId')
+    const tokenUserId = req.user?.id || req.user?.userId;
+    const courseInstructorId = parseInt(courseInfo.instructor_id);
+    const isInstructor = tokenUserId && parseInt(tokenUserId) === courseInstructorId;
+    const isAdmin = userRole === 'admin';
+    
+    // Log pour débogage
+    console.log('🔍 Course access check:', {
+      courseId: id,
+      courseInstructorId,
+      tokenUserId,
+      parsedTokenUserId: tokenUserId ? parseInt(tokenUserId) : null,
+      isInstructor,
+      isAdmin,
+      isPublished: courseInfo.is_published,
+      userRole
+    });
+    
+    // Vérifier les permissions : si non publié, seul l'instructeur ou admin peut le voir
+    if (!courseInfo.is_published && !isInstructor && !isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Ce cours n\'est pas encore publié'
+      });
+    }
+
+    // Construire la requête principale
     let query = `
       SELECT 
         c.*,
@@ -125,14 +169,8 @@ const getCourseById = async (req, res) => {
     `;
     
     // Si l'utilisateur n'est pas l'instructeur/admin, ne montrer que les cours publiés
-    if (!userId || (userRole !== 'admin' && userRole !== 'instructor')) {
+    if (!isInstructor && !isAdmin) {
       query += ' AND c.is_published = TRUE';
-    } else {
-      // Vérifier si l'utilisateur est l'instructeur de ce cours
-      const [checkCourse] = await pool.execute('SELECT instructor_id FROM courses WHERE id = ?', [id]);
-      if (checkCourse.length > 0 && parseInt(checkCourse[0].instructor_id) !== parseInt(userId) && userRole !== 'admin') {
-        query += ' AND c.is_published = TRUE';
-      }
     }
     
     query += ' GROUP BY c.id';
@@ -234,9 +272,22 @@ const createCourse = async (req, res) => {
     `;
 
     const [result] = await pool.execute(query, [
-      title, description, short_description, instructor_id, category_id,
-      thumbnail_url, video_url, duration_minutes, difficulty, language,
-      price, currency, max_students, enrollment_deadline, course_start_date, course_end_date
+      sanitizeValue(title),
+      sanitizeValue(description),
+      sanitizeValue(short_description),
+      sanitizeValue(instructor_id),
+      sanitizeValue(category_id),
+      sanitizeValue(thumbnail_url),
+      sanitizeValue(video_url),
+      sanitizeValue(duration_minutes),
+      sanitizeValue(difficulty),
+      sanitizeValue(language),
+      sanitizeValue(price),
+      sanitizeValue(currency),
+      sanitizeValue(max_students),
+      sanitizeValue(enrollment_deadline),
+      sanitizeValue(course_start_date),
+      sanitizeValue(course_end_date)
     ]);
 
     res.status(201).json({
@@ -296,7 +347,7 @@ const updateCourse = async (req, res) => {
     allowedFields.forEach(field => {
       if (req.body[field] !== undefined) {
         updateFields.push(`${field} = ?`);
-        values.push(req.body[field]);
+        values.push(sanitizeValue(req.body[field]));
       }
     });
 
@@ -403,7 +454,14 @@ const addLesson = async (req, res) => {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE)
       `;
       const [result] = await pool.execute(query, [
-        courseId, module_id, title, description, content, video_url, duration_minutes, nextOrder
+        sanitizeValue(courseId),
+        sanitizeValue(module_id),
+        sanitizeValue(title),
+        sanitizeValue(description),
+        sanitizeValue(content),
+        sanitizeValue(video_url),
+        sanitizeValue(duration_minutes),
+        nextOrder
       ]);
       return res.status(201).json({
         success: true,
@@ -421,7 +479,13 @@ const addLesson = async (req, res) => {
         VALUES (?, ?, ?, ?, ?, ?, ?, TRUE)
       `;
       const [result] = await pool.execute(query, [
-        courseId, title, description, content, video_url, duration_minutes, nextOrder
+        sanitizeValue(courseId),
+        sanitizeValue(title),
+        sanitizeValue(description),
+        sanitizeValue(content),
+        sanitizeValue(video_url),
+        sanitizeValue(duration_minutes),
+        nextOrder
       ]);
       return res.status(201).json({
         success: true,

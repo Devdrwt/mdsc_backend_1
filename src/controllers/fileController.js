@@ -321,9 +321,228 @@ const getPendingFiles = async (req, res) => {
   }
 };
 
+// Configuration multer pour l'upload de fichiers de cours
+const courseStorage = multer.diskStorage({
+  destination: async (req, file, cb) => {
+    // Déterminer le dossier selon la catégorie
+    let category = null;
+    try {
+      let options = {};
+      try {
+        options = req.body.options ? JSON.parse(req.body.options) : {};
+      } catch (e) {
+        // Ignorer
+      }
+      category = options.category || req.body.category;
+      
+      let uploadDir;
+      if (category === 'course_thumbnail') {
+        uploadDir = path.join(__dirname, '../../uploads/courses/thumbnails');
+      } else if (category === 'course_intro_video') {
+        uploadDir = path.join(__dirname, '../../uploads/courses/videos');
+      } else {
+        // Par défaut, utiliser le dossier profiles (pour compatibilité avec uploads de profil)
+        uploadDir = path.join(__dirname, '../../uploads/profiles');
+      }
+      
+      await fs.mkdir(uploadDir, { recursive: true });
+      cb(null, uploadDir);
+    } catch (error) {
+      cb(error);
+    }
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = path.extname(file.originalname);
+    const userId = req.user?.id ?? req.user?.userId ?? 'anon';
+    cb(null, `${userId}-${uniqueSuffix}${ext}`);
+  }
+});
+
+const courseFileFilter = (req, file, cb) => {
+  try {
+    let options = {};
+    try {
+      options = req.body.options ? JSON.parse(req.body.options) : {};
+    } catch (e) {
+      // Ignorer l'erreur de parsing
+    }
+    
+    const category = options.category || req.body.category;
+    
+    if (category === 'course_thumbnail') {
+      // Images seulement
+      const allowedMimes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+      if (allowedMimes.includes(file.mimetype)) {
+        cb(null, true);
+      } else {
+        cb(new Error('Format de fichier non supporté. Utilisez JPG ou PNG.'), false);
+      }
+    } else if (category === 'course_intro_video') {
+      // Vidéos seulement
+      const allowedMimes = ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-msvideo'];
+      if (allowedMimes.includes(file.mimetype)) {
+        cb(null, true);
+      } else {
+        cb(new Error('Format de fichier non supporté. Utilisez MP4.'), false);
+      }
+    } else {
+      // Accepter images et vidéos par défaut (pour compatibilité avec uploads de profil)
+      // Plus PDF pour les pièces d'identité
+      const allowedMimes = [
+        'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+        'video/mp4', 'video/webm', 'video/quicktime', 'video/x-msvideo',
+        'application/pdf'
+      ];
+      if (allowedMimes.includes(file.mimetype)) {
+        cb(null, true);
+      } else {
+        cb(new Error('Type de fichier non autorisé'), false);
+      }
+    }
+  } catch (error) {
+    cb(error);
+  }
+};
+
+const uploadCourse = multer({
+  storage: courseStorage,
+  fileFilter: courseFileFilter,
+  limits: {
+    fileSize: 100 * 1024 * 1024 // 100MB max pour vidéos
+  }
+});
+
+// Upload d'un fichier de cours (thumbnail ou vidéo introductive)
+const uploadCourseFile = async (req, res) => {
+  try {
+    const userId = req.user?.id ?? req.user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Non authentifié' 
+      });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'Aucun fichier fourni'
+      });
+    }
+
+    // Lire les options
+    let options = {};
+    try {
+      options = req.body.options ? JSON.parse(req.body.options) : {};
+    } catch (e) {
+      console.log('Erreur parsing options:', e);
+    }
+
+    const category = options.category || 'other';
+    
+    // Valider la catégorie
+    if (!['course_thumbnail', 'course_intro_video'].includes(category)) {
+      return res.status(400).json({
+        success: false,
+        message: `Catégorie non supportée: ${category}. Utilisez 'course_thumbnail' ou 'course_intro_video'.`
+      });
+    }
+
+    // Validation taille selon catégorie
+    if (category === 'course_thumbnail' && req.file.size > 5 * 1024 * 1024) {
+      return res.status(413).json({
+        success: false,
+        message: 'Fichier trop volumineux. Taille maximale: 5 MB'
+      });
+    }
+    
+    if (category === 'course_intro_video' && req.file.size > 100 * 1024 * 1024) {
+      return res.status(413).json({
+        success: false,
+        message: 'Fichier trop volumineux. Taille maximale: 100 MB'
+      });
+    }
+
+    // Déterminer file_category pour media_files
+    const fileCategory = category === 'course_thumbnail' ? 'image' : 'video';
+    
+    // Construire l'URL
+    const apiUrl = process.env.API_URL || `http://localhost:${process.env.PORT || 5000}`;
+    const folder = category === 'course_thumbnail' ? 'courses/thumbnails' : 'courses/videos';
+    const fileUrl = `${apiUrl}/uploads/${folder}/${req.file.filename}`;
+
+    // Sauvegarder dans media_files
+    const insertQuery = `
+      INSERT INTO media_files (
+        course_id, filename, original_filename,
+        file_type, file_category, file_size,
+        storage_type, storage_path, url,
+        uploaded_by, uploaded_at
+      ) VALUES (NULL, ?, ?, ?, ?, ?, 'local', ?, ?, ?, NOW())
+    `;
+
+    const [result] = await pool.execute(insertQuery, [
+      req.file.filename,
+      req.file.originalname,
+      req.file.mimetype,
+      fileCategory,
+      req.file.size,
+      req.file.path,
+      fileUrl,
+      userId
+    ]);
+
+    // Générer thumbnail URL (pour images, c'est le même fichier, pour vidéos on pourrait générer plus tard)
+    let thumbnailUrl = null;
+    if (category === 'course_thumbnail') {
+      thumbnailUrl = fileUrl;
+    }
+
+    // Préparer les métadonnées
+    const metadata = {};
+    if (category === 'course_thumbnail') {
+      // Pour images, on pourrait extraire width/height avec sharp ou jimp
+      metadata.category = 'image';
+    } else {
+      metadata.category = 'video';
+      // Pour vidéos, on pourrait extraire duration avec ffmpeg
+    }
+
+    // Format de réponse attendu par le frontend
+    res.status(201).json({
+      success: true,
+      data: {
+        id: result.insertId.toString(), // Utiliser l'ID de la base
+        userId: userId.toString(),
+        filename: req.file.filename,
+        originalName: req.file.originalname,
+        mimeType: req.file.mimetype,
+        size: req.file.size,
+        url: fileUrl,
+        storage_path: req.file.path,
+        thumbnailUrl: thumbnailUrl,
+        metadata: metadata,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de l\'upload du fichier de cours:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Erreur lors de l\'upload du fichier'
+    });
+  }
+};
+
 module.exports = {
   upload,
+  uploadCourse,
   uploadProfileFile,
+  uploadCourseFile,
   getUserFiles,
   deleteProfileFile,
   verifyFile,

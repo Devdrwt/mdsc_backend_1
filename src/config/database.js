@@ -12,14 +12,41 @@ const pool = mysql.createPool({
   connectionLimit: 10,
   queueLimit: 0,
   enableKeepAlive: true,
-  keepAliveInitialDelay: 0
+  keepAliveInitialDelay: 0,
+  // Configuration UTF-8 pour gérer les accents
+  charset: 'utf8mb4',
+  collation: 'utf8mb4_unicode_ci',
 });
+
+// Wrapper pour s'assurer que chaque connexion utilise utf8mb4
+const originalGetConnection = pool.getConnection.bind(pool);
+pool.getConnection = async function() {
+  const connection = await originalGetConnection();
+  
+  // Configurer utf8mb4 sur cette connexion
+  try {
+    await connection.query("SET NAMES 'utf8mb4' COLLATE 'utf8mb4_unicode_ci'");
+    await connection.query("SET CHARACTER SET utf8mb4");
+    await connection.query("SET character_set_connection = utf8mb4");
+    await connection.query("SET character_set_results = utf8mb4");
+  } catch (error) {
+    console.warn('⚠️ Erreur lors de la configuration UTF-8:', error.message);
+  }
+  
+  return connection;
+};
 
 // Test de la connexion
 const testConnection = async () => {
   try {
     const connection = await pool.getConnection();
     console.log('✅ Connexion à MariaDB réussie');
+    
+    // S'assurer que la connexion utilise utf8mb4
+    await connection.query("SET NAMES 'utf8mb4' COLLATE 'utf8mb4_unicode_ci'");
+    await connection.query("SET CHARACTER SET utf8mb4");
+    await connection.query("SET character_set_connection = utf8mb4");
+    
     connection.release();
     return true;
   } catch (error) {

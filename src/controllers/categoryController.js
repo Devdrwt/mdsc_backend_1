@@ -9,6 +9,7 @@ const getAllCategories = async (req, res) => {
         COUNT(co.id) as courses_count
       FROM categories c
       LEFT JOIN courses co ON c.id = co.category_id AND co.is_published = TRUE
+      WHERE c.is_active = TRUE
       GROUP BY c.id
       ORDER BY c.name ASC
     `;
@@ -25,6 +26,7 @@ const getAllCategories = async (req, res) => {
         icon: category.icon,
         is_active: category.is_active,
         created_at: category.created_at,
+        updated_at: category.updated_at,
         courses_count: category.courses_count
       }))
     });

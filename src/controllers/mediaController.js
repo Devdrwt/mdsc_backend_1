@@ -8,7 +8,14 @@ const MediaService = require('../services/mediaService');
 const uploadFile = async (req, res) => {
   try {
     const { content_type, lesson_id, course_id } = req.body;
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Non authentifié'
+      });
+    }
 
     if (!req.file) {
       return res.status(400).json({
@@ -85,7 +92,14 @@ const uploadFile = async (req, res) => {
 const uploadBulkFiles = async (req, res) => {
   try {
     const { content_type, lesson_id, course_id } = req.body;
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Non authentifié'
+      });
+    }
 
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({
@@ -198,7 +212,14 @@ const getCourseMediaFiles = async (req, res) => {
 const deleteMediaFile = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.user.id;
+    const userId = req.user?.id ?? req.user?.userId;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Non authentifié'
+      });
+    }
 
     // Vérifier que l'utilisateur peut supprimer ce fichier
     const mediaFile = await MediaService.getMediaFile(id);

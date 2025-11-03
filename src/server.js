@@ -97,8 +97,20 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Configuration Express avec UTF-8
+app.use(express.json({ charset: 'utf-8' }));
+app.use(express.urlencoded({ extended: true, charset: 'utf-8' }));
+
+// Middleware pour s'assurer que toutes les réponses JSON ont le charset UTF-8
+app.use((req, res, next) => {
+  // Pour toutes les réponses JSON, ajouter le charset UTF-8
+  const originalJson = res.json;
+  res.json = function(data) {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    return originalJson.call(this, data);
+  };
+  next();
+});
 
 // Configuration de la session (nécessaire pour Passport)
 app.use(session({

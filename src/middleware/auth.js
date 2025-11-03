@@ -25,6 +25,15 @@ exports.authenticateToken = async (req, res, next) => {
       });
     }
 
+    // Vérifier que le token ressemble à un JWT (format: xxx.xxx.xxx)
+    if (!token.includes('.')) {
+      console.log('❌ Token format invalid (not a JWT):', token.substring(0, 20) + '...');
+      return res.status(401).json({
+        success: false,
+        message: 'Non autorisé - Format de token invalide. Utilisez un token JWT.'
+      });
+    }
+
     // Vérifier le token
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
@@ -33,9 +42,17 @@ exports.authenticateToken = async (req, res, next) => {
       next();
     } catch (error) {
       console.log('❌ Token invalid:', error.message);
+      let errorMessage = 'Non autorisé - Token invalide ou expiré';
+      
+      if (error.name === 'TokenExpiredError') {
+        errorMessage = 'Non autorisé - Token expiré';
+      } else if (error.name === 'JsonWebTokenError') {
+        errorMessage = 'Non autorisé - Token invalide';
+      }
+      
       return res.status(401).json({
         success: false,
-        message: 'Non autorisé - Token invalide ou expiré'
+        message: errorMessage
       });
     }
 
@@ -50,6 +67,37 @@ exports.authenticateToken = async (req, res, next) => {
 
 // Alias pour compatibilité
 exports.protect = exports.authenticateToken;
+
+// Middleware d'authentification optionnelle (ne retourne pas d'erreur si pas de token)
+exports.optionalAuth = async (req, res, next) => {
+  try {
+    let token;
+
+    // Récupérer le token depuis le header Authorization
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+      token = req.headers.authorization.split(' ')[1];
+    }
+
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        req.user = decoded;
+        console.log('✅ Optional auth: Token valid for user:', decoded.email);
+      } catch (error) {
+        console.log('⚠️ Optional auth: Token invalid, continuing without auth:', error.message);
+        // Ne pas bloquer, continuer sans authentification
+      }
+    } else {
+      console.log('ℹ️ Optional auth: No token provided, continuing without auth');
+    }
+
+    next();
+  } catch (error) {
+    console.error('Erreur middleware optional auth:', error);
+    // En cas d'erreur, continuer sans authentification
+    next();
+  }
+};
 
 // Middleware pour vérifier le rôle de l'utilisateur
 exports.authorize = (...roles) => {

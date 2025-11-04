@@ -9,10 +9,22 @@ exports.authenticateToken = async (req, res, next) => {
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
       token = req.headers.authorization.split(' ')[1];
     }
+    
+    // Fallback: chercher le token dans les cookies (pour compatibilité)
+    if (!token && req.cookies && req.cookies.token) {
+      token = req.cookies.token;
+    }
+    
+    // Fallback: chercher le token dans les query params (pour développement uniquement)
+    if (!token && req.query.token && process.env.NODE_ENV !== 'production') {
+      token = req.query.token;
+    }
 
     // Log pour débogage
     console.log(`🔐 Auth check for ${req.method} ${req.path}:`, {
       hasAuth: !!req.headers.authorization,
+      hasCookie: !!(req.cookies && req.cookies.token),
+      hasQueryToken: !!req.query.token,
       tokenLength: token ? token.length : 0,
       userAgent: req.get('user-agent')?.substring(0, 50)
     });

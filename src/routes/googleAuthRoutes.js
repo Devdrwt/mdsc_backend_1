@@ -16,12 +16,15 @@ router.get('/google',
       });
     }
     // Stocker le rôle dans la session pour l'utiliser après le callback
-    req.session.userRole = req.query.role || 'student';
+    if (req.query.role) {
+      req.session.userRole = req.query.role;
+    } else {
+      req.session.userRole = 'student';
+    }
     next();
   },
   passport.authenticate('google', { 
-    scope: ['profile', 'email'],
-    session: false
+    scope: ['profile', 'email']
   })
 );
 
@@ -37,12 +40,28 @@ router.get('/google/callback',
     next();
   },
   passport.authenticate('google', { 
-    failureRedirect: '/login?error=google_auth_failed',
+    failureRedirect: false,
     session: false
   }),
   async (req, res) => {
     try {
+      console.log('✅ [Google OAuth] Callback reçu');
+      
+      // Récupérer l'URL du frontend depuis la variable d'environnement ou utiliser localhost:3000 par défaut
+      const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:3000').trim();
+      
+      // Récupérer l'URL de callback depuis la query string ou utiliser la valeur par défaut
+      const callbackUrl = req.query.callback || `${frontendUrl}/auth/google/callback`;
+      
+      // Vérifier si l'authentification a réussi
+      if (!req.user) {
+        console.error('❌ [Google OAuth] Authentification échouée - req.user est null');
+        const errorUrl = `${callbackUrl}?error=${encodeURIComponent('L\'authentification Google a échoué. Veuillez réessayer.')}`;
+        return res.redirect(errorUrl);
+      }
+
       const user = req.user;
+      console.log('✅ [Google OAuth] User authenticated:', user.email);
 
       // Générer le token JWT
       const token = jwt.sign(
@@ -62,60 +81,36 @@ router.get('/google/callback',
         firstName: user.first_name,
         lastName: user.last_name,
         role: user.role,
-        profilePicture: user.profile_picture,
-        emailVerified: user.is_email_verified === 1,
-        organization: user.organization,
-        phone: user.phone,
-        country: user.country
+        profilePicture: user.profile_picture || null,
+        emailVerified: user.is_email_verified === 1 || user.is_email_verified === true,
+        isActive: user.is_active !== 0 && user.is_active !== false,
+        organization: user.organization || '',
+        phone: user.phone || '',
+        country: user.country || ''
       };
 
-      // Rediriger vers la page de succès avec les données
-      // On utilise une page HTML intermédiaire pour envoyer les données au parent
-      res.send(`
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>Authentification Google réussie</title>
-          </head>
-          <body>
-            <script>
-              window.opener.postMessage({
-                type: 'GOOGLE_AUTH_SUCCESS',
-                user: ${JSON.stringify(userData)},
-                token: '${token}'
-              }, window.location.origin);
-              window.close();
-            </script>
-            <div style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-              <h2>Authentification réussie !</h2>
-              <p>Cette fenêtre va se fermer automatiquement...</p>
-            </div>
-          </body>
-        </html>
-      `);
+      // Encoder les données utilisateur en JSON
+      const userJson = JSON.stringify(userData);
+      
+      // Construire l'URL de redirection avec les données
+      const redirectUrl = `${callbackUrl}?token=${encodeURIComponent(token)}&user=${encodeURIComponent(userJson)}`;
+      
+      console.log('🔄 [Google OAuth] Redirection vers:', callbackUrl);
+      console.log('📤 [Google OAuth] Token généré pour user:', user.email);
+      
+      // Rediriger vers le frontend
+      res.redirect(redirectUrl);
+      
     } catch (error) {
-      console.error('Google callback error:', error);
-      res.send(`
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>Erreur d'authentification</title>
-          </head>
-          <body>
-            <script>
-              window.opener.postMessage({
-                type: 'GOOGLE_AUTH_ERROR',
-                error: 'Une erreur est survenue lors de l\'authentification.'
-              }, window.location.origin);
-              window.close();
-            </script>
-            <div style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-              <h2>Erreur d'authentification</h2>
-              <p>Cette fenêtre va se fermer automatiquement...</p>
-            </div>
-          </body>
-        </html>
-      `);
+      console.error('❌ [Google OAuth] Erreur dans le callback:', error);
+      
+      // En cas d'erreur, rediriger vers le frontend avec un message d'erreur
+      const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:3000').trim();
+      const callbackUrl = req.query.callback || `${frontendUrl}/auth/google/callback`;
+      const errorMessage = error.message || 'Une erreur est survenue lors de l\'authentification.';
+      const errorUrl = `${callbackUrl}?error=${encodeURIComponent(errorMessage)}`;
+      
+      res.redirect(errorUrl);
     }
   }
 );

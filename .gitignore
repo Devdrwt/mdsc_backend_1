@@ -38,3 +38,8 @@ coverage/
 dist/
 build/
 
+# Uploads (fichiers générés dynamiquement)
+uploads/*
+!uploads/.gitkeep
+!uploads/**/.gitkeep
+

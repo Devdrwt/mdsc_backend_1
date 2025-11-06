@@ -30,8 +30,9 @@ const enrollInCourse = async (req, res) => {
 
     // Vérifier que le cours existe et est publié (ou si l'utilisateur est l'instructeur/admin)
     const userRole = req.user?.role;
+    const { paymentId } = req.body; // NOUVEAU : Support paiement
     let courseQuery = `
-      SELECT id, max_students, enrollment_deadline, course_start_date, prerequisite_course_id, instructor_id
+      SELECT id, max_students, enrollment_deadline, course_start_date, prerequisite_course_id, instructor_id, price
       FROM courses 
       WHERE id = ?
     `;
@@ -51,6 +52,37 @@ const enrollInCourse = async (req, res) => {
     }
 
     const course = courses[0];
+
+    // NOUVEAU : Vérifier le paiement si cours payant
+    if (course.price && course.price > 0) {
+      if (!paymentId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Ce cours est payant. Un paiement est requis.',
+          requires_payment: true
+        });
+      }
+
+      // Vérifier que le paiement est complété
+      const [payments] = await pool.execute(
+        'SELECT id, status FROM payments WHERE id = ? AND user_id = ? AND course_id = ?',
+        [paymentId, userId, courseId]
+      );
+
+      if (payments.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'Paiement non trouvé'
+        });
+      }
+
+      if (payments[0].status !== 'completed') {
+        return res.status(400).json({
+          success: false,
+          message: 'Le paiement n\'est pas complété. Statut: ' + payments[0].status
+        });
+      }
+    }
 
     // Vérifier la date limite d'inscription
     if (course.enrollment_deadline && new Date(course.enrollment_deadline) < new Date()) {
@@ -143,12 +175,12 @@ const enrollInCourse = async (req, res) => {
       });
     }
 
-    // Créer l'inscription avec status 'enrolled'
+    // Créer l'inscription avec status 'enrolled' et payment_id si applicable
     const enrollmentQuery = `
-      INSERT INTO enrollments (user_id, course_id, status, enrolled_at)
-      VALUES (?, ?, 'enrolled', NOW())
+      INSERT INTO enrollments (user_id, course_id, status, enrolled_at, payment_id)
+      VALUES (?, ?, 'enrolled', NOW(), ?)
     `;
-    await pool.execute(enrollmentQuery, [userId, courseId]);
+    await pool.execute(enrollmentQuery, [userId, courseId, course.price > 0 ? paymentId : null]);
 
     res.status(201).json({
       success: true,

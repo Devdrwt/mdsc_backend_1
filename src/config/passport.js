@@ -45,6 +45,8 @@ if (GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET) {
           user.profile_picture = profilePicture;
           user.is_email_verified = 1;
         }
+        
+        console.log(`✅ [Google OAuth] Utilisateur existant connecté: ${user.email} (rôle: ${user.role})`);
       } else {
         // Créer un nouveau compte utilisateur
         // Générer un mot de passe aléatoire (car l'utilisateur utilise Google pour se connecter)
@@ -52,7 +54,33 @@ if (GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET) {
         const hashedPassword = await bcrypt.hash(randomPassword, 10);
 
         // Récupérer le rôle de la session (passé lors de l'authentification Google)
-        const userRole = request.session && request.session.userRole ? request.session.userRole : 'student';
+        // Le rôle peut aussi être passé via state dans certains cas, mais on privilégie la session
+        let userRole = null;
+        
+        if (request.session && request.session.userRole) {
+          userRole = request.session.userRole;
+          console.log(`✅ [Google OAuth] Rôle récupéré de la session: ${userRole}`);
+        } else {
+          // Si aucun rôle n'est fourni, on ne peut pas créer le compte
+          // Le frontend doit rediriger vers /select-role
+          console.warn(`⚠️  [Google OAuth] Aucun rôle trouvé dans la session pour le nouvel utilisateur`);
+          return done(null, false, { 
+            message: 'Rôle non spécifié. Veuillez sélectionner votre rôle.',
+            code: 'ROLE_REQUIRED',
+            email: email
+          });
+        }
+        
+        // Valider le rôle avant insertion
+        const validRoles = ['student', 'instructor', 'admin'];
+        if (!validRoles.includes(userRole)) {
+          console.warn(`⚠️  [Google OAuth] Rôle invalide: ${userRole}`);
+          return done(null, false, { 
+            message: 'Rôle invalide. Veuillez sélectionner un rôle valide.',
+            code: 'INVALID_ROLE',
+            email: email
+          });
+        }
 
         const [result] = await pool.execute(
           `INSERT INTO users (
@@ -77,6 +105,7 @@ if (GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET) {
         );
 
         user = newUsers[0];
+        console.log(`✅ [Google OAuth] Nouvel utilisateur créé avec le rôle: ${user.role}`);
       }
 
       // Vérifier si le compte est actif

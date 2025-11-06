@@ -1,32 +1,115 @@
 const { pool } = require('../config/database');
 
-// Envoyer un message
-const sendMessage = async (req, res) => {
+// Rechercher un utilisateur par email
+const searchUserByEmail = async (req, res) => {
   try {
-    const { recipient_id, subject, content, message_type = 'direct' } = req.body;
-    const senderId = req.user.userId;
+    const { email } = req.query;
 
-    // Vérifier que le destinataire existe
-    const recipientQuery = 'SELECT id, first_name, last_name FROM users WHERE id = ? AND is_active = TRUE';
-    const [recipients] = await pool.execute(recipientQuery, [recipient_id]);
-
-    if (recipients.length === 0) {
-      return res.status(404).json({
+    if (!email) {
+      return res.status(400).json({
         success: false,
-        message: 'Destinataire non trouvé'
+        message: 'Email requis'
       });
     }
 
-    // Insérer le message
+    const query = `
+      SELECT id, first_name, last_name, email, role, profile_picture
+      FROM users
+      WHERE email LIKE ? AND is_active = TRUE
+      LIMIT 10
+    `;
+
+    const [users] = await pool.execute(query, [`%${email}%`]);
+
+    res.json({
+      success: true,
+      data: users.map(user => ({
+        id: user.id,
+        name: `${user.first_name} ${user.last_name}`,
+        email: user.email,
+        role: user.role,
+        profile_picture: user.profile_picture
+      }))
+    });
+
+  } catch (error) {
+    console.error('Erreur:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la recherche'
+    });
+  }
+};
+
+// Envoyer un message (support recipient_id OU recipient_email)
+const sendMessage = async (req, res) => {
+  try {
+    const { recipient_id, recipient_email, subject, content, message_type = 'direct' } = req.body;
+    const senderId = req.user.userId;
+
+    // Récupérer l'email de l'expéditeur
+    const [senders] = await pool.execute('SELECT email FROM users WHERE id = ?', [senderId]);
+    if (senders.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Expéditeur non trouvé'
+      });
+    }
+    const senderEmail = senders[0].email;
+
+    let recipientId = null;
+    let recipientEmail = null;
+    let recipientName = null;
+
+    // Si recipient_id est fourni, l'utiliser
+    if (recipient_id) {
+      const recipientQuery = 'SELECT id, first_name, last_name, email FROM users WHERE id = ? AND is_active = TRUE';
+      const [recipients] = await pool.execute(recipientQuery, [recipient_id]);
+
+      if (recipients.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'Destinataire non trouvé'
+        });
+      }
+
+      recipientId = recipients[0].id;
+      recipientEmail = recipients[0].email;
+      recipientName = recipients[0].first_name + ' ' + recipients[0].last_name;
+    }
+    // Sinon, utiliser recipient_email
+    else if (recipient_email) {
+      const recipientQuery = 'SELECT id, first_name, last_name, email FROM users WHERE email = ? AND is_active = TRUE';
+      const [recipients] = await pool.execute(recipientQuery, [recipient_email]);
+
+      if (recipients.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'Destinataire non trouvé avec cet email'
+        });
+      }
+
+      recipientId = recipients[0].id;
+      recipientEmail = recipients[0].email;
+      recipientName = recipients[0].first_name + ' ' + recipients[0].last_name;
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'recipient_id ou recipient_email requis'
+      });
+    }
+
+    // Insérer le message avec sender_email et recipient_email
     const insertQuery = `
       INSERT INTO messages (
-        sender_id, recipient_id, subject, content, message_type, 
-        is_read, created_at
-      ) VALUES (?, ?, ?, ?, ?, FALSE, NOW())
+        sender_id, recipient_id, sender_email, recipient_email,
+        subject, content, message_type, is_read, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, FALSE, NOW())
     `;
 
     const [result] = await pool.execute(insertQuery, [
-      senderId, recipient_id, subject, content, message_type
+      senderId, recipientId, senderEmail, recipientEmail,
+      subject, content, message_type
     ]);
 
     res.status(201).json({
@@ -34,7 +117,8 @@ const sendMessage = async (req, res) => {
       message: 'Message envoyé avec succès',
       data: {
         id: result.insertId,
-        recipient: recipients[0].first_name + ' ' + recipients[0].last_name
+        recipient: recipientName,
+        recipient_email: recipientEmail
       }
     });
 
@@ -366,12 +450,136 @@ const getMessageStats = async (req, res) => {
   }
 };
 
+// Récupérer une conversation par email
+const getConversationByEmail = async (req, res) => {
+  try {
+    const { email } = req.params;
+    const userId = req.user.userId;
+
+    // Récupérer l'email de l'utilisateur
+    const [users] = await pool.execute('SELECT email FROM users WHERE id = ?', [userId]);
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Utilisateur non trouvé'
+      });
+    }
+    const userEmail = users[0].email;
+
+    // Récupérer tous les messages avec cet email (en tant qu'expéditeur ou destinataire)
+    const [messages] = await pool.execute(
+      `SELECT 
+        m.*,
+        sender.first_name as sender_first_name,
+        sender.last_name as sender_last_name,
+        sender.email as sender_email,
+        recipient.first_name as recipient_first_name,
+        recipient.last_name as recipient_last_name,
+        recipient.email as recipient_email
+       FROM messages m
+       LEFT JOIN users sender ON m.sender_id = sender.id
+       LEFT JOIN users recipient ON m.recipient_id = recipient.id
+       WHERE (m.sender_email = ? AND m.recipient_email = ?)
+          OR (m.sender_email = ? AND m.recipient_email = ?)
+       ORDER BY m.created_at ASC`,
+      [userEmail, email, email, userEmail]
+    );
+
+    res.json({
+      success: true,
+      data: {
+        conversation_email: email,
+        messages: messages.map(msg => ({
+          id: msg.id,
+          subject: msg.subject,
+          content: msg.content,
+          message_type: msg.message_type,
+          is_read: msg.is_read,
+          created_at: msg.created_at,
+          is_sent: msg.sender_email === userEmail,
+          sender: {
+            email: msg.sender_email,
+            name: msg.sender_first_name ? `${msg.sender_first_name} ${msg.sender_last_name}` : null
+          },
+          recipient: {
+            email: msg.recipient_email,
+            name: msg.recipient_first_name ? `${msg.recipient_first_name} ${msg.recipient_last_name}` : null
+          }
+        }))
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération'
+    });
+  }
+};
+
+// Récupérer toutes mes conversations (groupées par email)
+const getMyConversations = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+
+    // Récupérer l'email de l'utilisateur
+    const [users] = await pool.execute('SELECT email FROM users WHERE id = ?', [userId]);
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Utilisateur non trouvé'
+      });
+    }
+    const userEmail = users[0].email;
+
+    // Récupérer toutes les conversations uniques (groupées par email)
+    const [conversations] = await pool.execute(
+      `SELECT 
+        CASE 
+          WHEN m.sender_email = ? THEN m.recipient_email
+          ELSE m.sender_email
+        END as conversation_email,
+        COUNT(*) as message_count,
+        MAX(m.created_at) as last_message_at,
+        SUM(CASE WHEN m.recipient_email = ? AND m.is_read = FALSE THEN 1 ELSE 0 END) as unread_count,
+        MAX(m.subject) as last_subject,
+        MAX(CASE 
+          WHEN m.sender_email = ? THEN CONCAT(sender.first_name, ' ', sender.last_name)
+          ELSE CONCAT(recipient.first_name, ' ', recipient.last_name)
+        END) as conversation_name
+       FROM messages m
+       LEFT JOIN users sender ON m.sender_id = sender.id
+       LEFT JOIN users recipient ON m.recipient_id = recipient.id
+       WHERE m.sender_email = ? OR m.recipient_email = ?
+       GROUP BY conversation_email
+       ORDER BY last_message_at DESC`,
+      [userEmail, userEmail, userEmail, userEmail, userEmail]
+    );
+
+    res.json({
+      success: true,
+      data: conversations
+    });
+
+  } catch (error) {
+    console.error('Erreur:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération'
+    });
+  }
+};
+
 module.exports = {
+  searchUserByEmail,
   sendMessage,
   getReceivedMessages,
   getSentMessages,
   getMessage,
   markAsRead,
   deleteMessage,
-  getMessageStats
+  getMessageStats,
+  getConversationByEmail,
+  getMyConversations
 };

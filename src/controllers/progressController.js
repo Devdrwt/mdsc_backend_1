@@ -216,11 +216,102 @@ const getLessonProgress = async (req, res) => {
   }
 };
 
+// Vérifier l'accès à une leçon (progression séquentielle)
+const checkLessonAccess = async (req, res) => {
+  try {
+    const { enrollmentId, lessonId } = req.params;
+    const userId = req.user.id;
+
+    // Vérifier que l'inscription appartient à l'utilisateur
+    const [enrollments] = await pool.execute(
+      'SELECT user_id FROM enrollments WHERE id = ?',
+      [enrollmentId]
+    );
+
+    if (enrollments.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Inscription non trouvée'
+      });
+    }
+
+    if (enrollments[0].user_id !== userId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Non autorisé'
+      });
+    }
+
+    const access = await ProgressService.checkLessonAccess(enrollmentId, lessonId);
+
+    res.json({
+      success: true,
+      data: access
+    });
+
+  } catch (error) {
+    console.error('Erreur:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Erreur lors de la vérification'
+    });
+  }
+};
+
+// Compléter une leçon (déverrouille la suivante)
+const completeLesson = async (req, res) => {
+  try {
+    const { enrollmentId, lessonId } = req.params;
+    const { time_spent } = req.body;
+    const userId = req.user.id;
+
+    // Vérifier l'accès
+    const access = await ProgressService.checkLessonAccess(enrollmentId, lessonId);
+
+    if (!access.hasAccess) {
+      return res.status(403).json({
+        success: false,
+        message: access.reason,
+        requiredLessonId: access.requiredLessonId,
+        requiredModuleId: access.requiredModuleId
+      });
+    }
+
+    // Marquer comme complété
+    const progress = await ProgressService.markLessonCompleted(
+      enrollmentId,
+      lessonId,
+      time_spent || 0
+    );
+
+    // Déverrouiller la leçon suivante
+    const unlocked = await ProgressService.unlockNextLesson(enrollmentId, lessonId);
+
+    res.json({
+      success: true,
+      message: 'Leçon complétée',
+      data: {
+        progress,
+        unlockedNextLesson: unlocked
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Erreur lors de la complétion'
+    });
+  }
+};
+
 module.exports = {
   getProgressByEnrollment,
   markLessonCompleted,
   updateLessonProgress,
   getCourseProgress,
-  getLessonProgress
+  getLessonProgress,
+  checkLessonAccess,
+  completeLesson
 };
 

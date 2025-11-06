@@ -340,6 +340,189 @@ class ProgressService {
 
     return progress.length > 0 ? progress[0] : null;
   }
+
+  /**
+   * Vérifier l'accès à une leçon (progression séquentielle)
+   */
+  static async checkLessonAccess(enrollmentId, lessonId) {
+    const enrollmentQuery = 'SELECT * FROM enrollments WHERE id = ?';
+    const [enrollments] = await pool.execute(enrollmentQuery, [enrollmentId]);
+    
+    if (enrollments.length === 0) {
+      throw new Error('Inscription non trouvée');
+    }
+
+    const enrollment = enrollments[0];
+
+    // Récupérer le cours
+    const [courses] = await pool.execute(
+      'SELECT is_sequential FROM courses WHERE id = ?',
+      [enrollment.course_id]
+    );
+
+    if (courses.length === 0) {
+      throw new Error('Cours non trouvé');
+    }
+
+    const course = courses[0];
+
+    // Si progression non séquentielle, autoriser l'accès
+    if (!course.is_sequential) {
+      return { hasAccess: true, reason: 'Progression non séquentielle' };
+    }
+
+    // Récupérer la leçon
+    const [lessons] = await pool.execute(
+      'SELECT id, module_id, order_index, is_optional FROM lessons WHERE id = ?',
+      [lessonId]
+    );
+
+    if (lessons.length === 0) {
+      throw new Error('Leçon non trouvée');
+    }
+
+    const lesson = lessons[0];
+
+    // Si leçon optionnelle, autoriser l'accès
+    if (lesson.is_optional) {
+      return { hasAccess: true, reason: 'Leçon optionnelle' };
+    }
+
+    // Récupérer toutes les leçons précédentes du même module
+    const [previousLessons] = await pool.execute(
+      `SELECT l.id FROM lessons l
+       WHERE l.module_id = ? 
+       AND l.order_index < ?
+       AND l.is_published = TRUE
+       AND l.is_optional = FALSE
+       ORDER BY l.order_index`,
+      [lesson.module_id, lesson.order_index]
+    );
+
+    // Vérifier que toutes les leçons précédentes sont complétées
+    for (const prevLesson of previousLessons) {
+      const [progress] = await pool.execute(
+        'SELECT id FROM progress WHERE enrollment_id = ? AND lesson_id = ? AND status = "completed"',
+        [enrollmentId, prevLesson.id]
+      );
+
+      if (progress.length === 0) {
+        return {
+          hasAccess: false,
+          reason: `Vous devez compléter toutes les leçons précédentes`,
+          requiredLessonId: prevLesson.id
+        };
+      }
+    }
+
+    // Vérifier aussi les modules précédents si nécessaire
+    const [lessonModule] = await pool.execute(
+      'SELECT order_index FROM modules WHERE id = ?',
+      [lesson.module_id]
+    );
+
+    if (lessonModule.length > 0 && lessonModule[0].order_index > 1) {
+      // Vérifier que tous les modules précédents sont complétés
+      const [previousModules] = await pool.execute(
+        `SELECT m.id FROM modules m
+         WHERE m.course_id = ?
+         AND m.order_index < ?
+         ORDER BY m.order_index`,
+        [enrollment.course_id, lessonModule[0].order_index]
+      );
+
+      for (const prevModule of previousModules) {
+        // Vérifier que toutes les leçons du module précédent sont complétées
+        const [moduleLessons] = await pool.execute(
+          `SELECT l.id FROM lessons l
+           WHERE l.module_id = ? AND l.is_published = TRUE AND l.is_optional = FALSE`,
+          [prevModule.id]
+        );
+
+        for (const moduleLesson of moduleLessons) {
+          const [progress] = await pool.execute(
+            'SELECT id FROM progress WHERE enrollment_id = ? AND lesson_id = ? AND status = "completed"',
+            [enrollmentId, moduleLesson.id]
+          );
+
+          if (progress.length === 0) {
+            return {
+              hasAccess: false,
+              reason: `Vous devez compléter le module précédent`,
+              requiredModuleId: prevModule.id
+            };
+          }
+        }
+      }
+    }
+
+    return { hasAccess: true, reason: 'Accès autorisé' };
+  }
+
+  /**
+   * Déverrouiller la leçon suivante après complétion
+   */
+  static async unlockNextLesson(enrollmentId, lessonId) {
+    const [lessons] = await pool.execute(
+      'SELECT module_id, order_index, course_id FROM lessons WHERE id = ?',
+      [lessonId]
+    );
+
+    if (lessons.length === 0) return null;
+
+    const lesson = lessons[0];
+
+    // Récupérer la leçon suivante du même module
+    const [nextLessons] = await pool.execute(
+      `SELECT id FROM lessons 
+       WHERE module_id = ? 
+       AND order_index = ? + 1
+       AND is_published = TRUE
+       LIMIT 1`,
+      [lesson.module_id, lesson.order_index]
+    );
+
+    // Si pas de leçon suivante dans le module, vérifier le module suivant
+    if (nextLessons.length === 0) {
+      const [currentModule] = await pool.execute(
+        'SELECT order_index FROM modules WHERE id = ?',
+        [lesson.module_id]
+      );
+
+      if (currentModule.length > 0) {
+        const [nextModules] = await pool.execute(
+          `SELECT id FROM modules 
+           WHERE course_id = ? 
+           AND order_index = ? + 1
+           ORDER BY order_index
+           LIMIT 1`,
+          [lesson.course_id, currentModule[0].order_index]
+        );
+
+        if (nextModules.length > 0) {
+          // Déverrouiller la première leçon du module suivant
+          const [firstLessons] = await pool.execute(
+            `SELECT id FROM lessons 
+             WHERE module_id = ? 
+             AND is_published = TRUE
+             ORDER BY order_index
+             LIMIT 1`,
+            [nextModules[0].id]
+          );
+
+          if (firstLessons.length > 0) {
+            // La leçon suivante sera automatiquement déverrouillée
+            // car toutes les leçons précédentes sont complétées
+            return { unlockedLessonId: firstLessons[0].id };
+          }
+        }
+      }
+    } else {
+      return { unlockedLessonId: nextLessons[0].id };
+    }
+
+    return null;
+  }
 }
 
 module.exports = ProgressService;

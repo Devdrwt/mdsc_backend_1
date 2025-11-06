@@ -305,11 +305,18 @@ const getUserEvaluationStats = async (req, res) => {
   }
 };
 
-// Créer une évaluation (instructeur)
+// Créer une évaluation finale (instructeur) - OBLIGATOIRE ET UNIQUE
 const createEvaluation = async (req, res) => {
   try {
     const { courseId } = req.params;
-    const { title, description, type, due_date, max_score, is_published } = req.body;
+    const { 
+      title, 
+      description, 
+      passing_score = 70, 
+      duration_minutes, 
+      max_attempts = 3,
+      questions // Support pour créer des questions
+    } = req.body;
     const instructorId = req.user.userId;
 
     // Vérifier que l'instructeur est propriétaire du cours
@@ -323,32 +330,124 @@ const createEvaluation = async (req, res) => {
       });
     }
 
-    // Insérer l'évaluation
+    // Vérifier qu'une évaluation finale n'existe pas déjà
+    const [existing] = await pool.execute(
+      'SELECT id FROM course_evaluations WHERE course_id = ?',
+      [courseId]
+    );
+
+    if (existing.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Une évaluation finale existe déjà pour ce cours. Utilisez PUT pour la modifier.'
+      });
+    }
+
+    // Créer l'évaluation finale dans course_evaluations
     const insertQuery = `
-      INSERT INTO evaluations (
-        title, description, type, course_id, instructor_id, 
-        due_date, max_score, is_published, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+      INSERT INTO course_evaluations (
+        course_id, title, description, passing_score,
+        duration_minutes, max_attempts, is_published
+      ) VALUES (?, ?, ?, ?, ?, ?, TRUE)
     `;
 
     const [result] = await pool.execute(insertQuery, [
-      title, description, type, courseId, instructorId,
-      due_date, max_score, is_published || false
+      courseId,
+      title,
+      description || null,
+      passing_score,
+      duration_minutes || null,
+      max_attempts
     ]);
+
+    // Mettre à jour courses.evaluation_id
+    await pool.execute(
+      'UPDATE courses SET evaluation_id = ? WHERE id = ?',
+      [result.insertId, courseId]
+    ).catch(() => {
+      // Si la colonne n'existe pas encore, continuer
+      console.warn('⚠️ Colonne evaluation_id non trouvée dans courses');
+    });
+
+    const evaluationId = result.insertId;
+
+    // Créer les questions si fournies
+    if (questions && Array.isArray(questions)) {
+      const { sanitizeValue } = require('../utils/sanitize');
+      
+      for (let i = 0; i < questions.length; i++) {
+        const question = questions[i];
+        
+        // Pour les évaluations finales, on utilise course_evaluation_id (quiz_id peut être NULL)
+        const [questionResult] = await pool.execute(
+          `INSERT INTO quiz_questions (
+            quiz_id, course_evaluation_id, question_text, question_type, points, order_index, is_active
+          ) VALUES (?, ?, ?, ?, ?, ?, TRUE)`,
+          [
+            null, // NULL pour les évaluations finales
+            evaluationId, // Lien vers l'évaluation finale via course_evaluation_id
+            sanitizeValue(question.question_text),
+            sanitizeValue(question.question_type || 'multiple_choice'),
+            sanitizeValue(question.points || 1),
+            question.order_index !== undefined ? question.order_index : i
+          ]
+        );
+
+        const questionId = questionResult.insertId;
+
+        // Gérer les réponses selon le type de question
+        if (question.question_type === 'multiple_choice' && question.options && Array.isArray(question.options)) {
+          // QCM : créer plusieurs réponses depuis options
+          for (let j = 0; j < question.options.length; j++) {
+            const option = question.options[j];
+            const isCorrect = question.correct_answer === option || 
+                             (typeof question.correct_answer === 'string' && question.correct_answer.trim() === option.trim());
+            await pool.execute(
+              `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
+              [questionId, sanitizeValue(option), isCorrect, j]
+            );
+          }
+        } else if (question.question_type === 'true_false' && question.correct_answer !== undefined) {
+          // Vrai/Faux : créer deux réponses (true et false)
+          const correctAnswer = question.correct_answer === true || question.correct_answer === 'true';
+          await pool.execute(
+            `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
+            [questionId, 'Vrai', correctAnswer, 0]
+          );
+          await pool.execute(
+            `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
+            [questionId, 'Faux', !correctAnswer, 1]
+          );
+        } else if (question.question_type === 'short_answer' && question.correct_answer) {
+          // Réponse courte : stocker la réponse correcte dans quiz_answers
+          await pool.execute(
+            `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
+            [questionId, sanitizeValue(question.correct_answer), true, 0]
+          );
+        }
+      }
+    }
 
     res.status(201).json({
       success: true,
-      message: 'Évaluation créée avec succès',
+      message: 'Évaluation finale créée avec succès',
       data: {
-        id: result.insertId,
-        course_id: courseId,
-        title,
-        type
+        id: evaluationId,
+        course_id: courseId
       }
     });
 
   } catch (error) {
     console.error('Erreur lors de la création de l\'évaluation:', error);
+    
+    // Si erreur de contrainte unique
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(400).json({
+        success: false,
+        message: 'Une évaluation finale existe déjà pour ce cours'
+      });
+    }
+
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la création de l\'évaluation'
@@ -356,7 +455,7 @@ const createEvaluation = async (req, res) => {
   }
 };
 
-// Récupérer les évaluations d'un cours (instructeur)
+// Récupérer l'évaluation finale d'un cours (instructeur)
 const getCourseEvaluations = async (req, res) => {
   try {
     const { courseId } = req.params;
@@ -373,65 +472,275 @@ const getCourseEvaluations = async (req, res) => {
       });
     }
 
-    // Récupérer les évaluations
-    const evaluationsQuery = `
-      SELECT 
-        e.*,
-        COUNT(ue.id) as submissions_count,
-        AVG(ue.score) as average_score
-      FROM evaluations e
-      LEFT JOIN user_evaluations ue ON e.id = ue.evaluation_id
-      WHERE e.course_id = ?
-      GROUP BY e.id
-      ORDER BY e.created_at DESC
-    `;
+    // Récupérer l'évaluation finale
+    const [evaluations] = await pool.execute(
+      `SELECT 
+        ce.*,
+        COUNT(cea.id) as attempts_count,
+        COUNT(CASE WHEN cea.is_passed = TRUE THEN 1 END) as passed_count
+       FROM course_evaluations ce
+       LEFT JOIN quiz_attempts cea ON ce.id = cea.course_evaluation_id
+       WHERE ce.course_id = ?
+       GROUP BY ce.id
+       LIMIT 1`,
+      [courseId]
+    );
 
-    const [evaluations] = await pool.execute(evaluationsQuery, [courseId]);
+    if (evaluations.length === 0) {
+      return res.json({
+        success: true,
+        data: null,
+        message: 'Aucune évaluation finale créée pour ce cours'
+      });
+    }
+
+    const evaluation = evaluations[0];
+
+    // Récupérer les questions liées à l'évaluation finale
+    const [questions] = await pool.execute(
+      `SELECT 
+        qq.id,
+        qq.question_text,
+        qq.question_type,
+        qq.points,
+        qq.order_index,
+        qq.is_active
+       FROM quiz_questions qq
+       WHERE qq.course_evaluation_id = ?
+       ORDER BY qq.order_index ASC`,
+      [evaluation.id]
+    );
+
+    // Récupérer les réponses pour chaque question
+    const questionsWithAnswers = await Promise.all(
+      questions.map(async (question) => {
+        const [answers] = await pool.execute(
+          `SELECT 
+            id,
+            answer_text,
+            is_correct,
+            order_index
+           FROM quiz_answers
+           WHERE question_id = ?
+           ORDER BY order_index ASC`,
+          [question.id]
+        );
+
+        // Formater les réponses selon le type de question
+        let formattedAnswers = [];
+        let correctAnswer = null;
+
+        if (question.question_type === 'multiple_choice') {
+          // Pour les QCM, retourner toutes les options
+          formattedAnswers = answers.map(answer => ({
+            id: answer.id,
+            text: answer.answer_text,
+            is_correct: answer.is_correct === 1 || answer.is_correct === true
+          }));
+          // Trouver la réponse correcte
+          const correct = answers.find(a => a.is_correct === 1 || a.is_correct === true);
+          if (correct) {
+            correctAnswer = correct.answer_text;
+          }
+        } else if (question.question_type === 'true_false') {
+          // Pour vrai/faux, retourner les deux options
+          formattedAnswers = answers.map(answer => ({
+            id: answer.id,
+            text: answer.answer_text,
+            is_correct: answer.is_correct === 1 || answer.is_correct === true
+          }));
+          // Trouver la réponse correcte (true ou false)
+          const correct = answers.find(a => a.is_correct === 1 || a.is_correct === true);
+          if (correct) {
+            correctAnswer = correct.text === 'Vrai' ? 'true' : 'false';
+          }
+        } else if (question.question_type === 'short_answer') {
+          // Pour réponse courte, stocker la réponse correcte
+          if (answers.length > 0) {
+            correctAnswer = answers[0].answer_text;
+          }
+        }
+
+        return {
+          id: question.id,
+          question_text: question.question_text,
+          question_type: question.question_type,
+          points: parseFloat(question.points) || 1,
+          order_index: question.order_index || 0,
+          is_active: question.is_active === 1 || question.is_active === true,
+          options: formattedAnswers.map(a => a.text), // Pour compatibilité avec le frontend
+          answers: formattedAnswers, // Format détaillé
+          correct_answer: correctAnswer
+        };
+      })
+    );
 
     res.json({
       success: true,
-      data: evaluations
+      data: {
+        ...evaluation,
+        questions: questionsWithAnswers
+      }
     });
 
   } catch (error) {
-    console.error('Erreur lors de la récupération des évaluations:', error);
+    console.error('Erreur lors de la récupération de l\'évaluation:', error);
     res.status(500).json({
       success: false,
-      message: 'Erreur lors de la récupération des évaluations'
+      message: 'Erreur lors de la récupération de l\'évaluation'
     });
   }
 };
 
-// Modifier une évaluation (instructeur)
+// Modifier une évaluation (instructeur) - Support pour course_evaluations
 const updateEvaluation = async (req, res) => {
   try {
-    const { evaluationId } = req.params;
-    const { title, description, type, due_date, max_score, is_published } = req.body;
+    // Support pour les deux formats : evaluationId ou id
+    const evaluationId = req.params.evaluationId || req.params.id;
+    const { 
+      title, 
+      description, 
+      passing_score,
+      duration_minutes,
+      max_attempts,
+      is_published,
+      questions // Support pour mettre à jour les questions
+    } = req.body;
     const instructorId = req.user.userId;
 
-    // Vérifier que l'instructeur est propriétaire de l'évaluation
-    const evaluationQuery = 'SELECT id FROM evaluations WHERE id = ? AND instructor_id = ?';
-    const [evaluations] = await pool.execute(evaluationQuery, [evaluationId, instructorId]);
+    if (!evaluationId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID d\'évaluation requis'
+      });
+    }
+
+    // Vérifier que l'évaluation existe et que l'instructeur est propriétaire du cours
+    const [evaluations] = await pool.execute(
+      `SELECT ce.*, c.instructor_id 
+       FROM course_evaluations ce
+       JOIN courses c ON ce.course_id = c.id
+       WHERE ce.id = ?`,
+      [evaluationId]
+    );
 
     if (evaluations.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Évaluation non trouvée'
+      });
+    }
+
+    const evaluation = evaluations[0];
+
+    if (parseInt(evaluation.instructor_id) !== parseInt(instructorId)) {
       return res.status(403).json({
         success: false,
         message: 'Vous n\'êtes pas autorisé à modifier cette évaluation'
       });
     }
 
-    // Mettre à jour l'évaluation
-    const updateQuery = `
-      UPDATE evaluations SET
-        title = ?, description = ?, type = ?, due_date = ?,
-        max_score = ?, is_published = ?, updated_at = NOW()
-      WHERE id = ? AND instructor_id = ?
-    `;
+    // Mettre à jour l'évaluation finale
+    const { sanitizeValue } = require('../utils/sanitize');
+    const updateFields = [];
+    const values = [];
 
-    await pool.execute(updateQuery, [
-      title, description, type, due_date,
-      max_score, is_published, evaluationId, instructorId
-    ]);
+    if (title !== undefined) {
+      updateFields.push('title = ?');
+      values.push(sanitizeValue(title));
+    }
+    if (description !== undefined) {
+      updateFields.push('description = ?');
+      values.push(sanitizeValue(description));
+    }
+    if (passing_score !== undefined) {
+      updateFields.push('passing_score = ?');
+      values.push(sanitizeValue(passing_score));
+    }
+    if (duration_minutes !== undefined) {
+      updateFields.push('duration_minutes = ?');
+      values.push(sanitizeValue(duration_minutes));
+    }
+    if (max_attempts !== undefined) {
+      updateFields.push('max_attempts = ?');
+      values.push(sanitizeValue(max_attempts));
+    }
+    if (is_published !== undefined) {
+      updateFields.push('is_published = ?');
+      values.push(sanitizeValue(is_published));
+    }
+
+    if (updateFields.length > 0) {
+      values.push(evaluationId);
+      await pool.execute(
+        `UPDATE course_evaluations SET ${updateFields.join(', ')}, updated_at = NOW() WHERE id = ?`,
+        values
+      );
+    }
+
+    // Mettre à jour les questions si fournies
+    if (questions && Array.isArray(questions)) {
+      // sanitizeValue déjà importé plus haut
+      
+      // Supprimer les anciennes questions et réponses
+      await pool.execute(
+        'DELETE FROM quiz_answers WHERE question_id IN (SELECT id FROM quiz_questions WHERE course_evaluation_id = ?)',
+        [evaluationId]
+      );
+      await pool.execute(
+        'DELETE FROM quiz_questions WHERE course_evaluation_id = ?',
+        [evaluationId]
+      );
+
+      // Créer les nouvelles questions (même logique que createEvaluation)
+      for (let i = 0; i < questions.length; i++) {
+        const question = questions[i];
+        
+        const [questionResult] = await pool.execute(
+          `INSERT INTO quiz_questions (
+            quiz_id, course_evaluation_id, question_text, question_type, points, order_index, is_active
+          ) VALUES (?, ?, ?, ?, ?, ?, TRUE)`,
+          [
+            null,
+            evaluationId,
+            sanitizeValue(question.question_text),
+            sanitizeValue(question.question_type || 'multiple_choice'),
+            sanitizeValue(question.points || 1),
+            sanitizeValue(question.order_index !== undefined ? question.order_index : i)
+          ]
+        );
+
+        const questionId = questionResult.insertId;
+
+        // Gérer les réponses selon le type de question
+        if (question.question_type === 'multiple_choice' && question.options && Array.isArray(question.options)) {
+          for (let j = 0; j < question.options.length; j++) {
+            const option = question.options[j];
+            const isCorrect = question.correct_answer === option || 
+                             (typeof question.correct_answer === 'string' && question.correct_answer.trim() === option.trim());
+            await pool.execute(
+              `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
+              [questionId, sanitizeValue(option), isCorrect, j]
+            );
+          }
+        } else if (question.question_type === 'true_false' && question.correct_answer !== undefined) {
+          const correctAnswer = question.correct_answer === true || question.correct_answer === 'true';
+          await pool.execute(
+            `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
+            [questionId, 'Vrai', correctAnswer, 0]
+          );
+          await pool.execute(
+            `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
+            [questionId, 'Faux', !correctAnswer, 1]
+          );
+        } else if (question.question_type === 'short_answer' && question.correct_answer) {
+          await pool.execute(
+            `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
+            [questionId, sanitizeValue(question.correct_answer), true, 0]
+          );
+        }
+      }
+    }
 
     res.json({
       success: true,
@@ -580,6 +889,222 @@ const gradeSubmission = async (req, res) => {
   }
 };
 
+/**
+ * Récupérer l'évaluation finale pour un étudiant
+ */
+const getEnrollmentEvaluation = async (req, res) => {
+  try {
+    const { enrollmentId } = req.params;
+    const userId = req.user.userId;
+
+    // Vérifier l'inscription
+    const [enrollments] = await pool.execute(
+      'SELECT course_id FROM enrollments WHERE id = ? AND user_id = ?',
+      [enrollmentId, userId]
+    );
+
+    if (enrollments.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Inscription non trouvée'
+      });
+    }
+
+    const courseId = enrollments[0].course_id;
+
+    // Récupérer l'évaluation finale
+    const [evaluations] = await pool.execute(
+      'SELECT * FROM course_evaluations WHERE course_id = ? AND is_published = TRUE',
+      [courseId]
+    );
+
+    if (evaluations.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Évaluation finale non trouvée pour ce cours'
+      });
+    }
+
+    const evaluation = evaluations[0];
+
+    // Récupérer les tentatives précédentes
+    const [attempts] = await pool.execute(
+      `SELECT * FROM quiz_attempts 
+       WHERE enrollment_id = ? AND course_evaluation_id = ? 
+       ORDER BY started_at DESC`,
+      [enrollmentId, evaluation.id]
+    );
+
+    res.json({
+      success: true,
+      data: {
+        evaluation,
+        previous_attempts: attempts,
+        can_attempt: attempts.length < evaluation.max_attempts
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération'
+    });
+  }
+};
+
+/**
+ * Soumettre une tentative d'évaluation finale
+ */
+const submitEvaluationAttempt = async (req, res) => {
+  try {
+    const { enrollmentId } = req.params;
+    const { answers } = req.body;
+    const userId = req.user.userId;
+
+    // Vérifier l'inscription
+    const [enrollments] = await pool.execute(
+      'SELECT course_id FROM enrollments WHERE id = ? AND user_id = ?',
+      [enrollmentId, userId]
+    );
+
+    if (enrollments.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Inscription non trouvée'
+      });
+    }
+
+    const courseId = enrollments[0].course_id;
+
+    // Récupérer l'évaluation finale
+    const [evaluations] = await pool.execute(
+      'SELECT * FROM course_evaluations WHERE course_id = ? AND is_published = TRUE',
+      [courseId]
+    );
+
+    if (evaluations.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Évaluation finale non trouvée'
+      });
+    }
+
+    const evaluation = evaluations[0];
+
+    // Vérifier les tentatives
+    const [attemptsResult] = await pool.execute(
+      `SELECT COUNT(*) as count FROM quiz_attempts 
+       WHERE enrollment_id = ? AND course_evaluation_id = ?`,
+      [enrollmentId, evaluation.id]
+    );
+
+    if (attemptsResult[0].count >= evaluation.max_attempts) {
+      return res.status(400).json({
+        success: false,
+        message: 'Nombre maximum de tentatives atteint'
+      });
+    }
+
+    // Vérifier que toutes les leçons sont complétées
+    const [progressResult] = await pool.execute(
+      `SELECT COUNT(*) as total, 
+              SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed
+       FROM progress 
+       WHERE enrollment_id = ?`,
+      [enrollmentId]
+    );
+
+    if (progressResult[0].total > 0 && progressResult[0].completed < progressResult[0].total) {
+      return res.status(400).json({
+        success: false,
+        message: 'Vous devez compléter toutes les leçons avant de passer l\'évaluation finale'
+      });
+    }
+
+    // Créer la tentative
+    const [attemptResult] = await pool.execute(
+      `INSERT INTO quiz_attempts (
+        user_id, quiz_id, course_id, course_evaluation_id, started_at
+      ) VALUES (?, NULL, ?, ?, NOW())`,
+      [userId, courseId, evaluation.id]
+    );
+
+    const attemptId = attemptResult.insertId;
+
+    // Calculer le score (logique similaire à quizController)
+    let totalPoints = 0;
+    let earnedPoints = 0;
+
+    // Traiter les réponses
+    for (const answer of answers) {
+      const { question_id, answer_id, answer_text } = answer;
+
+      // Récupérer la question depuis quiz_questions avec course_evaluation_id
+      const [questions] = await pool.execute(
+        'SELECT points FROM quiz_questions WHERE id = ? AND course_evaluation_id = ?',
+        [question_id, evaluation.id]
+      );
+
+      if (questions.length > 0) {
+        const question = questions[0];
+        totalPoints += question.points;
+
+        // Vérifier la réponse
+        if (answer_id) {
+          const [correctAnswersList] = await pool.execute(
+            'SELECT is_correct FROM quiz_answers WHERE id = ? AND question_id = ?',
+            [answer_id, question_id]
+          );
+
+          if (correctAnswersList.length > 0 && correctAnswersList[0].is_correct) {
+            earnedPoints += question.points;
+          }
+        }
+      }
+    }
+
+    const percentage = totalPoints > 0 ? (earnedPoints / totalPoints) * 100 : 0;
+    const isPassed = percentage >= evaluation.passing_score;
+
+    // Mettre à jour la tentative
+    await pool.execute(
+      `UPDATE quiz_attempts 
+       SET completed_at = NOW(), answers = ?, score = ?, total_points = ?, 
+           percentage = ?, is_passed = ?
+       WHERE id = ?`,
+      [
+        JSON.stringify(answers),
+        earnedPoints,
+        totalPoints,
+        percentage,
+        isPassed,
+        attemptId
+      ]
+    );
+
+    res.json({
+      success: true,
+      message: 'Évaluation soumise avec succès',
+      data: {
+        attempt_id: attemptId,
+        score: earnedPoints,
+        total_points: totalPoints,
+        percentage: percentage,
+        is_passed: isPassed,
+        eligible_for_certificate: isPassed
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la soumission'
+    });
+  }
+};
+
 module.exports = {
   getUserEvaluations,
   getEvaluation,
@@ -590,5 +1115,7 @@ module.exports = {
   updateEvaluation,
   deleteEvaluation,
   getEvaluationSubmissions,
-  gradeSubmission
+  gradeSubmission,
+  getEnrollmentEvaluation,
+  submitEvaluationAttempt
 };

@@ -9,7 +9,7 @@ router.get('/user/:userId/stats', authenticateToken, evaluationController.getUse
 router.get('/:id', authenticateToken, evaluationController.getEvaluation);
 router.post('/:id/submit', authenticateToken, evaluationController.submitEvaluation);
 
-// Routes pour les instructeurs
+// Routes pour les instructeurs (Évaluation finale)
 router.post('/courses/:courseId', 
   authenticateToken, 
   authorize(['instructor', 'admin']), 
@@ -20,6 +20,18 @@ router.get('/courses/:courseId',
   authenticateToken, 
   authorize(['instructor', 'admin']), 
   evaluationController.getCourseEvaluations
+);
+
+// Route pour obtenir l'évaluation finale pour un étudiant
+router.get('/enrollments/:enrollmentId/evaluation', 
+  authenticateToken, 
+  evaluationController.getEnrollmentEvaluation
+);
+
+// Route pour soumettre une tentative d'évaluation finale
+router.post('/enrollments/:enrollmentId/evaluation/attempt', 
+  authenticateToken, 
+  evaluationController.submitEvaluationAttempt
 );
 
 router.put('/:evaluationId', 

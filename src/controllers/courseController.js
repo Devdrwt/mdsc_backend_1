@@ -1,7 +1,5 @@
 const { pool } = require('../config/database');
-
-// Fonction utilitaire pour convertir undefined en null (requis pour MySQL2)
-const sanitizeValue = (value) => value === undefined ? null : value;
+const { sanitizeValue } = require('../utils/sanitize');
 const { v4: uuidv4 } = require('uuid');
 
 // Récupérer tous les cours (avec pagination et filtres)
@@ -258,17 +256,44 @@ const createCourse = async (req, res) => {
       max_students,
       enrollment_deadline,
       course_start_date,
-      course_end_date
+      course_end_date,
+      course_type = 'on_demand', // NOUVEAU
+      is_sequential = true // NOUVEAU
     } = req.body;
 
     const instructor_id = req.user?.id ?? req.user?.userId;
+
+    // Validation conditionnelle selon le type
+    if (course_type === 'live') {
+      if (!course_start_date || !course_end_date) {
+        return res.status(400).json({
+          success: false,
+          message: 'Les dates de début et fin sont obligatoires pour un cours Live'
+        });
+      }
+
+      if (new Date(course_start_date) >= new Date(course_end_date)) {
+        return res.status(400).json({
+          success: false,
+          message: 'La date de fin doit être après la date de début'
+        });
+      }
+
+      if (!max_students || max_students <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Le nombre maximum d\'étudiants est obligatoire pour un cours Live'
+        });
+      }
+    }
 
     const query = `
       INSERT INTO courses (
         title, description, short_description, instructor_id, category_id,
         thumbnail_url, video_url, duration_minutes, difficulty, language,
-        price, currency, max_students, enrollment_deadline, course_start_date, course_end_date
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        price, currency, max_students, enrollment_deadline, course_start_date, course_end_date,
+        course_type, is_sequential, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')
     `;
 
     const [result] = await pool.execute(query, [
@@ -284,10 +309,12 @@ const createCourse = async (req, res) => {
       sanitizeValue(language),
       sanitizeValue(price),
       sanitizeValue(currency),
-      sanitizeValue(max_students),
+      sanitizeValue(course_type === 'live' ? max_students : null),
       sanitizeValue(enrollment_deadline),
-      sanitizeValue(course_start_date),
-      sanitizeValue(course_end_date)
+      sanitizeValue(course_type === 'live' ? course_start_date : null),
+      sanitizeValue(course_type === 'live' ? course_end_date : null),
+      sanitizeValue(course_type),
+      sanitizeValue(is_sequential)
     ]);
 
     res.status(201).json({
@@ -341,8 +368,36 @@ const updateCourse = async (req, res) => {
       'thumbnail_url', 'video_url', 'duration_minutes', 'difficulty',
       'language', 'price', 'currency', 'max_students',
       'enrollment_deadline', 'course_start_date', 'course_end_date',
-      'is_published', 'is_featured'
+      'is_published', 'is_featured', 'course_type', 'is_sequential' // NOUVEAU
     ];
+
+    // Validation conditionnelle si course_type est modifié
+    if (req.body.course_type === 'live') {
+      const courseStartDate = req.body.course_start_date || courses[0].course_start_date;
+      const courseEndDate = req.body.course_end_date || courses[0].course_end_date;
+      const maxStudents = req.body.max_students || courses[0].max_students;
+
+      if (!courseStartDate || !courseEndDate) {
+        return res.status(400).json({
+          success: false,
+          message: 'Les dates de début et fin sont obligatoires pour un cours Live'
+        });
+      }
+
+      if (new Date(courseStartDate) >= new Date(courseEndDate)) {
+        return res.status(400).json({
+          success: false,
+          message: 'La date de fin doit être après la date de début'
+        });
+      }
+
+      if (!maxStudents || maxStudents <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Le nombre maximum d\'étudiants est obligatoire pour un cours Live'
+        });
+      }
+    }
 
     allowedFields.forEach(field => {
       if (req.body[field] !== undefined) {

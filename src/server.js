@@ -176,6 +176,9 @@ app.get('/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/auth', googleAuthRoutes);
 app.use('/api/admin/auth', adminAuthRoutes);
+// Alias pour compatibilité frontend (sans /api)
+app.use('/admin/auth', adminAuthRoutes);
+app.use('/api/auth/admin', adminAuthRoutes);
 app.use('/api', courseApprovalRoutes);
 app.use('/api/courses', courseRoutes);
 app.use('/api/quizzes', quizRoutes);

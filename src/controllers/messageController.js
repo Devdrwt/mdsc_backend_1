@@ -41,10 +41,13 @@ const searchUserByEmail = async (req, res) => {
   }
 };
 
-// Envoyer un message (support recipient_id OU recipient_email)
+// Envoyer un message (support recipient_id OU recipient_email OU receiverEmail)
 const sendMessage = async (req, res) => {
   try {
-    const { recipient_id, recipient_email, subject, content, message_type = 'direct' } = req.body;
+    // Accepter recipient_email ou receiverEmail (alias pour compatibilité frontend)
+    const { recipient_id, recipient_email, receiverEmail, subject, content, message_type = 'direct' } = req.body;
+    // Utiliser recipient_email en priorité, sinon receiverEmail
+    const finalRecipientEmail = recipient_email || receiverEmail;
     const senderId = req.user.userId;
 
     // Récupérer l'email de l'expéditeur
@@ -77,10 +80,10 @@ const sendMessage = async (req, res) => {
       recipientEmail = recipients[0].email;
       recipientName = recipients[0].first_name + ' ' + recipients[0].last_name;
     }
-    // Sinon, utiliser recipient_email
-    else if (recipient_email) {
+    // Sinon, utiliser recipient_email ou receiverEmail
+    else if (finalRecipientEmail) {
       const recipientQuery = 'SELECT id, first_name, last_name, email FROM users WHERE email = ? AND is_active = TRUE';
-      const [recipients] = await pool.execute(recipientQuery, [recipient_email]);
+      const [recipients] = await pool.execute(recipientQuery, [finalRecipientEmail]);
 
       if (recipients.length === 0) {
         return res.status(404).json({
@@ -95,7 +98,7 @@ const sendMessage = async (req, res) => {
     } else {
       return res.status(400).json({
         success: false,
-        message: 'recipient_id ou recipient_email requis'
+        message: 'recipient_id, recipient_email ou receiverEmail requis'
       });
     }
 
@@ -151,7 +154,8 @@ const getReceivedMessages = async (req, res) => {
         u.first_name as sender_first_name,
         u.last_name as sender_last_name,
         u.email as sender_email,
-        u.role as sender_role
+        u.role as sender_role,
+        u.profile_picture as sender_profile_picture
       FROM messages m
       JOIN users u ON m.sender_id = u.id
       ${whereClause}
@@ -181,11 +185,13 @@ const getReceivedMessages = async (req, res) => {
           message_type: msg.message_type,
           is_read: msg.is_read,
           created_at: msg.created_at,
+          read_at: msg.read_at,
           sender: {
             id: msg.sender_id,
-            name: msg.sender_first_name + ' ' + msg.sender_last_name,
+            name: `${msg.sender_first_name || ''} ${msg.sender_last_name || ''}`.trim() || msg.sender_email,
             email: msg.sender_email,
-            role: msg.sender_role
+            role: msg.sender_role,
+            profile_picture: msg.sender_profile_picture
           }
         })),
         pagination: {
@@ -219,7 +225,8 @@ const getSentMessages = async (req, res) => {
         u.first_name as recipient_first_name,
         u.last_name as recipient_last_name,
         u.email as recipient_email,
-        u.role as recipient_role
+        u.role as recipient_role,
+        u.profile_picture as recipient_profile_picture
       FROM messages m
       JOIN users u ON m.recipient_id = u.id
       WHERE m.sender_id = ?
@@ -244,11 +251,13 @@ const getSentMessages = async (req, res) => {
           message_type: msg.message_type,
           is_read: msg.is_read,
           created_at: msg.created_at,
+          read_at: msg.read_at,
           recipient: {
             id: msg.recipient_id,
-            name: msg.recipient_first_name + ' ' + msg.recipient_last_name,
+            name: `${msg.recipient_first_name || ''} ${msg.recipient_last_name || ''}`.trim() || msg.recipient_email,
             email: msg.recipient_email,
-            role: msg.recipient_role
+            role: msg.recipient_role,
+            profile_picture: msg.recipient_profile_picture
           }
         })),
         pagination: {
@@ -282,10 +291,12 @@ const getMessage = async (req, res) => {
         sender.last_name as sender_last_name,
         sender.email as sender_email,
         sender.role as sender_role,
+        sender.profile_picture as sender_profile_picture,
         recipient.first_name as recipient_first_name,
         recipient.last_name as recipient_last_name,
         recipient.email as recipient_email,
-        recipient.role as recipient_role
+        recipient.role as recipient_role,
+        recipient.profile_picture as recipient_profile_picture
       FROM messages m
       JOIN users sender ON m.sender_id = sender.id
       JOIN users recipient ON m.recipient_id = recipient.id
@@ -324,15 +335,17 @@ const getMessage = async (req, res) => {
         read_at: message.read_at,
         sender: {
           id: message.sender_id,
-          name: message.sender_first_name + ' ' + message.sender_last_name,
+          name: `${message.sender_first_name || ''} ${message.sender_last_name || ''}`.trim() || message.sender_email,
           email: message.sender_email,
-          role: message.sender_role
+          role: message.sender_role,
+          profile_picture: message.sender_profile_picture
         },
         recipient: {
           id: message.recipient_id,
-          name: message.recipient_first_name + ' ' + message.recipient_last_name,
+          name: `${message.recipient_first_name || ''} ${message.recipient_last_name || ''}`.trim() || message.recipient_email,
           email: message.recipient_email,
-          role: message.recipient_role
+          role: message.recipient_role,
+          profile_picture: message.recipient_profile_picture
         }
       }
     });

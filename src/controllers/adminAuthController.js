@@ -2,6 +2,7 @@ const { pool } = require('../config/database');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { sanitizeValue } = require('../utils/sanitize');
+const { send2FACodeEmail } = require('../services/emailService');
 
 // Configuration
 const ADMIN_EMAIL_DOMAIN = process.env.ADMIN_EMAIL_DOMAIN || '@mdsc.org';
@@ -16,6 +17,8 @@ const login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
+    console.log('🔐 [Admin Login] Tentative de connexion:', { email, hasPassword: !!password });
+
     if (!email || !password) {
       return res.status(400).json({
         success: false,
@@ -23,34 +26,38 @@ const login = async (req, res) => {
       });
     }
 
-    // Vérifier que l'email est admin
-    const isAdminEmail = email.endsWith(ADMIN_EMAIL_DOMAIN) || 
-                        ADMIN_EMAIL_WHITELIST.includes(email);
-
-    if (!isAdminEmail) {
-      // Logger l'échec
-      await pool.execute(
-        'INSERT INTO admin_login_logs (admin_id, ip_address, user_agent, success, failure_reason) VALUES (NULL, ?, ?, FALSE, ?)',
-        [req.ip, req.get('user-agent') || '', 'Email non autorisé pour accès admin']
-      ).catch(() => {}); // Ignorer les erreurs si la table n'existe pas encore
-
-      return res.status(403).json({
-        success: false,
-        message: 'Accès admin uniquement'
-      });
-    }
-
-    // Récupérer l'utilisateur
+    // Récupérer l'utilisateur avec rôle admin
+    // On vérifie d'abord en base si l'utilisateur a le rôle admin (plus flexible)
     const [users] = await pool.execute(
       'SELECT * FROM users WHERE email = ? AND role = "admin" AND is_active = TRUE',
       [email]
     );
 
+    // Si l'utilisateur n'existe pas ou n'a pas le rôle admin
     if (users.length === 0) {
+      // Vérifier aussi si l'email correspond aux critères de domaine/whitelist
+      // (pour les nouveaux comptes qui n'ont pas encore le rôle admin)
+      const isAdminEmail = email.endsWith(ADMIN_EMAIL_DOMAIN) || 
+                          ADMIN_EMAIL_WHITELIST.includes(email);
+      
+      if (!isAdminEmail) {
+        // Logger l'échec
+        await pool.execute(
+          'INSERT INTO admin_login_logs (admin_id, ip_address, user_agent, success, failure_reason) VALUES (NULL, ?, ?, FALSE, ?)',
+          [req.ip, req.get('user-agent') || '', 'Email non autorisé pour accès admin']
+        ).catch(() => {}); // Ignorer les erreurs si la table n'existe pas encore
+
+        return res.status(403).json({
+          success: false,
+          message: 'Accès admin uniquement'
+        });
+      }
+      
+      // Si l'email est dans le domaine/whitelist mais n'a pas le rôle admin en base
       // Logger l'échec
       await pool.execute(
         'INSERT INTO admin_login_logs (admin_id, ip_address, user_agent, success, failure_reason) VALUES (NULL, ?, ?, FALSE, ?)',
-        [req.ip, req.get('user-agent') || '', 'Utilisateur non trouvé ou non admin']
+        [req.ip, req.get('user-agent') || '', 'Utilisateur non trouvé ou n\'a pas le rôle admin']
       ).catch(() => {});
 
       return res.status(401).json({
@@ -90,10 +97,20 @@ const login = async (req, res) => {
       console.warn('⚠️ Table admin_2fa_codes non trouvée. 2FA désactivé temporairement.');
     });
 
-    // TODO: Envoyer par email avec nodemailer
-    // Pour l'instant, on retourne le code en développement uniquement
+    // Envoyer le code 2FA par email
+    const firstName = user.first_name || 'Administrateur';
+    const emailSent = await send2FACodeEmail(user.email, firstName, code2FA).catch((error) => {
+      console.error('❌ Erreur lors de l\'envoi du code 2FA par email:', error.message);
+      return false;
+    });
+
+    // En développement, afficher aussi dans les logs si l'email n'a pas été envoyé
     if (process.env.NODE_ENV === 'development') {
-      console.log(`🔐 [DEV] Code 2FA pour ${email}: ${code2FA}`);
+      if (!emailSent) {
+        console.log(`🔐 [DEV] Code 2FA pour ${email}: ${code2FA} (email non envoyé - configuration manquante)`);
+      } else {
+        console.log(`✅ [DEV] Code 2FA envoyé par email à ${email}`);
+      }
     }
 
     // Logger la tentative

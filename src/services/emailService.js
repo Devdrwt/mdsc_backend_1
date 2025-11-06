@@ -163,6 +163,64 @@ const getPasswordResetText = (firstName, url) => (
   `Maison de la Société Civile`
 );
 
+// Template HTML pour le code 2FA admin
+const get2FACodeEmailTemplate = (firstName, code2FA) => {
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <style>
+        body { font-family: 'Open Sans', Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: #3380AA; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+        .content { background: #ffffff; padding: 30px; border: 1px solid #e0e0e0; }
+        .code-box { background: #f8f9fa; border: 2px dashed #3380AA; padding: 20px; text-align: center; margin: 20px 0; border-radius: 5px; }
+        .code { font-size: 32px; font-weight: bold; color: #3380AA; letter-spacing: 5px; font-family: 'Courier New', monospace; }
+        .warning { background: #fff3cd; border: 1px solid #ffc107; padding: 15px; border-radius: 5px; margin: 15px 0; }
+        .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        ${buildPreheader(`Code de vérification 2FA: ${code2FA}`)}
+        <div class="header">
+          <h1>Code de vérification 2FA</h1>
+          <p>Administration MdSC</p>
+        </div>
+        <div class="content">
+          <h2>Bonjour ${firstName},</h2>
+          <p>Vous avez demandé à vous connecter à l'interface d'administration de la plateforme MdSC.</p>
+          <p>Utilisez le code suivant pour compléter votre authentification :</p>
+          <div class="code-box">
+            <div class="code">${code2FA}</div>
+          </div>
+          <div class="warning">
+            <p><strong>⚠️ Ce code est valable pendant 10 minutes seulement.</strong></p>
+            <p>Si vous n'êtes pas à l'origine de cette demande de connexion, veuillez ignorer cet email et contacter immédiatement l'administrateur système.</p>
+          </div>
+          <p>Pour des raisons de sécurité, ne partagez jamais ce code avec personne.</p>
+        </div>
+        <div class="footer">
+          <p>© ${new Date().getFullYear()} Maison de la Société Civile. Tous droits réservés.</p>
+          <p>Crédibilité, Innovation</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+};
+
+// Version texte (plain text) - Code 2FA
+const get2FACodeText = (firstName, code2FA) => (
+  `Bonjour ${firstName},\n\n` +
+  `Vous avez demandé à vous connecter à l'interface d'administration MdSC.\n\n` +
+  `Code de vérification 2FA: ${code2FA}\n\n` +
+  `Ce code est valable pendant 10 minutes seulement.\n\n` +
+  `Si vous n'êtes pas à l'origine de cette demande, ignorez cet email et contactez l'administrateur.\n\n` +
+  `Maison de la Société Civile`
+);
+
 // Envoyer l'email de vérification
 const sendVerificationEmail = async (email, firstName, token) => {
   const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
@@ -207,9 +265,43 @@ const sendPasswordResetEmail = async (email, firstName, token) => {
   }
 };
 
+// Envoyer le code 2FA par email (pour admin)
+const send2FACodeEmail = async (email, firstName, code2FA) => {
+  // Vérifier si l'email est activé
+  if (process.env.EMAIL_ENABLED === 'false') {
+    console.log('ℹ️  Emails désactivés - code 2FA non envoyé par email');
+    return false;
+  }
+
+  const emailUser = (process.env.EMAIL_USER || '').trim();
+  const emailPass = (process.env.EMAIL_PASSWORD || '').trim();
+
+  if (!emailUser || !emailPass) {
+    console.log('ℹ️  Configuration email absente - code 2FA non envoyé par email');
+    return false;
+  }
+
+  try {
+    await transporter.sendMail({
+      from: process.env.EMAIL_FROM || emailUser,
+      to: email,
+      subject: '[MdSC Admin] Code de vérification 2FA',
+      html: get2FACodeEmailTemplate(firstName, code2FA),
+      text: get2FACodeText(firstName, code2FA)
+    });
+    console.log(`✅ Code 2FA envoyé par email à ${email}`);
+    return true;
+  } catch (error) {
+    console.error('❌ Erreur envoi code 2FA par email:', error.message);
+    // Ne pas bloquer le processus si l'email échoue
+    return false;
+  }
+};
+
 module.exports = {
   verifyEmailConfig,
   sendVerificationEmail,
   sendPasswordResetEmail,
+  send2FACodeEmail,
 };
 

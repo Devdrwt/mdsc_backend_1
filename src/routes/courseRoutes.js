@@ -4,7 +4,8 @@ const courseController = require('../controllers/courseController');
 const enrollmentController = require('../controllers/enrollmentController');
 const quizController = require('../controllers/quizController');
 const certificateController = require('../controllers/certificateController');
-const { authenticateToken, optionalAuth } = require('../middleware/auth');
+const evaluationController = require('../controllers/evaluationController');
+const { authenticateToken, optionalAuth, authorize } = require('../middleware/auth');
 const { 
   validateCourse, 
   validateEnrollment, 
@@ -60,6 +61,13 @@ router.post('/quizzes/:quizId/attempt', authenticateToken, validateQuizAttempt, 
 router.put('/quizzes/attempts/:attemptId', authenticateToken, quizController.submitQuizAttempt);
 router.get('/quizzes/attempts/:attemptId', authenticateToken, quizController.getQuizAttempt);
 router.get('/quizzes/attempts/my-attempts', authenticateToken, quizController.getMyQuizAttempts);
+
+// Routes pour les évaluations finales (alias pour compatibilité frontend)
+router.get('/:courseId/evaluation', 
+  authenticateToken, 
+  authorize(['instructor', 'admin']), 
+  evaluationController.getCourseEvaluations
+);
 
 // Routes pour les certificats
 router.get('/certificates/my-certificates', authenticateToken, certificateController.getMyCertificates);

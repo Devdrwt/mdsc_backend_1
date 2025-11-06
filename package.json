@@ -33,6 +33,7 @@
     "passport-google-oauth20": "^2.0.0",
     "pdfkit": "^0.15.2",
     "qrcode": "^1.5.3",
+    "stripe": "^19.2.1",
     "uuid": "^13.0.0"
   },
   "devDependencies": {

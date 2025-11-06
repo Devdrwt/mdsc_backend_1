@@ -36,7 +36,9 @@ const { verifyEmailConfig } = require('./services/emailService');
 const passport = require('./config/passport');
 const authRoutes = require('./routes/authRoutes');
 const googleAuthRoutes = require('./routes/googleAuthRoutes');
+const adminAuthRoutes = require('./routes/auth/adminAuthRoutes');
 const courseRoutes = require('./routes/courseRoutes');
+const courseApprovalRoutes = require('./routes/courses/courseApprovalRoutes');
 const quizRoutes = require('./routes/quizRoutes');
 const certificateRoutes = require('./routes/certificateRoutes');
 const enrollmentRoutes = require('./routes/enrollmentRoutes');
@@ -50,10 +52,14 @@ const messageRoutes = require('./routes/messageRoutes');
 const fileRoutes = require('./routes/fileRoutes');
 const professionalRoutes = require('./routes/professionalRoutes');
 const moduleRoutes = require('./routes/moduleRoutes');
+const moduleQuizRoutes = require('./routes/modules/moduleQuizRoutes');
 const mediaRoutes = require('./routes/mediaRoutes');
 const badgeRoutes = require('./routes/badgeRoutes');
 const progressRoutes = require('./routes/progressRoutes');
 const userRoutes = require('./routes/userRoutes');
+const paymentRoutes = require('./routes/payments/paymentRoutes');
+const webhookRoutes = require('./routes/payments/webhookRoutes');
+const certificateRequestRoutes = require('./routes/certificates/certificateRequestRoutes');
 
 const app = express();
 
@@ -203,7 +209,26 @@ app.use((req, res, next) => {
 });
 
 // Servir les fichiers statiques (uploads)
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+// Important : cette route doit être avant les routes API pour éviter les conflits
+const uploadsPath = path.join(__dirname, '../uploads');
+app.use('/uploads', express.static(uploadsPath, {
+  setHeaders: (res, filePath) => {
+    // Ajouter les en-têtes CORS pour les fichiers statiques
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache 1 an
+  }
+}));
+
+// Log pour vérifier que le dossier uploads est accessible
+if (process.env.NODE_ENV === 'development') {
+  const fs = require('fs');
+  if (fs.existsSync(uploadsPath)) {
+    console.log('✅ Dossier uploads accessible:', uploadsPath);
+  } else {
+    console.warn('⚠️ Dossier uploads non trouvé:', uploadsPath);
+  }
+}
 
 // Routes
 app.get('/health', (req, res) => {
@@ -217,6 +242,11 @@ app.get('/health', (req, res) => {
 // Routes API
 app.use('/api/auth', authRoutes);
 app.use('/api/auth', googleAuthRoutes);
+app.use('/api/admin/auth', adminAuthRoutes);
+// Alias pour compatibilité frontend (sans /api)
+app.use('/admin/auth', adminAuthRoutes);
+app.use('/api/auth/admin', adminAuthRoutes);
+app.use('/api', courseApprovalRoutes);
 app.use('/api/courses', courseRoutes);
 app.use('/api/quizzes', quizRoutes);
 app.use('/api/certificates', certificateRoutes);
@@ -231,10 +261,15 @@ app.use('/api/messages', messageRoutes);
 app.use('/api/files', fileRoutes);
 app.use('/api/professional', professionalRoutes);
 app.use('/api/modules', moduleRoutes);
+app.use('/api', moduleQuizRoutes);
 app.use('/api/media', mediaRoutes);
 app.use('/api/badges', badgeRoutes);
 app.use('/api/progress', progressRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/payments', paymentRoutes);
+app.use('/api/payments/webhook', webhookRoutes);
+app.use('/api', certificateRequestRoutes);
+app.use('/api/instructor', require('./routes/instructorRoutes'));
 
 // Gestion des erreurs 404
 app.use((req, res) => {

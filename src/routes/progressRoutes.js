@@ -29,5 +29,17 @@ router.post('/enrollment/:enrollmentId/lesson/:lessonId/complete',
   progressController.markLessonCompleted
 );
 
+// Nouvelle route pour compléter une leçon (avec déverrouillage)
+router.post('/enrollment/:enrollmentId/lesson/:lessonId/complete-sequential', 
+  authenticateToken, 
+  progressController.completeLesson
+);
+
+// Nouvelle route pour vérifier l'accès à une leçon (progression séquentielle)
+router.get('/enrollment/:enrollmentId/lesson/:lessonId/access', 
+  authenticateToken, 
+  progressController.checkLessonAccess
+);
+
 module.exports = router;
 

@@ -39,7 +39,6 @@ dist/
 build/
 
 # Uploads (fichiers générés dynamiquement)
-uploads/*
+uploads/
 !uploads/.gitkeep
-!uploads/**/.gitkeep
 

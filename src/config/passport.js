@@ -73,17 +73,89 @@ if (GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET) {
         const randomPassword = Math.random().toString(36).slice(-12) + Math.random().toString(36).slice(-12);
         const hashedPassword = await bcrypt.hash(randomPassword, 10);
 
-        // Récupérer le rôle de la session (passé lors de l'authentification Google)
-        // Le rôle peut aussi être passé via state dans certains cas, mais on privilégie la session
+        // Récupérer le rôle depuis le token stocké en base de données
+        // Le token est passé dans le paramètre state et récupéré depuis la base
         let userRole = null;
         
-        if (request.session && request.session.userRole) {
+        // Essayer de récupérer le rôle depuis le state (qui contient un token)
+        // Le state peut être dans request.query.state (retourné par Google) ou request.session (si Passport l'a stocké)
+        let stateValue = null;
+        
+        if (request.query && request.query.state) {
+          stateValue = request.query.state;
+          console.log(`🔍 [Google OAuth] State trouvé dans query: ${stateValue.substring(0, 50)}...`);
+        } else if (request.session && request.session.state) {
+          stateValue = request.session.state;
+          console.log(`🔍 [Google OAuth] State trouvé dans session: ${stateValue.substring(0, 50)}...`);
+        }
+        
+        if (stateValue) {
+          try {
+            // Essayer de décoder le state (peut être base64 ou JSON direct)
+            let decodedState;
+            try {
+              // Essayer de décoder en base64 d'abord
+              decodedState = JSON.parse(Buffer.from(stateValue, 'base64').toString());
+            } catch (e1) {
+              try {
+                // Si ça échoue, essayer de parser directement comme JSON
+                decodedState = JSON.parse(stateValue);
+              } catch (e2) {
+                // Si ça échoue aussi, essayer de décoder URL
+                decodedState = JSON.parse(decodeURIComponent(stateValue));
+              }
+            }
+            
+            const roleToken = decodedState?.token;
+            
+            if (roleToken) {
+              console.log(`🔑 [Google OAuth] Token extrait du state: ${roleToken.substring(0, 16)}...`);
+              
+              // Récupérer le rôle depuis la base de données
+              const [tokens] = await pool.execute(
+                'SELECT role FROM oauth_role_tokens WHERE token = ? AND expires_at > NOW()',
+                [roleToken]
+              );
+              
+              if (tokens.length > 0) {
+                userRole = tokens[0].role;
+                console.log(`✅ [Google OAuth] Rôle récupéré depuis la base de données: ${userRole}`);
+                
+                // Supprimer le token utilisé (nettoyage)
+                pool.execute('DELETE FROM oauth_role_tokens WHERE token = ?', [roleToken])
+                  .catch(err => console.warn('⚠️ Erreur lors de la suppression du token:', err));
+              } else {
+                console.warn(`⚠️  [Google OAuth] Token de rôle invalide ou expiré: ${roleToken.substring(0, 16)}...`);
+                // Vérifier s'il existe mais est expiré
+                const [expiredTokens] = await pool.execute(
+                  'SELECT role FROM oauth_role_tokens WHERE token = ?',
+                  [roleToken]
+                );
+                if (expiredTokens.length > 0) {
+                  console.warn(`⚠️  [Google OAuth] Token trouvé mais expiré. Rôle: ${expiredTokens[0].role}`);
+                }
+              }
+            } else {
+              console.warn(`⚠️  [Google OAuth] Aucun token trouvé dans le state décodé`);
+            }
+          } catch (error) {
+            console.warn(`⚠️  [Google OAuth] Erreur lors du décodage du state: ${error.message}`);
+            console.warn(`⚠️  [Google OAuth] State brut: ${stateValue.substring(0, 100)}...`);
+          }
+        } else {
+          console.warn(`⚠️  [Google OAuth] Aucun state trouvé dans query ou session`);
+        }
+        
+        // Fallback: essayer la session (pour compatibilité locale)
+        if (!userRole && request.session && request.session.userRole) {
           userRole = request.session.userRole;
           console.log(`✅ [Google OAuth] Rôle récupéré de la session: ${userRole}`);
-        } else {
+        }
+        
+        if (!userRole) {
           // Si aucun rôle n'est fourni, on ne peut pas créer le compte
           // Le frontend doit rediriger vers /select-role
-          console.warn(`⚠️  [Google OAuth] Aucun rôle trouvé dans la session pour le nouvel utilisateur`);
+          console.warn(`⚠️  [Google OAuth] Aucun rôle trouvé (state: ${request.query?.state ? 'présent' : 'absent'}, session: ${request.session?.userRole || 'absente'})`);
           return done(null, false, { 
             message: 'Rôle non spécifié. Veuillez sélectionner votre rôle.',
             code: 'ROLE_REQUIRED',

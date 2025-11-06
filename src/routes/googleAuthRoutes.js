@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const passport = require('../config/passport');
 const jwt = require('jsonwebtoken');
+const { pool } = require('../config/database');
+const crypto = require('crypto');
 
 // Vérifier si Google OAuth est configuré
 const isGoogleOAuthConfigured = process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET;
@@ -16,7 +18,7 @@ router.get('/google',
       });
     }
     
-    // Valider et stocker le rôle dans la session
+    // Valider et stocker le rôle dans la session ET dans state
     const validRoles = ['student', 'instructor', 'apprenant', 'formateur'];
     let userRole = 'student'; // Par défaut
     
@@ -35,10 +37,28 @@ router.get('/google',
       }
     }
     
-    // Stocker le rôle dans la session pour l'utiliser après le callback
+    // Stocker le rôle dans la session (pour compatibilité locale)
     req.session.userRole = userRole;
     
+    // Créer un token unique pour stocker le rôle en base de données
+    // Cela fonctionne même si les sessions ne persistent pas en production
+    const roleToken = crypto.randomBytes(32).toString('hex');
+    
+    // Stocker le rôle dans la base de données avec expiration (5 minutes)
+    pool.execute(
+      'INSERT INTO oauth_role_tokens (token, role, expires_at) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 5 MINUTE))',
+      [roleToken, userRole]
+    ).catch(err => {
+      console.error('❌ [Google OAuth] Erreur lors du stockage du token de rôle:', err);
+    });
+    
     console.log(`🔐 [Google OAuth] Rôle sélectionné: ${userRole} (paramètre reçu: ${req.query.role || 'aucun'})`);
+    console.log(`📦 [Google OAuth] Token de rôle créé: ${roleToken.substring(0, 16)}...`);
+    
+    // Encoder le token dans le paramètre state
+    // Passport utilisera ce state et le retournera dans le callback
+    const state = Buffer.from(JSON.stringify({ token: roleToken })).toString('base64');
+    req.query.state = state;
     
     next();
   },
@@ -149,7 +169,17 @@ router.get('/google/callback',
       console.log('📤 [Google OAuth] Données utilisateur retournées:', {
         id: userData.id,
         email: userData.email,
-        role: userData.role
+        role: userData.role,
+        roleSource: 'database'
+      });
+      
+      // Log détaillé pour le débogage
+      console.log('🔍 [Google OAuth] Détails de l\'utilisateur:', {
+        userId: user.id,
+        email: user.email,
+        role: userRole,
+        roleInDatabase: user.role,
+        profilePicture: user.profile_picture ? 'présent' : 'absent'
       });
 
       // Encoder les données utilisateur en JSON

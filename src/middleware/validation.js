@@ -1,5 +1,19 @@
 const { body, validationResult } = require('express-validator');
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHA256_REGEX = /^[a-f0-9]{64}$/i;
+
+const isValidTokenFormat = (value) => {
+  if (value === undefined || value === null) {
+    return false;
+  }
+  const token = String(value).trim();
+  if (!token) {
+    return false;
+  }
+  return UUID_REGEX.test(token) || SHA256_REGEX.test(token);
+};
+
 // Middleware pour gérer les erreurs de validation
 exports.handleValidationErrors = (req, res, next) => {
   const errors = validationResult(req);
@@ -78,8 +92,12 @@ exports.validateEmailVerification = [
   body('token')
     .notEmpty()
     .withMessage('Token de vérification requis')
-    .isUUID()
-    .withMessage('Format de token invalide'),
+    .custom((value) => {
+      if (!isValidTokenFormat(value)) {
+        throw new Error('Format de token invalide');
+      }
+      return true;
+    }),
 ];
 
 // Validation pour le renvoi d'email de vérification
@@ -103,8 +121,12 @@ exports.validateResetPassword = [
   body('token')
     .notEmpty()
     .withMessage('Token de réinitialisation requis')
-    .isUUID()
-    .withMessage('Format de token invalide'),
+    .custom((value) => {
+      if (!isValidTokenFormat(value)) {
+        throw new Error('Format de token invalide');
+      }
+      return true;
+    }),
   body('newPassword')
     .isLength({ min: 8 })
     .withMessage('Le mot de passe doit contenir au moins 8 caractères')

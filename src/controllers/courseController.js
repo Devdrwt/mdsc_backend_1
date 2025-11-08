@@ -1,6 +1,71 @@
 const { pool } = require('../config/database');
 const { sanitizeValue } = require('../utils/sanitize');
+const { buildMediaUrl, formatInstructorMetadata } = require('../utils/media');
 const { v4: uuidv4 } = require('uuid');
+
+const formatCourseRow = (row = {}) => {
+  if (!row) {
+    return null;
+  }
+
+  const categoryId = row.category_id ?? row.categoryId ?? null;
+
+  return {
+    id: row.id,
+    title: row.title,
+    slug: row.slug,
+    description: row.description,
+    short_description: row.short_description,
+    thumbnail_url: buildMediaUrl(row.thumbnail_url),
+    video_url: buildMediaUrl(row.video_url),
+    language: row.language,
+    difficulty: row.difficulty,
+    duration_minutes: row.duration_minutes != null ? Number(row.duration_minutes) : null,
+    price: row.price != null ? Number(row.price) : null,
+    currency: row.currency,
+    status: row.status || (row.is_published ? 'published' : 'draft'),
+    is_published: Boolean(row.is_published),
+    is_featured: Boolean(row.is_featured),
+    course_type: row.course_type,
+    max_students: row.max_students != null ? Number(row.max_students) : null,
+    enrollment_deadline: row.enrollment_deadline,
+    course_start_date: row.course_start_date,
+    course_end_date: row.course_end_date,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    category: categoryId
+      ? {
+          id: categoryId,
+          name: row.category_name || row.categoryName || null,
+          color: row.category_color || row.categoryColor || null
+        }
+      : null,
+    instructor: formatInstructorMetadata({
+      id: row.instructor_id,
+      first_name: row.instructor_first_name,
+      last_name: row.instructor_last_name,
+      email: row.instructor_email,
+      organization: row.instructor_organization,
+      profile_picture: row.instructor_profile_picture
+    }),
+    prerequisite: row.prerequisite_id || row.prerequisite_course_id
+      ? {
+          id: row.prerequisite_id || row.prerequisite_course_id,
+          title: row.prerequisite_title || row.prerequisiteTitle || null
+        }
+      : null,
+    metrics: {
+      average_rating: Number(row.average_rating || 0),
+      review_count: Number(row.review_count || 0),
+      enrollment_count: Number(row.enrollment_count || 0),
+      total_views: Number(row.total_views || 0)
+    },
+    average_rating: Number(row.average_rating || 0),
+    review_count: Number(row.review_count || 0),
+    enrollment_count: Number(row.enrollment_count || 0),
+    total_views: Number(row.total_views || 0)
+  };
+};
 
 // Récupérer tous les cours (avec pagination et filtres)
 const getAllCourses = async (req, res) => {
@@ -49,14 +114,19 @@ const getAllCourses = async (req, res) => {
         cat.color as category_color,
         u.first_name as instructor_first_name,
         u.last_name as instructor_last_name,
+        u.email as instructor_email,
+        u.organization as instructor_organization,
+        u.profile_picture as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(cr.id) as review_count,
-        COUNT(e.id) as enrollment_count
+        COUNT(e.id) as enrollment_count,
+        COALESCE(ca.total_views, 0) as total_views
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
       LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN course_analytics ca ON ca.course_id = c.id
       ${whereClause}
       GROUP BY c.id
       ORDER BY c.${sort} ${order}
@@ -79,7 +149,7 @@ const getAllCourses = async (req, res) => {
     res.json({
       success: true,
       data: {
-        courses,
+        courses: courses.map(formatCourseRow),
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
@@ -152,17 +222,30 @@ const getCourseById = async (req, res) => {
         c.*,
         cat.name as category_name,
         cat.color as category_color,
-        cat.id as category_id,
         u.first_name as instructor_first_name,
         u.last_name as instructor_last_name,
-        AVG(cr.rating) as average_rating,
-        COUNT(cr.id) as review_count,
-        COUNT(e.id) as enrollment_count
+        u.email as instructor_email,
+        u.organization as instructor_organization,
+        u.profile_picture as instructor_profile_picture,
+        stats.average_rating,
+        stats.review_count,
+        stats.enrollment_count,
+        COALESCE(ca.total_views, 0) as total_views
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
-      LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
-      LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN (
+        SELECT 
+          c.id AS course_id,
+          AVG(cr.rating) AS average_rating,
+          COUNT(cr.id) AS review_count,
+          COUNT(e.id) AS enrollment_count
+        FROM courses c
+        LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
+        LEFT JOIN enrollments e ON c.id = e.course_id
+        WHERE c.id = ?
+      ) stats ON stats.course_id = c.id
+      LEFT JOIN course_analytics ca ON ca.course_id = c.id
       WHERE c.id = ?
     `;
     
@@ -173,7 +256,7 @@ const getCourseById = async (req, res) => {
     
     query += ' GROUP BY c.id';
 
-    const [courses] = await pool.execute(query, [id]);
+    const [courses] = await pool.execute(query, [id, id]);
 
     if (courses.length === 0) {
       return res.status(404).json({
@@ -182,7 +265,7 @@ const getCourseById = async (req, res) => {
       });
     }
 
-    const course = courses[0];
+    const course = formatCourseRow(courses[0]);
 
     // Récupérer les modules du cours
     const modulesQuery = `
@@ -215,14 +298,7 @@ const getCourseById = async (req, res) => {
     res.json({
       success: true,
       data: {
-        course: {
-          ...course,
-          category: course.category_id ? {
-            id: course.category_id,
-            name: course.category_name,
-            color: course.category_color
-          } : null
-        },
+        course,
         modules,
         lessons,
         quizzes
@@ -575,14 +651,19 @@ const getCoursesByCategory = async (req, res) => {
         cat.color as category_color,
         u.first_name as instructor_first_name,
         u.last_name as instructor_last_name,
+        u.email as instructor_email,
+        u.organization as instructor_organization,
+        u.profile_picture as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(cr.id) as review_count,
-        COUNT(e.id) as enrollment_count
+        COUNT(e.id) as enrollment_count,
+        COALESCE(ca.total_views, 0) as total_views
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
       LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN course_analytics ca ON ca.course_id = c.id
       WHERE c.is_published = TRUE AND c.category_id = ?
       GROUP BY c.id
       ORDER BY c.created_at DESC
@@ -593,7 +674,7 @@ const getCoursesByCategory = async (req, res) => {
 
     res.json({
       success: true,
-      data: courses
+      data: courses.map(formatCourseRow)
     });
 
   } catch (error) {
@@ -626,14 +707,19 @@ const searchCourses = async (req, res) => {
         cat.color as category_color,
         u.first_name as instructor_first_name,
         u.last_name as instructor_last_name,
+        u.email as instructor_email,
+        u.organization as instructor_organization,
+        u.profile_picture as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(cr.id) as review_count,
-        COUNT(e.id) as enrollment_count
+        COUNT(e.id) as enrollment_count,
+        COALESCE(ca.total_views, 0) as total_views
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
       LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN course_analytics ca ON ca.course_id = c.id
       WHERE c.is_published = TRUE 
         AND (c.title LIKE ? OR c.description LIKE ? OR c.short_description LIKE ?)
       GROUP BY c.id
@@ -646,7 +732,7 @@ const searchCourses = async (req, res) => {
 
     res.json({
       success: true,
-      data: courses
+      data: courses.map(formatCourseRow)
     });
 
   } catch (error) {
@@ -670,14 +756,19 @@ const getFeaturedCourses = async (req, res) => {
         cat.color as category_color,
         u.first_name as instructor_first_name,
         u.last_name as instructor_last_name,
+        u.email as instructor_email,
+        u.organization as instructor_organization,
+        u.profile_picture as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(cr.id) as review_count,
-        COUNT(e.id) as enrollment_count
+        COUNT(e.id) as enrollment_count,
+        COALESCE(ca.total_views, 0) as total_views
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
       LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN course_analytics ca ON ca.course_id = c.id
       WHERE c.is_published = TRUE AND c.is_featured = TRUE
       GROUP BY c.id
       ORDER BY c.created_at DESC
@@ -688,7 +779,7 @@ const getFeaturedCourses = async (req, res) => {
 
     res.json({
       success: true,
-      data: courses
+      data: courses.map(formatCourseRow)
     });
 
   } catch (error) {
@@ -1016,21 +1107,58 @@ const getMyCourses = async (req, res) => {
       SELECT 
         c.*,
         e.enrolled_at,
-        e.progress_percentage as progress,
+        e.progress_percentage,
         e.completed_at,
         e.is_active,
-        cat.name as category_name
-      FROM courses c
-      INNER JOIN enrollments e ON c.id = e.course_id
+        cat.name as category_name,
+        cat.color as category_color,
+        u.first_name as instructor_first_name,
+        u.last_name as instructor_last_name,
+        u.email as instructor_email,
+        u.organization as instructor_organization,
+        u.profile_picture as instructor_profile_picture,
+        stats.average_rating,
+        stats.review_count,
+        enroll_stats.enrollment_count,
+        COALESCE(ca.total_views, 0) as total_views
+      FROM enrollments e
+      INNER JOIN courses c ON c.id = e.course_id
       LEFT JOIN categories cat ON c.category_id = cat.id
+      LEFT JOIN users u ON c.instructor_id = u.id
+      LEFT JOIN (
+        SELECT 
+          course_id,
+          AVG(rating) AS average_rating,
+          COUNT(*) AS review_count
+        FROM course_reviews
+        WHERE is_approved = TRUE
+        GROUP BY course_id
+      ) stats ON stats.course_id = c.id
+      LEFT JOIN (
+        SELECT 
+          course_id,
+          COUNT(*) AS enrollment_count
+        FROM enrollments
+        GROUP BY course_id
+      ) enroll_stats ON enroll_stats.course_id = c.id
+      LEFT JOIN course_analytics ca ON ca.course_id = c.id
       WHERE e.user_id = ? AND e.is_active = TRUE
       ORDER BY e.enrolled_at DESC
     `, [userId]);
 
-    // Retourner un tableau vide si aucun cours n'est trouvé
+    const formattedCourses = (courses || []).map((course) => ({
+      ...formatCourseRow(course),
+      enrollment: {
+        enrolled_at: course.enrolled_at,
+        progress_percentage: Number(course.progress_percentage || 0),
+        completed_at: course.completed_at,
+        is_active: Boolean(course.is_active)
+      }
+    }));
+
     res.json({
       success: true,
-      data: courses || []
+      data: formattedCourses
     });
   } catch (error) {
     console.error('Erreur lors de la récupération des cours:', error);
@@ -1267,14 +1395,19 @@ const getPopularCourses = async (req, res) => {
         cat.color as category_color,
         u.first_name as instructor_first_name,
         u.last_name as instructor_last_name,
+        u.email as instructor_email,
+        u.organization as instructor_organization,
+        u.profile_picture as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(cr.id) as review_count,
-        COUNT(e.id) as enrollment_count
+        COUNT(e.id) as enrollment_count,
+        COALESCE(ca.total_views, 0) as total_views
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
       LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN course_analytics ca ON ca.course_id = c.id
       WHERE c.is_published = TRUE
       GROUP BY c.id
       ORDER BY enrollment_count DESC, average_rating DESC
@@ -1285,7 +1418,7 @@ const getPopularCourses = async (req, res) => {
 
     res.json({
       success: true,
-      data: courses
+      data: courses.map(formatCourseRow)
     });
 
   } catch (error) {
@@ -1310,14 +1443,19 @@ const getRecommendedCourses = async (req, res) => {
         cat.color as category_color,
         u.first_name as instructor_first_name,
         u.last_name as instructor_last_name,
+        u.email as instructor_email,
+        u.organization as instructor_organization,
+        u.profile_picture as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(cr.id) as review_count,
-        COUNT(e.id) as enrollment_count
+        COUNT(e.id) as enrollment_count,
+        COALESCE(ca.total_views, 0) as total_views
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
       LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN course_analytics ca ON ca.course_id = c.id
       WHERE c.is_published = TRUE
     `;
 
@@ -1337,7 +1475,7 @@ const getRecommendedCourses = async (req, res) => {
 
     res.json({
       success: true,
-      data: courses
+      data: courses.map(formatCourseRow)
     });
 
   } catch (error) {
@@ -1361,19 +1499,32 @@ const getCourseBySlug = async (req, res) => {
         cat.color as category_color,
         u.first_name as instructor_first_name,
         u.last_name as instructor_last_name,
-        AVG(cr.rating) as average_rating,
-        COUNT(cr.id) as review_count,
-        COUNT(e.id) as enrollment_count,
+        u.email as instructor_email,
+        u.organization as instructor_organization,
+        u.profile_picture as instructor_profile_picture,
+        stats.average_rating,
+        stats.review_count,
+        stats.enrollment_count,
+        COALESCE(ca.total_views, 0) as total_views,
         cp.title as prerequisite_title,
         cp.id as prerequisite_id
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
-      LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
-      LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN (
+        SELECT 
+          c.id AS course_id,
+          AVG(cr.rating) AS average_rating,
+          COUNT(cr.id) AS review_count,
+          COUNT(e.id) AS enrollment_count
+        FROM courses c
+        LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
+        LEFT JOIN enrollments e ON c.id = e.course_id
+        GROUP BY c.id
+      ) stats ON stats.course_id = c.id
+      LEFT JOIN course_analytics ca ON ca.course_id = c.id
       LEFT JOIN courses cp ON c.prerequisite_course_id = cp.id
       WHERE c.slug = ? AND c.is_published = TRUE
-      GROUP BY c.id
     `;
 
     const [courses] = await pool.execute(query, [slug]);
@@ -1385,7 +1536,7 @@ const getCourseBySlug = async (req, res) => {
       });
     }
 
-    const course = courses[0];
+    const course = formatCourseRow(courses[0]);
 
     // Récupérer les modules du cours
     const modulesQuery = `

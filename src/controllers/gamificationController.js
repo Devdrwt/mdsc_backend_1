@@ -1,4 +1,5 @@
 const { pool } = require('../config/database');
+const { buildMediaUrl } = require('../utils/media');
 
 // Récupérer le profil gamification de l'utilisateur
 const getUserGamificationProfile = async (req, res) => {
@@ -556,7 +557,7 @@ const getUserProgress = async (req, res) => {
         courses: courses.map(course => ({
           id: course.id,
           title: course.title,
-          thumbnail: course.thumbnail_url,
+          thumbnail: buildMediaUrl(course.thumbnail_url),
           progress_percentage: course.progress_percentage,
           enrolled_at: course.enrolled_at,
           completed_at: course.completed_at,

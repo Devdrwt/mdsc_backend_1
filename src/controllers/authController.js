@@ -5,6 +5,8 @@ const crypto = require('crypto');
 const { pool } = require('../config/database');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('../services/emailService');
 
+const SHA256_REGEX = /^[A-Fa-f0-9]{64}$/;
+
 // Générer un token JWT
 const generateToken = (userId, email, role) => {
   return jwt.sign(
@@ -21,6 +23,23 @@ const generateRefreshToken = (userId, email, role) => {
     process.env.JWT_REFRESH_SECRET || 'mdsc_refresh_secret_key_2024_super_secure_change_in_production',
     { expiresIn: process.env.JWT_REFRESH_EXPIRE || '30d' }
   );
+};
+
+const normalizeTokenHash = (token) => {
+  if (token === undefined || token === null) {
+    return null;
+  }
+
+  const trimmedToken = String(token).trim();
+  if (!trimmedToken) {
+    return null;
+  }
+
+  if (SHA256_REGEX.test(trimmedToken)) {
+    return trimmedToken.toLowerCase();
+  }
+
+  return crypto.createHash('sha256').update(trimmedToken).digest('hex');
 };
 
 // Inscription
@@ -68,7 +87,7 @@ exports.register = async (req, res) => {
 
     const userId = result.insertId;
 
-    // Générer un token de vérification d'email (hashé en base et envoyé en hash)
+    // Générer un token de vérification d'email (stockage hashé en base)
     const verificationToken = uuidv4();
     const verificationTokenHash = crypto.createHash('sha256').update(verificationToken).digest('hex');
     const expiresAt = new Date();
@@ -85,9 +104,11 @@ exports.register = async (req, res) => {
       console.log('✅ Email de vérification envoyé à:', email);
     } catch (emailError) {
       console.error('❌ Erreur envoi email de vérification:', emailError.message);
-      console.log('⚠️  L\'utilisateur devra vérifier son email manuellement');
-      console.log('📧 Token de vérification (hash):', verificationTokenHash);
-      console.log('🔗 Lien de vérification:', `${process.env.VERIFY_EMAIL_URL}?token=${verificationTokenHash}`);
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('⚠️  L\'utilisateur devra vérifier son email manuellement');
+        console.log('📧 Token de vérification (hash):', verificationTokenHash);
+        console.log('🔗 Lien de vérification:', `${process.env.VERIFY_EMAIL_URL}?token=${verificationTokenHash}`);
+      }
     }
 
     res.status(201).json({
@@ -124,7 +145,14 @@ exports.verifyEmail = async (req, res) => {
   
   try {
     const { token } = req.body;
-    const providedHash = crypto.createHash('sha256').update(String(token)).digest('hex');
+    const providedHash = normalizeTokenHash(token);
+
+    if (!providedHash) {
+      return res.status(400).json({
+        success: false,
+        message: 'Token de vérification invalide'
+      });
+    }
 
     // Vérifier le token
     const [tokens] = await connection.query(
@@ -305,7 +333,7 @@ exports.resendVerificationEmail = async (req, res) => {
     // Supprimer les anciens tokens
     await connection.query('DELETE FROM email_verification_tokens WHERE user_id = ?', [user.id]);
 
-    // Générer un nouveau token (hashé)
+    // Générer un nouveau token (stockage hashé)
     const verificationToken = uuidv4();
     const verificationTokenHash = crypto.createHash('sha256').update(verificationToken).digest('hex');
     const expiresAt = new Date();
@@ -317,7 +345,15 @@ exports.resendVerificationEmail = async (req, res) => {
     );
 
     // Envoyer l'email
-    await sendVerificationEmail(email, user.first_name, verificationTokenHash);
+    try {
+      await sendVerificationEmail(email, user.first_name, verificationTokenHash);
+    } catch (emailError) {
+      console.error('❌ Erreur renvoi email de vérification:', emailError.message);
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('🔗 Lien de vérification manuel:', `${process.env.VERIFY_EMAIL_URL}?token=${verificationTokenHash}`);
+      }
+      throw emailError;
+    }
 
     res.json({
       success: true,
@@ -371,7 +407,7 @@ exports.forgotPassword = async (req, res) => {
       [user.id]
     );
 
-    // Générer un nouveau token (hashé)
+    // Générer un nouveau token (stockage hashé)
     const resetToken = uuidv4();
     const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
     const expiresAt = new Date();
@@ -383,7 +419,15 @@ exports.forgotPassword = async (req, res) => {
     );
 
     // Envoyer l'email
-    await sendPasswordResetEmail(email, user.first_name, resetTokenHash);
+    try {
+      await sendPasswordResetEmail(email, user.first_name, resetTokenHash);
+    } catch (emailError) {
+      console.error('❌ Erreur envoi email de réinitialisation:', emailError.message);
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('🔗 Lien de réinitialisation manuel:', `${process.env.RESET_PASSWORD_URL}?token=${resetTokenHash}`);
+      }
+      throw emailError;
+    }
 
     res.json({
       success: true,
@@ -407,7 +451,14 @@ exports.resetPassword = async (req, res) => {
   
   try {
     const { token, newPassword } = req.body;
-    const providedHash = crypto.createHash('sha256').update(String(token)).digest('hex');
+    const providedHash = normalizeTokenHash(token);
+
+    if (!providedHash) {
+      return res.status(400).json({
+        success: false,
+        message: 'Token de réinitialisation invalide'
+      });
+    }
 
     // Vérifier le token
     const [tokens] = await connection.query(

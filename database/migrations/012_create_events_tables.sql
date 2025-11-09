@@ -33,3 +33,18 @@ CREATE TABLE IF NOT EXISTS event_attendees (
   INDEX idx_event_attendees_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+ALTER TABLE system_events
+ADD COLUMN ip_address VARCHAR(45) NULL AFTER metadata,
+ADD COLUMN user_agent TEXT NULL AFTER ip_address;
+
+CREATE TABLE IF NOT EXISTS performance_metrics (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  metric_name VARCHAR(100) NOT NULL,
+  metric_value DECIMAL(12, 4) NOT NULL,
+  metric_unit VARCHAR(20) NULL,
+  context JSON NULL,
+  recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_performance_metrics_name (metric_name),
+  INDEX idx_performance_metrics_recorded_at (recorded_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+

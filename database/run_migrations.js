@@ -27,10 +27,15 @@ async function runMigrations() {
       console.log(`▶️  Exécution de ${file}...`);
 
       // Exécuter chaque requête SQL (séparées par des points-virgules)
-      const statements = sql
+      const sanitizedSql = sql
+        .split('\n')
+        .filter((line) => !line.trim().startsWith('--'))
+        .join('\n');
+
+      const statements = sanitizedSql
         .split(';')
-        .map(s => s.trim())
-        .filter(s => s.length > 0 && !s.startsWith('--'));
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
 
       for (const statement of statements) {
         try {

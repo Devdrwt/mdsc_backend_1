@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS payments (
 
 -- Ajouter colonne payment_id dans enrollments
 ALTER TABLE enrollments 
-ADD COLUMN payment_id INT NULL AFTER enrollment_date,
+ADD COLUMN payment_id INT NULL AFTER enrolled_at,
 ADD INDEX idx_payment_id (payment_id),
 ADD CONSTRAINT fk_enrollments_payment FOREIGN KEY (payment_id) REFERENCES payments(id) ON DELETE SET NULL;
 

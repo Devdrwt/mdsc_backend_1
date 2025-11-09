@@ -9,6 +9,13 @@ router.get('/leaderboard', authenticateToken, gamificationController.getLeaderbo
 router.get('/badges', authenticateToken, gamificationController.getAllBadges);
 router.get('/activities', authenticateToken, gamificationController.getUserActivities);
 
+// Alias XP (compatibilité avec le frontend)
+router.get('/xp/profile', authenticateToken, gamificationController.getUserGamificationProfile);
+router.get('/xp/leaderboard', authenticateToken, gamificationController.getLeaderboard);
+router.get('/xp/badges', authenticateToken, gamificationController.getAllBadges);
+router.get('/xp/activities', authenticateToken, gamificationController.getUserActivities);
+router.get('/xp/users/:userId', authenticateToken, gamificationController.getUserProgress);
+
 // Route pour récupérer la progression d'un utilisateur spécifique
 router.get('/users/:userId/progress', authenticateToken, gamificationController.getUserProgress);
 

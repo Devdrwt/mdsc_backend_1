@@ -60,10 +60,10 @@ router.get('/google',
     const state = Buffer.from(JSON.stringify({ token: roleToken })).toString('base64');
     req.query.state = state;
     
-    next();
-  },
-  passport.authenticate('google', { 
-    scope: ['profile', 'email']
+    passport.authenticate('google', { 
+      scope: ['profile', 'email'],
+      state
+    })(req, res, next);
   })
 );
 

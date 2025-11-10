@@ -34,8 +34,8 @@ CREATE TABLE IF NOT EXISTS event_attendees (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 ALTER TABLE system_events
-ADD COLUMN ip_address VARCHAR(45) NULL AFTER metadata,
-ADD COLUMN user_agent TEXT NULL AFTER ip_address;
+ADD COLUMN IF NOT EXISTS ip_address VARCHAR(45) NULL AFTER metadata,
+ADD COLUMN IF NOT EXISTS user_agent TEXT NULL AFTER ip_address;
 
 CREATE TABLE IF NOT EXISTS performance_metrics (
   id INT AUTO_INCREMENT PRIMARY KEY,

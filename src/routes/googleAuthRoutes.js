@@ -63,8 +63,7 @@ router.get('/google',
       scope: ['profile', 'email'],
       state
     })(req, res, next);
-  })
-);
+  });
 
 // Route de callback Google OAuth
 router.get('/google/callback',

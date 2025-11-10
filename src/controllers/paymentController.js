@@ -1,5 +1,6 @@
 const { pool } = require('../config/database');
 const { sanitizeValue } = require('../utils/sanitize');
+const { buildMediaUrl } = require('../utils/media');
 const StripeService = require('../services/paymentProviders/stripeService');
 const MobileMoneyService = require('../services/paymentProviders/mobileMoneyService');
 
@@ -202,7 +203,10 @@ const getPaymentStatus = async (req, res) => {
 
     res.json({
       success: true,
-      data: payment
+      data: {
+        ...payment,
+        thumbnail_url: buildMediaUrl(payment.thumbnail_url)
+      }
     });
 
   } catch (error) {
@@ -254,7 +258,10 @@ const getMyPayments = async (req, res) => {
     res.json({
       success: true,
       data: {
-        payments,
+        payments: payments.map((payment) => ({
+          ...payment,
+          thumbnail_url: buildMediaUrl(payment.thumbnail_url)
+        })),
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),

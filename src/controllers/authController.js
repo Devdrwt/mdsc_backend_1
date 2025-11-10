@@ -5,6 +5,8 @@ const crypto = require('crypto');
 const { pool } = require('../config/database');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('../services/emailService');
 
+const SHA256_REGEX = /^[A-Fa-f0-9]{64}$/;
+
 // Générer un token JWT
 const generateToken = (userId, email, role) => {
   return jwt.sign(
@@ -21,6 +23,23 @@ const generateRefreshToken = (userId, email, role) => {
     process.env.JWT_REFRESH_SECRET || 'mdsc_refresh_secret_key_2024_super_secure_change_in_production',
     { expiresIn: process.env.JWT_REFRESH_EXPIRE || '30d' }
   );
+};
+
+const normalizeTokenHash = (token) => {
+  if (token === undefined || token === null) {
+    return null;
+  }
+
+  const trimmedToken = String(token).trim();
+  if (!trimmedToken) {
+    return null;
+  }
+
+  if (SHA256_REGEX.test(trimmedToken)) {
+    return trimmedToken.toLowerCase();
+  }
+
+  return crypto.createHash('sha256').update(trimmedToken).digest('hex');
 };
 
 // Inscription
@@ -68,7 +87,7 @@ exports.register = async (req, res) => {
 
     const userId = result.insertId;
 
-    // Générer un token de vérification d'email (hashé en base et envoyé en hash)
+    // Générer un token de vérification d'email (stockage hashé en base)
     const verificationToken = uuidv4();
     const verificationTokenHash = crypto.createHash('sha256').update(verificationToken).digest('hex');
     const expiresAt = new Date();
@@ -85,9 +104,11 @@ exports.register = async (req, res) => {
       console.log('✅ Email de vérification envoyé à:', email);
     } catch (emailError) {
       console.error('❌ Erreur envoi email de vérification:', emailError.message);
-      console.log('⚠️  L\'utilisateur devra vérifier son email manuellement');
-      console.log('📧 Token de vérification (hash):', verificationTokenHash);
-      console.log('🔗 Lien de vérification:', `${process.env.VERIFY_EMAIL_URL}?token=${verificationTokenHash}`);
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('⚠️  L\'utilisateur devra vérifier son email manuellement');
+        console.log('📧 Token de vérification (hash):', verificationTokenHash);
+        console.log('🔗 Lien de vérification:', `${process.env.VERIFY_EMAIL_URL}?token=${verificationTokenHash}`);
+      }
     }
 
     res.status(201).json({
@@ -123,31 +144,20 @@ exports.verifyEmail = async (req, res) => {
   const connection = await pool.getConnection();
   
   try {
-    // Le token peut venir de req.query (GET) ou req.body (POST)
-    const token = req.query.token || req.body.token;
-    
-    if (!token) {
+    const { token } = req.body;
+    const providedHash = normalizeTokenHash(token);
+
+    if (!providedHash) {
       return res.status(400).json({
         success: false,
-        message: 'Token de vérification requis'
-      });
-    }
-
-    // Le token dans l'email est déjà un hash SHA-256, pas besoin de le re-hasher
-    const tokenHash = String(token).trim();
-
-    // Vérifier que c'est bien un hash SHA-256 (64 caractères hexadécimaux)
-    if (!/^[a-f0-9]{64}$/i.test(tokenHash)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Format de token invalide'
+        message: 'Token de vérification invalide'
       });
     }
 
     // Vérifier le token
     const [tokens] = await connection.query(
       'SELECT user_id, expires_at FROM email_verification_tokens WHERE token = ?',
-      [tokenHash]
+      [providedHash]
     );
 
     if (tokens.length === 0) {
@@ -161,7 +171,7 @@ exports.verifyEmail = async (req, res) => {
 
     // Vérifier l'expiration
     if (new Date() > new Date(expires_at)) {
-      await connection.query('DELETE FROM email_verification_tokens WHERE token = ?', [tokenHash]);
+      await connection.query('DELETE FROM email_verification_tokens WHERE token = ?', [providedHash]);
       return res.status(400).json({
         success: false,
         message: 'Le token de vérification a expiré. Veuillez demander un nouveau lien.'
@@ -175,7 +185,7 @@ exports.verifyEmail = async (req, res) => {
     );
 
     // Supprimer le token utilisé
-    await connection.query('DELETE FROM email_verification_tokens WHERE token = ?', [tokenHash]);
+    await connection.query('DELETE FROM email_verification_tokens WHERE token = ?', [providedHash]);
 
     res.json({
       success: true,
@@ -323,7 +333,7 @@ exports.resendVerificationEmail = async (req, res) => {
     // Supprimer les anciens tokens
     await connection.query('DELETE FROM email_verification_tokens WHERE user_id = ?', [user.id]);
 
-    // Générer un nouveau token (hashé)
+    // Générer un nouveau token (stockage hashé)
     const verificationToken = uuidv4();
     const verificationTokenHash = crypto.createHash('sha256').update(verificationToken).digest('hex');
     const expiresAt = new Date();
@@ -335,7 +345,15 @@ exports.resendVerificationEmail = async (req, res) => {
     );
 
     // Envoyer l'email
-    await sendVerificationEmail(email, user.first_name, verificationTokenHash);
+    try {
+      await sendVerificationEmail(email, user.first_name, verificationTokenHash);
+    } catch (emailError) {
+      console.error('❌ Erreur renvoi email de vérification:', emailError.message);
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('🔗 Lien de vérification manuel:', `${process.env.VERIFY_EMAIL_URL}?token=${verificationTokenHash}`);
+      }
+      throw emailError;
+    }
 
     res.json({
       success: true,
@@ -355,39 +373,19 @@ exports.resendVerificationEmail = async (req, res) => {
 
 // Demande de réinitialisation de mot de passe
 exports.forgotPassword = async (req, res) => {
-  console.log('\n🔔 FORGOT_PASSWORD: ========== DÉBUT ==========');
-  console.log('🔔 FORGOT_PASSWORD: Controller appelé !');
-  console.log('🔔 FORGOT_PASSWORD: Email reçu:', req.body?.email);
-  console.log('🔔 FORGOT_PASSWORD: Body complet:', JSON.stringify(req.body));
-  console.log('🔔 FORGOT_PASSWORD: Headers Origin:', req.headers.origin);
-  console.log('🔔 FORGOT_PASSWORD: Content-Type:', req.headers['content-type']);
-  console.log('🔔 FORGOT_PASSWORD: IP:', req.ip);
-  
   const connection = await pool.getConnection();
   
   try {
     const { email } = req.body;
 
-    if (!email) {
-      console.error('❌ FORGOT_PASSWORD: Email manquant');
-      return res.status(400).json({
-        success: false,
-        message: 'Email requis'
-      });
-    }
-
-    console.log('🔔 FORGOT_PASSWORD: Recherche de l\'utilisateur...');
     // Récupérer l'utilisateur
     const [users] = await connection.query(
       'SELECT id, first_name, is_email_verified FROM users WHERE email = ?',
       [email]
     );
 
-    console.log('🔔 FORGOT_PASSWORD: Utilisateurs trouvés:', users.length);
-
     // Pour des raisons de sécurité, on renvoie toujours un message de succès
     if (users.length === 0) {
-      console.log('⚠️  FORGOT_PASSWORD: Aucun utilisateur trouvé - réponse sécurisée');
       return res.json({
         success: true,
         message: 'Si un compte existe avec cette adresse email, vous recevrez un lien de réinitialisation.'
@@ -395,77 +393,55 @@ exports.forgotPassword = async (req, res) => {
     }
 
     const user = users[0];
-    console.log('🔔 FORGOT_PASSWORD: Utilisateur trouvé - ID:', user.id, 'Email vérifié:', user.is_email_verified);
 
     if (!user.is_email_verified) {
-      console.log('❌ FORGOT_PASSWORD: Email non vérifié');
       return res.status(403).json({
         success: false,
         message: 'Veuillez d\'abord vérifier votre email'
       });
     }
 
-    console.log('🔔 FORGOT_PASSWORD: Suppression des anciens tokens...');
     // Supprimer les anciens tokens non utilisés
     await connection.query(
       'DELETE FROM password_reset_tokens WHERE user_id = ? AND used_at IS NULL',
       [user.id]
     );
 
-    console.log('🔔 FORGOT_PASSWORD: Génération du nouveau token...');
-    // Générer un nouveau token (hashé)
+    // Générer un nouveau token (stockage hashé)
     const resetToken = uuidv4();
     const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
     const expiresAt = new Date();
     expiresAt.setHours(expiresAt.getHours() + parseInt(process.env.PASSWORD_RESET_EXPIRE || 1));
 
-    console.log('🔔 FORGOT_PASSWORD: Insertion du token en base...');
     await connection.query(
       'INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES (?, ?, ?)',
       [user.id, resetTokenHash, expiresAt]
     );
-    console.log('✅ FORGOT_PASSWORD: Token inséré en base - Hash:', resetTokenHash.substring(0, 16) + '...');
 
-    console.log('🔔 FORGOT_PASSWORD: Tentative d\'envoi de l\'email...');
-    // Envoyer l'email (avec gestion d'erreur séparée pour ne pas bloquer la réponse)
+    // Envoyer l'email
     try {
       await sendPasswordResetEmail(email, user.first_name, resetTokenHash);
-      console.log('✅ FORGOT_PASSWORD: Email envoyé avec succès');
     } catch (emailError) {
-      // Log détaillé de l'erreur email mais continuer quand même
-      console.error('\n❌ FORGOT_PASSWORD: ERREUR ENVOI EMAIL');
-      console.error('   Message:', emailError.message);
-      console.error('   Code:', emailError.code);
-      console.error('   Stack:', emailError.stack);
-      console.log('⚠️  FORGOT_PASSWORD: L\'email n\'a pas pu être envoyé, mais le token a été créé');
-      console.log('📧 FORGOT_PASSWORD: Token de réinitialisation:', resetTokenHash);
-      
-      // En développement, on peut logger l'URL complète pour faciliter le debug
-      if (process.env.NODE_ENV === 'development') {
-        const resetUrl = `${process.env.RESET_PASSWORD_URL || process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password?token=${resetTokenHash}`;
-        console.log('🔗 FORGOT_PASSWORD: URL de réinitialisation:', resetUrl);
+      console.error('❌ Erreur envoi email de réinitialisation:', emailError.message);
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('🔗 Lien de réinitialisation manuel:', `${process.env.RESET_PASSWORD_URL}?token=${resetTokenHash}`);
       }
+      throw emailError;
     }
 
-    console.log('✅ FORGOT_PASSWORD: Retour 200 - Succès');
     res.json({
       success: true,
       message: 'Si un compte existe avec cette adresse email, vous recevrez un lien de réinitialisation.'
     });
 
   } catch (error) {
-    console.error('\n❌ FORGOT_PASSWORD: ERREUR CRITIQUE');
-    console.error('   Message:', error.message);
-    console.error('   Code:', error.code);
-    console.error('   Stack:', error.stack);
-    console.error('❌ FORGOT_PASSWORD: RETOUR 500');
+    console.error('Erreur forgot password:', error);
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la demande de réinitialisation'
     });
   } finally {
     connection.release();
-    console.log('🔔 FORGOT_PASSWORD: ========== FIN ==========\n');
   }
 };
 
@@ -475,22 +451,19 @@ exports.resetPassword = async (req, res) => {
   
   try {
     const { token, newPassword } = req.body;
-    
-    // Le token dans l'email est déjà un hash SHA-256, pas besoin de le re-hasher
-    const tokenHash = String(token).trim();
+    const providedHash = normalizeTokenHash(token);
 
-    // Vérifier que c'est bien un hash SHA-256 (64 caractères hexadécimaux)
-    if (!/^[a-f0-9]{64}$/i.test(tokenHash)) {
+    if (!providedHash) {
       return res.status(400).json({
         success: false,
-        message: 'Format de token invalide'
+        message: 'Token de réinitialisation invalide'
       });
     }
 
     // Vérifier le token
     const [tokens] = await connection.query(
       'SELECT user_id, expires_at, used_at FROM password_reset_tokens WHERE token = ?',
-      [tokenHash]
+      [providedHash]
     );
 
     if (tokens.length === 0) {
@@ -512,7 +485,7 @@ exports.resetPassword = async (req, res) => {
 
     // Vérifier l'expiration
     if (new Date() > new Date(expires_at)) {
-      await connection.query('DELETE FROM password_reset_tokens WHERE token = ?', [tokenHash]);
+      await connection.query('DELETE FROM password_reset_tokens WHERE token = ?', [providedHash]);
       return res.status(400).json({
         success: false,
         message: 'Le token de réinitialisation a expiré. Veuillez faire une nouvelle demande.'
@@ -531,7 +504,7 @@ exports.resetPassword = async (req, res) => {
     // Marquer le token comme utilisé
     await connection.query(
       'UPDATE password_reset_tokens SET used_at = NOW() WHERE token = ?',
-      [tokenHash]
+      [providedHash]
     );
 
     // Révoquer tous les refresh tokens de l'utilisateur (sécurité)

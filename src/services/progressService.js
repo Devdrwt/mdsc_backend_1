@@ -1,5 +1,53 @@
 const { pool } = require('../config/database');
 
+const createNotification = async ({
+  userId,
+  title,
+  message,
+  type,
+  actionUrl = null,
+  metadata = null,
+}) => {
+  if (!userId) return;
+
+  try {
+    const serializedMetadata =
+      metadata && Object.keys(metadata || {}).length > 0
+        ? JSON.stringify(metadata)
+        : null;
+
+    await pool.execute(
+      `
+        INSERT INTO notifications (user_id, title, message, type, action_url, metadata)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      [userId, title, message, type, actionUrl, serializedMetadata]
+    );
+  } catch (error) {
+    console.error('Erreur lors de la création de la notification (progression):', error);
+  }
+};
+
+const getModuleCompletionStats = async (enrollmentId, moduleId) => {
+  if (!moduleId) {
+    return { total: 0, completed: 0 };
+  }
+
+  const [rows] = await pool.execute(
+    `
+      SELECT 
+        COUNT(l.id) AS total,
+        SUM(CASE WHEN p.status = 'completed' THEN 1 ELSE 0 END) AS completed
+      FROM lessons l
+      LEFT JOIN progress p ON p.lesson_id = l.id AND p.enrollment_id = ?
+      WHERE l.module_id = ? AND l.is_published = TRUE
+    `,
+    [enrollmentId, moduleId]
+  );
+
+  return rows[0] || { total: 0, completed: 0 };
+};
+
 /**
  * Service de gestion de la progression
  */
@@ -91,9 +139,20 @@ class ProgressService {
     }
 
     const enrollment = enrollments[0];
+    const wasCourseCompletedBefore = enrollment.status === 'completed';
 
     // Vérifier que la leçon appartient au cours
-    const lessonQuery = 'SELECT id, course_id FROM lessons WHERE id = ?';
+    const lessonQuery = `
+      SELECT 
+        l.id,
+        l.course_id,
+        l.module_id,
+        l.title AS lesson_title,
+        m.title AS module_title
+      FROM lessons l
+      LEFT JOIN modules m ON l.module_id = m.id
+      WHERE l.id = ?
+    `;
     const [lessons] = await pool.execute(lessonQuery, [lessonId]);
     
     if (lessons.length === 0) {
@@ -105,8 +164,18 @@ class ProgressService {
     }
 
     // Vérifier si la progression existe
-    const existingQuery = 'SELECT id FROM progress WHERE enrollment_id = ? AND lesson_id = ?';
+    const existingQuery = 'SELECT id, status FROM progress WHERE enrollment_id = ? AND lesson_id = ?';
     const [existing] = await pool.execute(existingQuery, [enrollmentId, lessonId]);
+    const wasLessonAlreadyCompleted =
+      existing.length > 0 && existing[0].status === 'completed';
+
+    let moduleStatsBefore = { total: 0, completed: 0 };
+    if (lessons[0].module_id) {
+      moduleStatsBefore = await getModuleCompletionStats(
+        enrollmentId,
+        lessons[0].module_id
+      );
+    }
 
     let progressId;
     if (existing.length > 0) {
@@ -156,7 +225,75 @@ class ProgressService {
     ]);
 
     // Recalculer la progression globale du cours
-    await this.updateCourseProgress(enrollmentId);
+    const courseProgressResult = await this.updateCourseProgress(enrollmentId);
+
+    // Créer les notifications pertinentes (si c'est une nouvelle complétion)
+    const [[courseRow = {}]] = await pool.execute(
+      'SELECT title FROM courses WHERE id = ?',
+      [enrollment.course_id]
+    );
+
+    if (!wasLessonAlreadyCompleted) {
+      await createNotification({
+        userId: enrollment.user_id,
+        title: '✅ Leçon terminée',
+        message: `Vous avez terminé la leçon "${lessons[0].lesson_title || 'Sans titre'}" du cours "${courseRow.title || 'Votre formation'}".`,
+        type: 'lesson_completed',
+        actionUrl: lessons[0].module_id
+          ? `/learn/${enrollment.course_id}?module=${lessons[0].module_id}&lesson=${lessonId}`
+          : `/learn/${enrollment.course_id}`,
+        metadata: {
+          courseId: enrollment.course_id,
+          lessonId,
+          moduleId: lessons[0].module_id || null,
+        },
+      });
+    }
+
+    let moduleCompleted = false;
+    if (lessons[0].module_id) {
+      const moduleStatsAfter = await getModuleCompletionStats(
+        enrollmentId,
+        lessons[0].module_id
+      );
+      moduleCompleted =
+        moduleStatsAfter.total > 0 &&
+        moduleStatsAfter.completed >= moduleStatsAfter.total;
+
+      const moduleWasCompletedBefore =
+        moduleStatsBefore.total > 0 &&
+        moduleStatsBefore.completed >= moduleStatsBefore.total;
+
+      if (moduleCompleted && !moduleWasCompletedBefore) {
+        await createNotification({
+          userId: enrollment.user_id,
+          title: '🎯 Module terminé',
+          message: `Bravo, vous avez terminé le module "${lessons[0].module_title || 'Module'}" dans le cours "${courseRow.title || 'Votre formation'}".`,
+          type: 'module_completed',
+          actionUrl: `/learn/${enrollment.course_id}?module=${lessons[0].module_id}`,
+          metadata: {
+            courseId: enrollment.course_id,
+            moduleId: lessons[0].module_id,
+          },
+        });
+      }
+    }
+
+    if (
+      !wasCourseCompletedBefore &&
+      courseProgressResult?.status === 'completed'
+    ) {
+      await createNotification({
+        userId: enrollment.user_id,
+        title: '🥳 Cours terminé',
+        message: `Félicitations ! Vous avez terminé le cours "${courseRow.title || 'Votre formation'}".`,
+        type: 'course_completed',
+        actionUrl: `/dashboard/student/courses`,
+        metadata: {
+          courseId: enrollment.course_id,
+        },
+      });
+    }
 
     return {
       id: progressId,

@@ -405,6 +405,176 @@ const getCourses = async (req, res) => {
   }
 };
 
+const getStudents = async (req, res) => {
+  const instructorId = ensureInstructor(req, res);
+  if (!instructorId) {
+    return;
+  }
+
+  try {
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || DEFAULT_PAGINATION_LIMIT, 1),
+      MAX_PAGINATION_LIMIT
+    );
+    const offset = (page - 1) * limit;
+
+    const search = (req.query.search || '').trim();
+    const courseId = parseInt(req.query.course_id, 10);
+    const status = (req.query.status || '').trim().toLowerCase();
+    const sortField = (req.query.sort || 'enrolled_at').trim().toLowerCase();
+    const sortOrder = (req.query.order || '').trim().toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+
+    const validSorts = {
+      enrolled_at: 'e.enrolled_at',
+      progress: 'e.progress_percentage',
+      last_activity: 'COALESCE(e.last_accessed_at, e.enrolled_at)',
+      last_login: 'u.last_login_at'
+    };
+
+    const orderBy = validSorts[sortField] || validSorts.enrolled_at;
+
+    const conditions = ['c.instructor_id = ?'];
+    const params = [instructorId];
+
+    if (!Number.isNaN(courseId)) {
+      conditions.push('c.id = ?');
+      params.push(courseId);
+    }
+
+    if (status === 'active') {
+      conditions.push('e.is_active = TRUE AND e.completed_at IS NULL');
+    } else if (status === 'completed') {
+      conditions.push('e.completed_at IS NOT NULL');
+    } else if (status === 'inactive') {
+      conditions.push('e.is_active = FALSE');
+    }
+
+    if (search) {
+      conditions.push('(u.first_name LIKE ? OR u.last_name LIKE ? OR u.email LIKE ?)');
+      const likeSearch = `%${search}%`;
+      params.push(likeSearch, likeSearch, likeSearch);
+    }
+
+    const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const listQuery = `
+      SELECT
+        e.id AS enrollment_id,
+        e.user_id,
+        e.course_id,
+        e.enrolled_at,
+        e.progress_percentage,
+        e.completed_at,
+        e.last_accessed_at,
+        e.is_active,
+        u.first_name,
+        u.last_name,
+        u.email,
+        u.profile_picture,
+        u.last_login_at,
+        c.title AS course_title,
+        c.slug AS course_slug,
+        c.language AS course_language,
+        COALESCE(c.status, CASE WHEN c.is_published = 1 THEN 'published' ELSE 'draft' END) AS course_status
+      FROM enrollments e
+      JOIN courses c ON c.id = e.course_id
+      JOIN users u ON u.id = e.user_id
+      ${whereClause}
+      ORDER BY ${orderBy} ${sortOrder}
+      LIMIT ?
+      OFFSET ?
+    `;
+
+    const countQuery = `
+      SELECT
+        COUNT(*) AS total
+      FROM enrollments e
+      JOIN courses c ON c.id = e.course_id
+      ${whereClause}
+    `;
+
+    const statsQuery = `
+      SELECT
+        COUNT(*) AS total_students,
+        SUM(CASE WHEN e.is_active = TRUE THEN 1 ELSE 0 END) AS active_students,
+        SUM(CASE WHEN e.completed_at IS NOT NULL THEN 1 ELSE 0 END) AS completed_students,
+        AVG(e.progress_percentage) AS avg_progress
+      FROM enrollments e
+      JOIN courses c ON c.id = e.course_id
+      ${whereClause}
+    `;
+
+    const coursesQuery = `
+      SELECT id, title
+      FROM courses
+      WHERE instructor_id = ?
+      ORDER BY title ASC
+    `;
+
+    const [[{ total = 0 } = {}]] = await pool.execute(countQuery, params);
+    const [[studentStats = {}]] = await pool.execute(statsQuery, params);
+    const [rows] = await pool.execute(listQuery, [...params, limit, offset]);
+    const [coursesRows] = await pool.execute(coursesQuery, [instructorId]);
+
+    const students = rows.map((row) => ({
+      enrollment_id: row.enrollment_id,
+      enrolled_at: row.enrolled_at,
+      progress_percentage: Number(row.progress_percentage || 0),
+      completed_at: row.completed_at,
+      last_accessed_at: row.last_accessed_at,
+      is_active: Boolean(row.is_active),
+      student: {
+        id: row.user_id,
+        first_name: row.first_name,
+        last_name: row.last_name,
+        email: row.email,
+        last_login_at: row.last_login_at,
+        profile_picture: row.profile_picture,
+        profile_picture_url: buildMediaUrl(row.profile_picture)
+      },
+      course: {
+        id: row.course_id,
+        title: row.course_title,
+        slug: row.course_slug,
+        language: row.course_language,
+        status: row.course_status
+      }
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        students,
+        pagination: {
+          page,
+          limit,
+          total: Number(total || 0),
+          pages: limit === 0 ? 0 : Math.ceil(Number(total || 0) / limit)
+        },
+        stats: {
+          total_students: Number(studentStats.total_students || 0),
+          active_students: Number(studentStats.active_students || 0),
+          completed_students: Number(studentStats.completed_students || 0),
+          avg_progress: Number(studentStats.avg_progress || 0)
+        },
+        filters: {
+          courses: coursesRows.map((course) => ({
+            id: course.id,
+            title: course.title
+          }))
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Erreur liste étudiants instructeur:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Impossible de récupérer les étudiants'
+    });
+  }
+};
+
 const getCoursePerformance = async (req, res) => {
   const instructorId = ensureInstructor(req, res);
   if (!instructorId) {
@@ -1011,6 +1181,7 @@ const getAnalytics = async (req, res) => {
 module.exports = {
   getDashboard,
   getCourses,
+  getStudents,
   getCoursePerformance,
   getEnrollmentTrend,
   getRecentActivity,

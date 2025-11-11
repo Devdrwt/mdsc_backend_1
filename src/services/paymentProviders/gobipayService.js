@@ -6,7 +6,17 @@ class GobiPayService {
     this.baseUrl = (process.env.GOBIPAY_BASE_URL || fallbackUrl).replace(/\/$/, '');
     this.publicKey = process.env.GOBIPAY_PUBLIC_KEY;
     this.secretKey = process.env.GOBIPAY_SECRET_KEY;
-    this.defaultPlatformMoney = process.env.GOBIPAY_PLATFORM_MONEY || 'MTN_BEN_XOF';
+    const rawPlatformMoney = process.env.GOBIPAY_PLATFORM_MONEY || 'MTN_BEN_XOF';
+    this.defaultPlatformMoneyList = rawPlatformMoney
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (!this.defaultPlatformMoneyList.length) {
+      this.defaultPlatformMoneyList = ['MTN_BEN_XOF'];
+    }
+    this.defaultPlatformMoney = this.defaultPlatformMoneyList[0];
+    this.storeCurrency =
+      (this.defaultPlatformMoney?.split('_').pop() || '').toUpperCase() || 'XOF';
   }
 
   ensureConfigured() {
@@ -130,10 +140,10 @@ class GobiPayService {
     const platformMoneyInput =
       transactionPayload.from_plateform_money ||
       transactionPayload.platform_money ||
-      this.defaultPlatformMoney;
+      this.defaultPlatformMoneyList;
 
     const platformMoneyList = Array.isArray(platformMoneyInput)
-      ? platformMoneyInput
+      ? platformMoneyInput.filter(Boolean)
       : `${platformMoneyInput}`
           .split(',')
           .map((item) => item.trim())
@@ -148,22 +158,53 @@ class GobiPayService {
       throw new Error('Montant de transaction GobiPay invalide');
     }
 
+    let requestedCurrency = (
+      transactionPayload.currency ||
+      this.storeCurrency
+    ).toString().toUpperCase();
+
+    const walletsMatchingCurrency = platformMoneyList.filter((wallet) => {
+      const walletCurrency = wallet.split('_').pop()?.toUpperCase();
+      return walletCurrency === requestedCurrency;
+    });
+
+    let walletsToUse = walletsMatchingCurrency;
+
+    if (!walletsMatchingCurrency.length) {
+      console.warn('[GobiPay] ⚠️ No wallet matches requested currency. Falling back to store currency.', {
+        requestedCurrency,
+        storeCurrency: this.storeCurrency,
+        availableWallets: platformMoneyList,
+      });
+      requestedCurrency = this.storeCurrency;
+      walletsToUse = platformMoneyList.filter((wallet) => {
+        const walletCurrency = wallet.split('_').pop()?.toUpperCase();
+        return walletCurrency === requestedCurrency;
+      });
+      if (!walletsToUse.length) {
+        walletsToUse = platformMoneyList;
+      }
+    }
+
     const payload = {
-      from_plateform_money: platformMoneyList,
+      from_plateform_money: walletsToUse,
       amount: amountNumeric,
+      currency: requestedCurrency,
       extra_infos: {
         customer_fullname: transactionPayload.customer_fullname,
         customer_email: transactionPayload.customer_email,
         customer_phone: transactionPayload.customer_phone,
         order_uuid: transactionPayload.order_uuid,
         ...transactionPayload.extra_infos,
+        currency: requestedCurrency,
       },
     };
 
     console.log('[GobiPay] 🔄 initTransaction payload', {
       amount: payload.amount,
       orderUuid: payload.extra_infos.order_uuid,
-      fromPlatformMoney: payload.from_plateform_money,
+      fromPlatformMoney: walletsToUse,
+      requestedCurrency,
     });
 
     try {

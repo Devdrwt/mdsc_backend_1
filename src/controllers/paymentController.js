@@ -190,6 +190,7 @@ const initiatePayment = async (req, res) => {
           customer_phone: finalCustomerPhone,
           order_uuid: orderData.uuid || orderData.slug || orderResult.identifier,
           from_plateform_money: platformMoney,
+          currency: (course.currency || '').toString().toUpperCase(),
           extra_infos: {
             payment_id: paymentId,
             course_id: course.id,

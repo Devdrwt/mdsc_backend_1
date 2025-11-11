@@ -89,8 +89,8 @@ const createDomain = async (req, res) => {
     const { name, description, icon, color } = req.body;
     
     const query = `
-      INSERT INTO domains (name, description, icon, color)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO categories (name, description, icon, color, is_active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, TRUE, NOW(), NOW())
     `;
     
     const [result] = await pool.execute(query, [name, description, icon, color]);
@@ -108,6 +108,88 @@ const createDomain = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la création du domaine'
+    });
+  }
+};
+
+const updateDomain = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description, icon, color, is_active } = req.body;
+
+    const [existing] = await pool.execute(
+      'SELECT id FROM categories WHERE id = ? LIMIT 1',
+      [id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Domaine non trouvé'
+      });
+    }
+
+    const query = `
+      UPDATE categories
+      SET
+        name = COALESCE(?, name),
+        description = COALESCE(?, description),
+        icon = COALESCE(?, icon),
+        color = COALESCE(?, color),
+        is_active = COALESCE(?, is_active),
+        updated_at = NOW()
+      WHERE id = ?
+    `;
+
+    await pool.execute(query, [
+      name,
+      description,
+      icon,
+      color,
+      typeof is_active === 'boolean' ? (is_active ? 1 : 0) : null,
+      id
+    ]);
+
+    res.json({
+      success: true,
+      message: 'Domaine mis à jour avec succès'
+    });
+  } catch (error) {
+    console.error('Erreur lors de la mise à jour du domaine:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la mise à jour du domaine'
+    });
+  }
+};
+
+const deleteDomain = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [existing] = await pool.execute(
+      'SELECT id FROM categories WHERE id = ? LIMIT 1',
+      [id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Domaine non trouvé'
+      });
+    }
+
+    await pool.execute('DELETE FROM categories WHERE id = ?', [id]);
+
+    res.json({
+      success: true,
+      message: 'Domaine supprimé avec succès'
+    });
+  } catch (error) {
+    console.error('Erreur lors de la suppression du domaine:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la suppression du domaine'
     });
   }
 };
@@ -306,6 +388,8 @@ module.exports = {
   getAllDomains,
   getDomainById,
   createDomain,
+  updateDomain,
+  deleteDomain,
   
   // Modules
   getModulesByDomain,

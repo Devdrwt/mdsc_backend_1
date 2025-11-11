@@ -238,6 +238,234 @@ const getOverview = async (req, res) => {
   }
 };
 
+const getTopCourses = async (req, res) => {
+  if (!ensureAdmin(req, res)) {
+    return;
+  }
+
+  try {
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || 10, 1),
+      50
+    );
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        c.id,
+        c.title,
+        c.slug,
+        c.language,
+        COUNT(DISTINCT e.id) AS total_enrollments,
+        COUNT(DISTINCT CASE WHEN e.completed_at IS NOT NULL THEN e.id END) AS completed_enrollments,
+        AVG(e.progress_percentage) AS avg_progress,
+        AVG(CASE WHEN cr.is_approved = 1 THEN cr.rating END) AS avg_rating,
+        SUM(CASE WHEN p.status = 'completed' THEN p.amount ELSE 0 END) AS total_revenue
+      FROM courses c
+      LEFT JOIN enrollments e ON e.course_id = c.id
+      LEFT JOIN course_reviews cr ON cr.course_id = c.id
+      LEFT JOIN payments p ON p.course_id = c.id
+      GROUP BY c.id, c.title, c.slug, c.language
+      ORDER BY total_enrollments DESC, total_revenue DESC
+      LIMIT ?
+      `,
+      [limit]
+    );
+
+    res.json({
+      success: true,
+      data: rows.map((row) => ({
+        id: row.id,
+        title: row.title,
+        slug: row.slug,
+        language: row.language,
+        total_enrollments: Number(row.total_enrollments || 0),
+        completed_enrollments: Number(row.completed_enrollments || 0),
+        avg_progress: Number(row.avg_progress || 0),
+        avg_rating: Number(row.avg_rating || 0),
+        total_revenue: Number(row.total_revenue || 0)
+      }))
+    });
+  } catch (error) {
+    console.error('Erreur top cours admin:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Impossible de récupérer le classement des cours'
+    });
+  }
+};
+
+const getTopInstructors = async (req, res) => {
+  if (!ensureAdmin(req, res)) {
+    return;
+  }
+
+  try {
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || 10, 1),
+      50
+    );
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        u.id,
+        u.first_name,
+        u.last_name,
+        u.email,
+        COUNT(DISTINCT c.id) AS courses_count,
+        COUNT(DISTINCT e.id) AS total_enrollments,
+        AVG(CASE WHEN cr.is_approved = 1 THEN cr.rating END) AS avg_rating,
+        SUM(CASE WHEN p.status = 'completed' THEN p.amount ELSE 0 END) AS total_revenue
+      FROM users u
+      LEFT JOIN courses c ON c.instructor_id = u.id
+      LEFT JOIN enrollments e ON e.course_id = c.id
+      LEFT JOIN course_reviews cr ON cr.course_id = c.id
+      LEFT JOIN payments p ON p.course_id = c.id
+      WHERE u.role = 'instructor'
+      GROUP BY u.id, u.first_name, u.last_name, u.email
+      ORDER BY total_enrollments DESC, total_revenue DESC
+      LIMIT ?
+      `,
+      [limit]
+    );
+
+    res.json({
+      success: true,
+      data: rows.map((row) => ({
+        id: row.id,
+        first_name: row.first_name,
+        last_name: row.last_name,
+        email: row.email,
+        courses_count: Number(row.courses_count || 0),
+        total_enrollments: Number(row.total_enrollments || 0),
+        avg_rating: Number(row.avg_rating || 0),
+        total_revenue: Number(row.total_revenue || 0)
+      }))
+    });
+  } catch (error) {
+    console.error('Erreur top instructeurs admin:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Impossible de récupérer le classement des instructeurs'
+    });
+  }
+};
+
+const getRecentPayments = async (req, res) => {
+  if (!ensureAdmin(req, res)) {
+    return;
+  }
+
+  try {
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || 20, 1),
+      100
+    );
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        p.id,
+        p.amount,
+        p.currency,
+        p.status,
+        p.payment_method,
+        p.provider_transaction_id,
+        p.completed_at,
+        p.created_at,
+        c.id AS course_id,
+        c.title AS course_title,
+        u.id AS user_id,
+        u.first_name,
+        u.last_name,
+        u.email
+      FROM payments p
+      LEFT JOIN courses c ON c.id = p.course_id
+      LEFT JOIN users u ON u.id = p.user_id
+      ORDER BY COALESCE(p.completed_at, p.created_at) DESC
+      LIMIT ?
+      `,
+      [limit]
+    );
+
+    res.json({
+      success: true,
+      data: rows.map((row) => ({
+        id: row.id,
+        amount: Number(row.amount || 0),
+        currency: row.currency,
+        status: row.status,
+        payment_method: row.payment_method,
+        provider_transaction_id: row.provider_transaction_id,
+        completed_at: row.completed_at,
+        created_at: row.created_at,
+        course: row.course_id
+          ? {
+              id: row.course_id,
+              title: row.course_title
+            }
+          : null,
+        user: row.user_id
+          ? {
+              id: row.user_id,
+              first_name: row.first_name,
+              last_name: row.last_name,
+              email: row.email
+            }
+          : null
+      }))
+    });
+  } catch (error) {
+    console.error('Erreur paiements récents admin:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Impossible de récupérer les transactions récentes'
+    });
+  }
+};
+
+const getPendingSupportTickets = async (req, res) => {
+  if (!ensureAdmin(req, res)) {
+    return;
+  }
+
+  res.json({
+    success: true,
+    data: [],
+    message: 'Gestion des tickets support à venir'
+  });
+};
+
+const getPendingModeration = async (req, res) => {
+  if (!ensureAdmin(req, res)) {
+    return;
+  }
+
+  res.json({
+    success: true,
+    data: [],
+    message: 'Module de modération en développement'
+  });
+};
+
+const getAiUsage = async (req, res) => {
+  if (!ensureAdmin(req, res)) {
+    return;
+  }
+
+  res.json({
+    success: true,
+    data: {
+      usage_last_30d: 0,
+      total_tokens: 0,
+      suggestions_generated: 0,
+      last_update: new Date().toISOString()
+    },
+    message: 'Statistiques IA non encore disponibles'
+  });
+};
+
 const getSystemMetrics = async (req, res) => {
   try {
     if (!ensureAdmin(req, res)) {
@@ -861,6 +1089,12 @@ module.exports = {
   getSystemMetrics,
   getRecentActivity,
   getAlerts,
-  getServicesStatus
+  getServicesStatus,
+  getTopCourses,
+  getTopInstructors,
+  getRecentPayments,
+  getPendingSupportTickets,
+  getPendingModeration,
+  getAiUsage
 };
 

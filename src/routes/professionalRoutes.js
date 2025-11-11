@@ -12,10 +12,20 @@ router.get('/domains', professionalController.getAllDomains);
 router.get('/domains/:id', professionalController.getDomainById);
 
 // Routes admin
-router.post('/domains', 
-  authenticateToken, 
-  authorize(['admin']), 
+router.post('/domains',
+  authenticateToken,
+  authorize(['admin']),
   professionalController.createDomain
+);
+router.put('/domains/:id',
+  authenticateToken,
+  authorize(['admin']),
+  professionalController.updateDomain
+);
+router.delete('/domains/:id',
+  authenticateToken,
+  authorize(['admin']),
+  professionalController.deleteDomain
 );
 
 // ========================================

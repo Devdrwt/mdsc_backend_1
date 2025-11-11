@@ -1608,7 +1608,7 @@ const checkEnrollment = async (req, res) => {
         c.title as course_title
       FROM enrollments e
       JOIN courses c ON e.course_id = c.id
-      WHERE e.user_id = ? AND e.course_id = ?
+      WHERE e.user_id = ? AND e.course_id = ? AND e.is_active = TRUE
     `;
 
     const [enrollments] = await pool.execute(query, [userId, courseId]);

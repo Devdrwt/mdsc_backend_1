@@ -213,6 +213,49 @@ const submitEvaluation = async (req, res) => {
     
     await pool.execute(insertQuery, [evaluationId, userId, JSON.stringify(answers), score]);
 
+    const evaluation = evaluations[0];
+    const evaluationTitle = evaluation.title || 'Évaluation';
+
+    // Créer une notification pour l'évaluation soumise
+    try {
+      await pool.execute(
+        `INSERT INTO notifications (user_id, title, message, type, action_url, metadata)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          userId,
+          '📝 Évaluation soumise',
+          `Vous avez soumis l'évaluation "${evaluationTitle}". Votre score sera disponible une fois corrigé par l'instructeur.`,
+          'evaluation_submitted',
+          '/dashboard/student/evaluations',
+          JSON.stringify({ 
+            evaluationId: evaluationId, 
+            evaluationTitle: evaluationTitle,
+            score: score
+          })
+        ]
+      );
+    } catch (notificationError) {
+      console.error('Erreur lors de la création de la notification d\'évaluation:', notificationError);
+    }
+
+    // Enregistrer l'activité de soumission d'évaluation
+    try {
+      const { recordActivity } = require('./gamificationController');
+      await recordActivity(
+        userId,
+        'evaluation_submitted',
+        15, // Points pour avoir soumis une évaluation
+        `Évaluation "${evaluationTitle}" soumise`,
+        { 
+          evaluationId: evaluationId,
+          evaluationTitle: evaluationTitle,
+          score: score
+        }
+      );
+    } catch (activityError) {
+      console.error('Erreur lors de l\'enregistrement de l\'activité d\'évaluation:', activityError);
+    }
+
     res.json({
       success: true,
       message: 'Évaluation soumise avec succès'
@@ -1235,6 +1278,7 @@ const submitEvaluationAttempt = async (req, res) => {
 
     const percentage = totalPoints > 0 ? (earnedPoints / totalPoints) * 100 : 0;
     const isPassed = percentage >= evaluation.passing_score;
+    const evaluationTitle = evaluation.title || 'Évaluation finale';
 
     // Mettre à jour la tentative
     await pool.execute(
@@ -1251,6 +1295,58 @@ const submitEvaluationAttempt = async (req, res) => {
         attemptId
       ]
     );
+
+    // Créer une notification pour l'évaluation finale soumise
+    try {
+      const notificationTitle = isPassed 
+        ? `✅ Évaluation finale réussie : ${evaluationTitle}`
+        : `❌ Évaluation finale échouée : ${evaluationTitle}`;
+      const notificationMessage = isPassed
+        ? `Félicitations ! Vous avez réussi l'évaluation finale "${evaluationTitle}" avec un score de ${Math.round(percentage)}%. Vous êtes éligible pour le certificat.`
+        : `Vous avez obtenu ${Math.round(percentage)}% à l'évaluation finale "${evaluationTitle}". Le score minimum requis est ${evaluation.passing_score}%.`;
+
+      await pool.execute(
+        `INSERT INTO notifications (user_id, title, message, type, action_url, metadata)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          userId,
+          notificationTitle,
+          notificationMessage,
+          isPassed ? 'evaluation_passed' : 'evaluation_failed',
+          `/learn/${courseId}`,
+          JSON.stringify({ 
+            evaluationId: evaluation.id, 
+            evaluationTitle: evaluationTitle,
+            score: percentage,
+            isPassed: isPassed,
+            courseId: courseId
+          })
+        ]
+      );
+    } catch (notificationError) {
+      console.error('Erreur lors de la création de la notification d\'évaluation finale:', notificationError);
+    }
+
+    // Enregistrer l'activité de l'évaluation finale
+    try {
+      const { recordActivity } = require('./gamificationController');
+      const pointsEarned = isPassed ? Math.round(percentage / 5) : 0; // Points basés sur le pourcentage
+      await recordActivity(
+        userId,
+        isPassed ? 'evaluation_passed' : 'evaluation_failed',
+        pointsEarned,
+        `Évaluation finale "${evaluationTitle}" : ${Math.round(percentage)}%`,
+        { 
+          evaluationId: evaluation.id,
+          evaluationTitle: evaluationTitle,
+          score: percentage,
+          isPassed: isPassed,
+          courseId: courseId
+        }
+      );
+    } catch (activityError) {
+      console.error('Erreur lors de l\'enregistrement de l\'activité d\'évaluation finale:', activityError);
+    }
 
     res.json({
       success: true,

@@ -234,10 +234,33 @@ class ProgressService {
     );
 
     if (!wasLessonAlreadyCompleted) {
+      // Enregistrer l'activité pour les points et badges
+      try {
+        const { recordActivity } = require('../controllers/gamificationController');
+        const pointsEarned = 10; // Points pour compléter une leçon
+        await recordActivity(
+          enrollment.user_id,
+          'lesson_completed',
+          pointsEarned,
+          `Leçon "${lessons[0].lesson_title || 'Sans titre'}" terminée`,
+          {
+            courseId: enrollment.course_id,
+            courseTitle: courseRow.title || 'Votre formation',
+            lessonId: lessonId,
+            lessonTitle: lessons[0].lesson_title || 'Sans titre',
+            moduleId: lessons[0].module_id || null,
+            moduleTitle: lessons[0].module_title || null,
+          }
+        );
+      } catch (activityError) {
+        console.error('Erreur lors de l\'enregistrement de l\'activité de leçon:', activityError);
+      }
+
+      // Créer la notification de leçon terminée
       await createNotification({
         userId: enrollment.user_id,
         title: '✅ Leçon terminée',
-        message: `Vous avez terminé la leçon "${lessons[0].lesson_title || 'Sans titre'}" du cours "${courseRow.title || 'Votre formation'}".`,
+        message: `Vous avez terminé la leçon "${lessons[0].lesson_title || 'Sans titre'}" du cours "${courseRow.title || 'Votre formation'}". Vous avez gagné 10 points !`,
         type: 'lesson_completed',
         actionUrl: lessons[0].module_id
           ? `/learn/${enrollment.course_id}?module=${lessons[0].module_id}&lesson=${lessonId}`
@@ -265,10 +288,31 @@ class ProgressService {
         moduleStatsBefore.completed >= moduleStatsBefore.total;
 
       if (moduleCompleted && !moduleWasCompletedBefore) {
+        // Enregistrer l'activité pour les points et badges
+        try {
+          const { recordActivity } = require('../controllers/gamificationController');
+          const pointsEarned = 25; // Points pour compléter un module
+          await recordActivity(
+            enrollment.user_id,
+            'module_completed',
+            pointsEarned,
+            `Module "${lessons[0].module_title || 'Module'}" terminé`,
+            {
+              courseId: enrollment.course_id,
+              courseTitle: courseRow.title || 'Votre formation',
+              moduleId: lessons[0].module_id,
+              moduleTitle: lessons[0].module_title || 'Module',
+            }
+          );
+        } catch (activityError) {
+          console.error('Erreur lors de l\'enregistrement de l\'activité de module:', activityError);
+        }
+
+        // Créer la notification de module terminé
         await createNotification({
           userId: enrollment.user_id,
           title: '🎯 Module terminé',
-          message: `Bravo, vous avez terminé le module "${lessons[0].module_title || 'Module'}" dans le cours "${courseRow.title || 'Votre formation'}".`,
+          message: `Bravo, vous avez terminé le module "${lessons[0].module_title || 'Module'}" dans le cours "${courseRow.title || 'Votre formation'}". Vous avez gagné 25 points !`,
           type: 'module_completed',
           actionUrl: `/learn/${enrollment.course_id}?module=${lessons[0].module_id}`,
           metadata: {
@@ -283,10 +327,29 @@ class ProgressService {
       !wasCourseCompletedBefore &&
       courseProgressResult?.status === 'completed'
     ) {
+      // Enregistrer l'activité pour les points et badges
+      try {
+        const { recordActivity } = require('../controllers/gamificationController');
+        const pointsEarned = 100; // Points bonus pour compléter un cours
+        await recordActivity(
+          enrollment.user_id,
+          'course_completed',
+          pointsEarned,
+          `Cours "${courseRow.title || 'Votre formation'}" terminé`,
+          {
+            courseId: enrollment.course_id,
+            courseTitle: courseRow.title || 'Votre formation',
+          }
+        );
+      } catch (activityError) {
+        console.error('Erreur lors de l\'enregistrement de l\'activité de cours:', activityError);
+      }
+
+      // Créer la notification de cours terminé
       await createNotification({
         userId: enrollment.user_id,
         title: '🥳 Cours terminé',
-        message: `Félicitations ! Vous avez terminé le cours "${courseRow.title || 'Votre formation'}".`,
+        message: `Félicitations ! Vous avez terminé le cours "${courseRow.title || 'Votre formation'}". Vous avez gagné 100 points bonus !`,
         type: 'course_completed',
         actionUrl: `/dashboard/student/courses`,
         metadata: {
@@ -412,6 +475,15 @@ class ProgressService {
           WHERE id = ?
         `;
         await pool.execute(updateQuery, [enrollmentId]);
+
+        // Vérifier et attribuer des badges lors de la complétion du cours
+        try {
+          const { checkAndAwardBadges } = require('../controllers/gamificationController');
+          await checkAndAwardBadges(enrollment.user_id);
+        } catch (badgeError) {
+          console.error('Erreur lors de la vérification des badges:', badgeError);
+          // Ne pas bloquer la complétion si la vérification des badges échoue
+        }
       }
     }
 
@@ -482,11 +554,11 @@ class ProgressService {
    * Vérifier l'accès à une leçon (progression séquentielle)
    */
   static async checkLessonAccess(enrollmentId, lessonId) {
-    const enrollmentQuery = 'SELECT * FROM enrollments WHERE id = ?';
+    const enrollmentQuery = 'SELECT * FROM enrollments WHERE id = ? AND is_active = TRUE';
     const [enrollments] = await pool.execute(enrollmentQuery, [enrollmentId]);
     
     if (enrollments.length === 0) {
-      throw new Error('Inscription non trouvée');
+      throw new Error('Inscription non trouvée ou inactive');
     }
 
     const enrollment = enrollments[0];

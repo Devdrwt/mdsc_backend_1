@@ -269,10 +269,62 @@ exports.login = async (req, res) => {
     await connection.query('UPDATE users SET last_login_at = NOW() WHERE id = ?', [user.id]);
 
     // Enregistrer la session
+    const userAgent = req.get('user-agent') || 'Unknown';
+    const ipAddress = req.ip || req.connection.remoteAddress || 'Unknown';
+    
     await connection.query(
       'INSERT INTO user_sessions (user_id, ip_address, user_agent, login_at) VALUES (?, ?, ?, NOW())',
-      [user.id, req.ip, req.get('user-agent')]
+      [user.id, ipAddress, userAgent]
     );
+
+    // Créer une notification de connexion (seulement pour les étudiants)
+    if (user.role === 'student') {
+      try {
+        // Extraire des informations sur la machine depuis user-agent
+        const deviceInfo = userAgent.includes('Mobile') ? 'Mobile' : 
+                          userAgent.includes('Tablet') ? 'Tablet' : 'Desktop';
+        const browserInfo = userAgent.match(/(Chrome|Firefox|Safari|Edge|Opera)\/[\d.]+/)?.[0] || 'Navigateur inconnu';
+        
+        await connection.query(
+          `INSERT INTO notifications (user_id, title, message, type, action_url, metadata)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [
+            user.id,
+            '🔐 Connexion réussie',
+            `Vous vous êtes connecté depuis ${deviceInfo} (${browserInfo}) - IP: ${ipAddress}`,
+            'user_login',
+            '/dashboard/student',
+            JSON.stringify({ 
+              ip_address: ipAddress, 
+              user_agent: userAgent,
+              device: deviceInfo,
+              browser: browserInfo,
+              login_at: new Date().toISOString()
+            })
+          ]
+        );
+      } catch (notificationError) {
+        console.error('Erreur lors de la création de la notification de connexion:', notificationError);
+      }
+
+      // Enregistrer l'activité de connexion
+      try {
+        const { recordActivity } = require('./gamificationController');
+        await recordActivity(
+          user.id,
+          'login',
+          5, // Points pour la connexion
+          `Connexion depuis ${ipAddress}`,
+          { 
+            ip_address: ipAddress, 
+            user_agent: userAgent,
+            device: userAgent.includes('Mobile') ? 'Mobile' : userAgent.includes('Tablet') ? 'Tablet' : 'Desktop'
+          }
+        );
+      } catch (activityError) {
+        console.error('Erreur lors de l\'enregistrement de l\'activité de connexion:', activityError);
+      }
+    }
 
     res.json({
       success: true,

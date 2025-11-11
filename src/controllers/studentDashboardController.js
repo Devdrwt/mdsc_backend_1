@@ -142,7 +142,7 @@ const getCourses = async (req, res) => {
         ON last_lp.user_id = e.user_id
         AND last_lp.course_id = e.course_id
       LEFT JOIN lessons last_lesson ON last_lesson.id = last_lp.lesson_id
-      WHERE e.user_id = ?
+      WHERE e.user_id = ? AND e.is_active = TRUE
       ORDER BY e.enrolled_at DESC
     `,
       [studentId]
@@ -335,8 +335,8 @@ const getStats = async (req, res) => {
           SUM(CASE WHEN completed_at IS NULL THEN 1 ELSE 0 END) AS active_courses,
           AVG(progress_percentage) AS avg_progress
         FROM enrollments
-        WHERE user_id = ?
-      `,
+        WHERE user_id = ? AND is_active = TRUE
+        `,
         [studentId]
       ),
       pool.execute(
@@ -402,10 +402,10 @@ const getStats = async (req, res) => {
         SELECT COUNT(*) AS upcoming_events
         FROM events
         WHERE (course_id IN (
-          SELECT course_id FROM enrollments WHERE user_id = ?
+          SELECT course_id FROM enrollments WHERE user_id = ? AND is_active = TRUE
         ) OR created_by = ?)
           AND start_date >= NOW()
-      `,
+        `,
         [studentId, studentId]
       )
     ]);
@@ -641,6 +641,7 @@ const getActivities = async (req, res) => {
       success: true,
       data: rows.map((row) => ({
         id: row.id,
+        type: row.activity_type, // Alias pour compatibilité frontend
         activity_type: row.activity_type,
         points: Number(row.points_earned || 0),
         description: row.description,
@@ -809,11 +810,70 @@ const getCatalogCategories = async (req, res) => {
   }
 };
 
+const DEFAULT_PREFERENCES = {
+  language: 'fr',
+  theme: 'light',
+  policies: {
+    accepted: false,
+    accepted_at: null,
+    version: '1.0',
+  },
+};
+
+const ensurePreferencesTable = async () => {
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS student_preferences (
+      user_id INT NOT NULL PRIMARY KEY,
+      preferences JSON NOT NULL,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+};
+
+const loadPreferencesForUser = async (userId) => {
+  await ensurePreferencesTable();
+  const [rows] = await pool.execute(
+    'SELECT preferences FROM student_preferences WHERE user_id = ? LIMIT 1',
+    [userId]
+  );
+
+  if (!rows.length) {
+    return { ...DEFAULT_PREFERENCES };
+  }
+
+  try {
+    const parsed = JSON.parse(rows[0].preferences);
+    return {
+      ...DEFAULT_PREFERENCES,
+      ...(parsed || {}),
+      policies: {
+        ...DEFAULT_PREFERENCES.policies,
+        ...(parsed?.policies || {}),
+      },
+    };
+  } catch (error) {
+    return { ...DEFAULT_PREFERENCES };
+  }
+};
+
+const savePreferencesForUser = async (userId, preferences) => {
+  await ensurePreferencesTable();
+  await pool.execute(
+    `INSERT INTO student_preferences (user_id, preferences)
+      VALUES (?, ?)
+      ON DUPLICATE KEY UPDATE preferences = VALUES(preferences)`,
+    [userId, JSON.stringify(preferences)]
+  );
+};
+
 const getSettings = async (req, res) => {
   const studentId = ensureStudent(req, res);
   if (!studentId) {
     return;
   }
+
+  const preferences = await loadPreferencesForUser(studentId);
 
   res.json({
     success: true,
@@ -824,28 +884,57 @@ const getSettings = async (req, res) => {
           title: 'Profil étudiant',
           description: 'Gérez vos informations personnelles et votre photo de profil.',
           action_url: '/dashboard/student/profile',
-          is_available: true
+          is_available: true,
         },
         {
           key: 'notifications',
           title: 'Notifications',
           description: 'Fonctionnalité en développement.',
-          is_available: false
+          is_available: false,
         },
         {
           key: 'privacy',
           title: 'Confidentialité',
           description: 'Fonctionnalité en développement.',
-          is_available: false
+          is_available: false,
         },
         {
           key: 'appearance',
           title: 'Apparence',
           description: 'Fonctionnalité en développement.',
-          is_available: false
-        }
-      ]
-    }
+          is_available: false,
+        },
+      ],
+      preferences,
+    },
+  });
+};
+
+const updateSettings = async (req, res) => {
+  const studentId = ensureStudent(req, res);
+  if (!studentId) {
+    return;
+  }
+
+  const currentPreferences = await loadPreferencesForUser(studentId);
+  const incoming = req.body?.preferences ?? {};
+  const preferences = {
+    ...currentPreferences,
+    ...incoming,
+    policies: {
+      ...currentPreferences.policies,
+      ...(incoming?.policies ?? {}),
+    },
+  };
+
+  await savePreferencesForUser(studentId, preferences);
+
+  res.json({
+    success: true,
+    message: 'Vos préférences ont bien été enregistrées.',
+    data: {
+      preferences,
+    },
   });
 };
 
@@ -855,12 +944,26 @@ const updateSettingsPolicies = async (req, res) => {
     return;
   }
 
+  const currentPreferences = await loadPreferencesForUser(studentId);
+  const version = req.body?.version || currentPreferences.policies.version || DEFAULT_PREFERENCES.policies.version;
+  const preferences = {
+    ...currentPreferences,
+    policies: {
+      ...currentPreferences.policies,
+      accepted: true,
+      accepted_at: new Date().toISOString(),
+      version,
+    },
+  };
+
+  await savePreferencesForUser(studentId, preferences);
+
   res.json({
     success: true,
-    message: 'Vos préférences seront bientôt prises en compte. Aucune donnée n’a été enregistrée pour le moment.',
+    message: 'Merci, vos préférences de confidentialité ont été mises à jour.',
     data: {
-      received_payload: req.body || {}
-    }
+      preferences,
+    },
   });
 };
 
@@ -874,6 +977,8 @@ module.exports = {
   getActivities,
   getCatalogCategories,
   getSettings,
+  updateSettings,
   updateSettingsPolicies
 };
 
+                                                                                                                                                                                      

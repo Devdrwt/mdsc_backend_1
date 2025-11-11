@@ -520,6 +520,14 @@ class ProgressService {
 
     const lesson = lessons[0];
 
+    const moduleId = lesson.module_id ?? lesson.moduleId ?? null;
+    const lessonOrder = lesson.order_index ?? lesson.orderIndex ?? 0;
+    const courseId = lesson.course_id ?? lesson.courseId ?? null;
+
+    if (!moduleId) {
+      return { hasAccess: true, reason: 'Leçon sans module' };
+    }
+
     const [previousLessons] = await pool.execute(
       `SELECT l.id FROM lessons l
        LEFT JOIN progress p ON p.lesson_id = l.id AND p.enrollment_id = ?
@@ -527,7 +535,7 @@ class ProgressService {
          AND l.order_index < ?
        AND COALESCE(p.status, 'not_started') != 'completed'
        ORDER BY l.order_index`,
-      [enrollmentId, lesson.module_id, lesson.order_index]
+      [enrollmentId, moduleId, lessonOrder]
     );
 
     if (previousLessons.length > 0) {
@@ -538,13 +546,9 @@ class ProgressService {
       };
     }
 
-    if (!lesson.module_id) {
-      return { hasAccess: true, reason: 'Leçon sans module' };
-    }
-
     const [moduleOrder] = await pool.execute(
       'SELECT order_index FROM modules WHERE id = ?',
-      [lesson.module_id]
+      [moduleId]
     );
 
     const moduleOrderIndex = moduleOrder[0]?.order_index ?? 0;
@@ -552,7 +556,7 @@ class ProgressService {
     if (moduleOrderIndex > 1) {
       const [previousModules] = await pool.execute(
         `SELECT id FROM modules WHERE course_id = ? AND order_index < ? ORDER BY order_index`,
-        [lesson.course_id, moduleOrderIndex]
+        [courseId, moduleOrderIndex]
       );
 
       for (const moduleRow of previousModules) {

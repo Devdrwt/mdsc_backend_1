@@ -338,7 +338,10 @@ const completeLesson = async (req, res) => {
     }
 
     // Vérifier l'accès
-    const access = await ProgressService.checkLessonAccess(enrollmentId, lessonId);
+    const access = await ProgressService.checkLessonAccess(
+      Number(enrollmentId),
+      Number(lessonId)
+    );
 
     if (!access.hasAccess) {
       return res.status(403).json({

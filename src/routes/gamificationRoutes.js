@@ -19,6 +19,14 @@ router.get('/xp/users/:userId', authenticateToken, gamificationController.getUse
 // Route pour récupérer la progression d'un utilisateur spécifique
 router.get('/users/:userId/progress', authenticateToken, gamificationController.getUserProgress);
 
+// Vérifier et attribuer automatiquement les badges
+router.post(
+  '/badges/check-and-award',
+  authenticateToken,
+  authorize(['instructor', 'admin']),
+  gamificationController.checkAndAwardBadgesHandler
+);
+
 // Routes pour les badges personnalisés (instructeurs)
 router.post('/badges', 
   authenticateToken, 

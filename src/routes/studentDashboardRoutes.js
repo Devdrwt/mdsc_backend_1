@@ -15,6 +15,8 @@ router.get('/recent-activity', requireStudent, studentDashboardController.getRec
 router.get('/badges', requireStudent, studentDashboardController.getBadges);
 router.get('/certificates', requireStudent, studentDashboardController.getCertificates);
 router.get('/activities', requireStudent, studentDashboardController.getActivities);
+router.get('/settings', requireStudent, studentDashboardController.getSettings);
+router.post('/settings/policies', requireStudent, studentDashboardController.updateSettingsPolicies);
 
 module.exports = router;
 

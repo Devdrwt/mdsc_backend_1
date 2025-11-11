@@ -1,6 +1,10 @@
 require('dotenv').config({ override: true });
 const fs = require('fs');
 const path = require('path');
+const warnMissing = [];
+if (!process.env.GOBIPAY_PUBLIC_KEY) warnMissing.push('GOBIPAY_PUBLIC_KEY');
+if (!process.env.GOBIPAY_SECRET_KEY) warnMissing.push('GOBIPAY_SECRET_KEY');
+if (!process.env.GOBIPAY_PLATFORM_MONEY) warnMissing.push('GOBIPAY_PLATFORM_MONEY');
 const express = require('express');
 const cors = require('cors');
 const session = require('express-session');

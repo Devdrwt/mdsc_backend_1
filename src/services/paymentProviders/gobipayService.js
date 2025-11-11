@@ -127,18 +127,30 @@ class GobiPayService {
   async initTransaction(transactionPayload = {}) {
     this.ensureConfigured();
 
-    const platformMoney =
+    const platformMoneyInput =
       transactionPayload.from_plateform_money ||
       transactionPayload.platform_money ||
       this.defaultPlatformMoney;
 
-    if (!platformMoney) {
+    const platformMoneyList = Array.isArray(platformMoneyInput)
+      ? platformMoneyInput
+      : `${platformMoneyInput}`
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean);
+
+    if (!platformMoneyList.length) {
       throw new Error('Plateforme de paiement GobiPay non configurée');
     }
 
+    const amountNumeric = Number(transactionPayload.amount);
+    if (Number.isNaN(amountNumeric) || amountNumeric <= 0) {
+      throw new Error('Montant de transaction GobiPay invalide');
+    }
+
     const payload = {
-      from_plateform_money: platformMoney,
-      amount: this.normaliseAmount(transactionPayload.amount),
+      from_plateform_money: platformMoneyList,
+      amount: amountNumeric,
       extra_infos: {
         customer_fullname: transactionPayload.customer_fullname,
         customer_email: transactionPayload.customer_email,

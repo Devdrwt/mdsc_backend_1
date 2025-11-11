@@ -9,7 +9,7 @@ class StripeService {
   constructor() {
     const stripeKey = process.env.STRIPE_SECRET_KEY;
     if (!stripeKey) {
-      console.warn('⚠️ STRIPE_SECRET_KEY non configuré. Les paiements Stripe ne fonctionneront pas.');
+      console.info('ℹ️ Stripe non configuré (STRIPE_SECRET_KEY manquant).');
       this.stripe = null;
     } else if (!stripe) {
       console.warn('⚠️ Package stripe non installé. Les paiements Stripe ne fonctionneront pas.');

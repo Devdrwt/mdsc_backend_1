@@ -734,11 +734,10 @@ const checkEmailStatus = async () => {
 const checkStripeStatus = () => {
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) {
-    return {
-      name: 'stripe',
-      status: 'disabled',
-      error: 'STRIPE_SECRET_KEY non configuré'
-    };
+    return res.status(200).json({
+      success: false,
+      error: 'STRIPE_SECRET_KEY absent'
+    });
   }
 
   if (!StripeService || !StripeService.stripe) {

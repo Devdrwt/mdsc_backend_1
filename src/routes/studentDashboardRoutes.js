@@ -16,6 +16,8 @@ router.get('/badges', requireStudent, studentDashboardController.getBadges);
 router.get('/certificates', requireStudent, studentDashboardController.getCertificates);
 router.get('/activities', requireStudent, studentDashboardController.getActivities);
 router.get('/catalogs/categories', requireStudent, studentDashboardController.getCatalogCategories);
+router.get('/settings', requireStudent, studentDashboardController.getSettings);
+router.post('/settings/policies', requireStudent, studentDashboardController.updateSettingsPolicies);
 
 module.exports = router;
 

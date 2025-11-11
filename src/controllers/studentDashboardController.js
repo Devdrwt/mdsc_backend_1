@@ -809,6 +809,61 @@ const getCatalogCategories = async (req, res) => {
   }
 };
 
+const getSettings = async (req, res) => {
+  const studentId = ensureStudent(req, res);
+  if (!studentId) {
+    return;
+  }
+
+  res.json({
+    success: true,
+    data: {
+      sections: [
+        {
+          key: 'profile',
+          title: 'Profil étudiant',
+          description: 'Gérez vos informations personnelles et votre photo de profil.',
+          action_url: '/dashboard/student/profile',
+          is_available: true
+        },
+        {
+          key: 'notifications',
+          title: 'Notifications',
+          description: 'Fonctionnalité en développement.',
+          is_available: false
+        },
+        {
+          key: 'privacy',
+          title: 'Confidentialité',
+          description: 'Fonctionnalité en développement.',
+          is_available: false
+        },
+        {
+          key: 'appearance',
+          title: 'Apparence',
+          description: 'Fonctionnalité en développement.',
+          is_available: false
+        }
+      ]
+    }
+  });
+};
+
+const updateSettingsPolicies = async (req, res) => {
+  const studentId = ensureStudent(req, res);
+  if (!studentId) {
+    return;
+  }
+
+  res.json({
+    success: true,
+    message: 'Vos préférences seront bientôt prises en compte. Aucune donnée n’a été enregistrée pour le moment.',
+    data: {
+      received_payload: req.body || {}
+    }
+  });
+};
+
 module.exports = {
   getCourses,
   getCourseProgress,
@@ -817,6 +872,8 @@ module.exports = {
   getBadges,
   getCertificates,
   getActivities,
-  getCatalogCategories
+  getCatalogCategories,
+  getSettings,
+  updateSettingsPolicies
 };
 

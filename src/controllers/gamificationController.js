@@ -865,6 +865,32 @@ const awardBadge = async (req, res) => {
   }
 };
 
+const checkAndAwardBadgesHandler = async (req, res) => {
+  try {
+    const userId = req.user?.id || req.user?.userId;
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Utilisateur non authentifié'
+      });
+    }
+
+    await checkAndAwardBadges(userId);
+
+    res.json({
+      success: true,
+      message: 'Vérification des badges effectuée'
+    });
+  } catch (error) {
+    console.error('Erreur lors de la vérification/attribution des badges:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Impossible de vérifier les badges',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
 module.exports = {
   getUserGamificationProfile,
   getLeaderboard,
@@ -876,5 +902,6 @@ module.exports = {
   deleteCustomBadge,
   awardBadge,
   checkAndAwardBadges,
+  checkAndAwardBadgesHandler,
   getUserProgress
 };

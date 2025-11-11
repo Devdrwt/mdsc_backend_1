@@ -14,6 +14,18 @@ const ensureAdmin = (req, res) => {
   return true;
 };
 
+const ensureAdminOrInstructor = (req, res) => {
+  const role = req.user?.role;
+  if (!role || (role !== 'admin' && role !== 'instructor')) {
+    res.status(403).json({
+      success: false,
+      message: 'Accès réservé aux administrateurs ou instructeurs'
+    });
+    return false;
+  }
+  return true;
+};
+
 const parseLimit = (value, fallback = 20, min = 1, max = 100) => {
   const parsed = parseInt(value, 10);
   if (Number.isNaN(parsed)) {
@@ -74,7 +86,7 @@ const formatUser = (row) => ({
 });
 
 const getUsers = async (req, res) => {
-  if (!ensureAdmin(req, res)) {
+  if (!ensureAdminOrInstructor(req, res)) {
     return;
   }
 

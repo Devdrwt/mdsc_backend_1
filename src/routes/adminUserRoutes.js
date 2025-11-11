@@ -6,7 +6,7 @@ const { authenticateToken, authorize } = require('../middleware/auth');
 router.get(
   '/users',
   authenticateToken,
-  authorize(['admin']),
+  authorize(['admin', 'instructor']),
   adminUserController.getUsers
 );
 

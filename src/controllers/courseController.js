@@ -1120,7 +1120,9 @@ const getMyCourses = async (req, res) => {
         stats.average_rating,
         stats.review_count,
         enroll_stats.enrollment_count,
-        COALESCE(ca.total_views, 0) as total_views
+        COALESCE(ca.total_views, 0) as total_views,
+        COALESCE(progress_counts.completed_lessons, 0) as completed_lessons,
+        COALESCE(total_lessons_counts.total_lessons, 0) as total_lessons
       FROM enrollments e
       INNER JOIN courses c ON c.id = e.course_id
       LEFT JOIN categories cat ON c.category_id = cat.id
@@ -1142,19 +1144,45 @@ const getMyCourses = async (req, res) => {
         GROUP BY course_id
       ) enroll_stats ON enroll_stats.course_id = c.id
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
+      LEFT JOIN (
+        SELECT 
+          enrollment_id,
+          COUNT(*) AS completed_lessons
+        FROM progress
+        WHERE status = 'completed'
+        GROUP BY enrollment_id
+      ) progress_counts ON progress_counts.enrollment_id = e.id
+      LEFT JOIN (
+        SELECT 
+          course_id,
+          COUNT(*) AS total_lessons
+        FROM lessons
+        WHERE is_published = TRUE
+        GROUP BY course_id
+      ) total_lessons_counts ON total_lessons_counts.course_id = c.id
       WHERE e.user_id = ? AND e.is_active = TRUE
       ORDER BY e.enrolled_at DESC
     `, [userId]);
 
-    const formattedCourses = (courses || []).map((course) => ({
-      ...formatCourseRow(course),
-      enrollment: {
-        enrolled_at: course.enrolled_at,
-        progress_percentage: Number(course.progress_percentage || 0),
-        completed_at: course.completed_at,
-        is_active: Boolean(course.is_active)
-      }
-    }));
+    const formattedCourses = (courses || []).map((course) => {
+      const progressPercentage = Number(course.progress_percentage || 0);
+      const completedLessons = Number(course.completed_lessons || 0);
+      const totalLessons = Number(course.total_lessons || 0);
+
+      return {
+        ...formatCourseRow(course),
+        progress: progressPercentage,
+        progress_percentage: progressPercentage,
+        completed_lessons: completedLessons,
+        total_lessons: totalLessons,
+        enrollment: {
+          enrolled_at: course.enrolled_at,
+          progress_percentage: progressPercentage,
+          completed_at: course.completed_at,
+          is_active: Boolean(course.is_active)
+        }
+      };
+    });
 
     res.json({
       success: true,

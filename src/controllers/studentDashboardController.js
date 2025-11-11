@@ -657,6 +657,158 @@ const getActivities = async (req, res) => {
   }
 };
 
+const getCatalogCategories = async (req, res) => {
+  const studentId = ensureStudent(req, res);
+  if (!studentId) {
+    return;
+  }
+
+  try {
+    const {
+      search = '',
+      status = 'all',
+      onlyEnrolled = 'false',
+      level
+    } = req.query;
+    const normalizedLevel = typeof level === 'string' ? level.toLowerCase() : null;
+
+    const whereClauses = [];
+    const params = [studentId];
+
+    if (search) {
+      whereClauses.push('(cat.name LIKE ? OR cat.description LIKE ?)');
+      const likeSearch = `%${search}%`;
+      params.push(likeSearch, likeSearch);
+    }
+
+    if (status === 'active') {
+      whereClauses.push('cat.is_active = TRUE');
+    } else if (status === 'inactive') {
+      whereClauses.push('cat.is_active = FALSE');
+    }
+
+    const query = `
+      SELECT
+        cat.id,
+        cat.name,
+        cat.description,
+        cat.color,
+        cat.icon,
+        cat.is_active,
+        COUNT(DISTINCT c.id) AS total_courses,
+        COUNT(DISTINCT CASE WHEN c.is_published = TRUE THEN c.id END) AS published_courses,
+        COUNT(DISTINCT CASE WHEN c.is_published = FALSE THEN c.id END) AS draft_courses,
+        COUNT(DISTINCT CASE WHEN e.user_id IS NOT NULL THEN c.id END) AS enrolled_courses,
+        GROUP_CONCAT(DISTINCT c.difficulty) AS difficulty_levels,
+        MAX(c.updated_at) AS last_course_update,
+        MAX(c.thumbnail_url) AS sample_thumbnail
+      FROM categories cat
+      LEFT JOIN courses c ON c.category_id = cat.id
+      LEFT JOIN enrollments e ON e.course_id = c.id AND e.user_id = ?
+      ${whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : ''}
+      GROUP BY cat.id
+      ORDER BY cat.name ASC
+    `;
+
+    const [rows] = await pool.execute(query, params);
+
+    const formattedCategories = rows.map((row) => {
+      const rawLevels = row.difficulty_levels
+        ? row.difficulty_levels
+            .split(',')
+            .map((item) => (item || '').trim())
+            .filter((value) => value)
+        : [];
+
+      const uniqueLevels = Array.from(new Set(rawLevels));
+
+      return {
+        id: row.id,
+        name: row.name,
+        description: row.description,
+        color: row.color,
+        icon: row.icon,
+        isActive: Boolean(row.is_active),
+        metrics: {
+          totalCourses: Number(row.total_courses || 0),
+          publishedCourses: Number(row.published_courses || 0),
+          draftCourses: Number(row.draft_courses || 0),
+          enrolledCourses: Number(row.enrolled_courses || 0)
+        },
+        levels: uniqueLevels,
+        lastCourseUpdate: row.last_course_update,
+        sampleThumbnail: row.sample_thumbnail ? buildMediaUrl(row.sample_thumbnail) : null
+      };
+    });
+
+    const availableLevels = Array.from(
+      new Set(
+        formattedCategories.flatMap((category) => category.levels)
+      )
+    );
+    const levelOrder = ['beginner', 'intermediate', 'advanced', 'expert'];
+    availableLevels.sort((a, b) => {
+      const indexA = levelOrder.indexOf(a);
+      const indexB = levelOrder.indexOf(b);
+
+      if (indexA === -1 && indexB === -1) {
+        return a.localeCompare(b);
+      }
+
+      if (indexA === -1) {
+        return 1;
+      }
+
+      if (indexB === -1) {
+        return -1;
+      }
+
+      return indexA - indexB;
+    });
+
+    let filteredCategories = formattedCategories;
+
+    if (onlyEnrolled === 'true') {
+      filteredCategories = filteredCategories.filter(
+        (category) => category.metrics.enrolledCourses > 0
+      );
+    }
+
+    if (normalizedLevel) {
+      filteredCategories = filteredCategories.filter((category) =>
+        category.levels.includes(normalizedLevel)
+      );
+    }
+
+    res.json({
+      success: true,
+      data: {
+        categories: filteredCategories,
+        meta: {
+          total: filteredCategories.length,
+          activeCount: filteredCategories.filter((category) => category.isActive).length,
+          enrolledCount: filteredCategories.filter(
+            (category) => category.metrics.enrolledCourses > 0
+          ).length,
+          availableLevels,
+          appliedFilters: {
+            search,
+            status,
+            onlyEnrolled: onlyEnrolled === 'true',
+            level: normalizedLevel || null
+          }
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Erreur catalogue étudiant:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Impossible de récupérer le catalogue des catégories'
+    });
+  }
+};
+
 module.exports = {
   getCourses,
   getCourseProgress,
@@ -664,6 +816,7 @@ module.exports = {
   getRecentActivity,
   getBadges,
   getCertificates,
-  getActivities
+  getActivities,
+  getCatalogCategories
 };
 

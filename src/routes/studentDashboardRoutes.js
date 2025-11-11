@@ -15,6 +15,7 @@ router.get('/recent-activity', requireStudent, studentDashboardController.getRec
 router.get('/badges', requireStudent, studentDashboardController.getBadges);
 router.get('/certificates', requireStudent, studentDashboardController.getCertificates);
 router.get('/activities', requireStudent, studentDashboardController.getActivities);
+router.get('/catalogs/categories', requireStudent, studentDashboardController.getCatalogCategories);
 
 module.exports = router;
 

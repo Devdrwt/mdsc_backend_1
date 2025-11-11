@@ -164,7 +164,7 @@ class ProgressService {
       lesson_id: lessonId,
       status: 'completed',
       completion_percentage: 100,
-      time_spent,
+      time_spent: timeSpent,
       completed_at: new Date()
     };
   }
@@ -383,75 +383,68 @@ class ProgressService {
 
     const lesson = lessons[0];
 
-    // Si leçon optionnelle, autoriser l'accès
-    if (lesson.is_optional) {
-      return { hasAccess: true, reason: 'Leçon optionnelle' };
-    }
-
-    // Récupérer toutes les leçons précédentes du même module
     const [previousLessons] = await pool.execute(
       `SELECT l.id FROM lessons l
-       WHERE l.module_id = ? 
-       AND l.order_index < ?
-       AND l.is_published = TRUE
-       AND l.is_optional = FALSE
+       LEFT JOIN progress p ON p.lesson_id = l.id AND p.enrollment_id = ?
+       WHERE l.module_id = ? AND l.is_published = TRUE AND l.is_optional = FALSE
+         AND l.order_index < ?
+       AND COALESCE(p.status, 'not_started') != 'completed'
        ORDER BY l.order_index`,
-      [lesson.module_id, lesson.order_index]
+      [enrollmentId, lesson.module_id, lesson.order_index]
     );
 
-    // Vérifier que toutes les leçons précédentes sont complétées
-    for (const prevLesson of previousLessons) {
-      const [progress] = await pool.execute(
-        'SELECT id FROM progress WHERE enrollment_id = ? AND lesson_id = ? AND status = "completed"',
-        [enrollmentId, prevLesson.id]
-      );
-
-      if (progress.length === 0) {
-        return {
-          hasAccess: false,
-          reason: `Vous devez compléter toutes les leçons précédentes`,
-          requiredLessonId: prevLesson.id
-        };
-      }
+    if (previousLessons.length > 0) {
+      return {
+        hasAccess: false,
+        reason: 'Vous devez compléter les leçons précédentes',
+        requiredLessonId: previousLessons[0].id,
+      };
     }
 
-    // Vérifier aussi les modules précédents si nécessaire
-    const [lessonModule] = await pool.execute(
+    if (!lesson.module_id) {
+      return { hasAccess: true, reason: 'Leçon sans module' };
+    }
+
+    const [moduleOrder] = await pool.execute(
       'SELECT order_index FROM modules WHERE id = ?',
       [lesson.module_id]
     );
 
-    if (lessonModule.length > 0 && lessonModule[0].order_index > 1) {
-      // Vérifier que tous les modules précédents sont complétés
+    const moduleOrderIndex = moduleOrder[0]?.order_index ?? 0;
+
+    if (moduleOrderIndex > 1) {
       const [previousModules] = await pool.execute(
-        `SELECT m.id FROM modules m
-         WHERE m.course_id = ?
-         AND m.order_index < ?
-         ORDER BY m.order_index`,
-        [enrollment.course_id, lessonModule[0].order_index]
+        `SELECT id FROM modules WHERE course_id = ? AND order_index < ? ORDER BY order_index`,
+        [lesson.course_id, moduleOrderIndex]
       );
 
-      for (const prevModule of previousModules) {
-        // Vérifier que toutes les leçons du module précédent sont complétées
+      for (const moduleRow of previousModules) {
         const [moduleLessons] = await pool.execute(
           `SELECT l.id FROM lessons l
            WHERE l.module_id = ? AND l.is_published = TRUE AND l.is_optional = FALSE`,
-          [prevModule.id]
+          [moduleRow.id]
         );
 
-        for (const moduleLesson of moduleLessons) {
-          const [progress] = await pool.execute(
-            'SELECT id FROM progress WHERE enrollment_id = ? AND lesson_id = ? AND status = "completed"',
-            [enrollmentId, moduleLesson.id]
-          );
+        if (moduleLessons.length === 0) {
+          continue;
+        }
 
-          if (progress.length === 0) {
-            return {
-              hasAccess: false,
-              reason: `Vous devez compléter le module précédent`,
-              requiredModuleId: prevModule.id
-            };
-          }
+        const lessonIds = moduleLessons.map((item) => item.id);
+        const [completedLessons] = await pool.execute(
+          `SELECT lesson_id FROM progress WHERE enrollment_id = ? AND lesson_id IN (?) AND status = 'completed'`,
+          [enrollmentId, lessonIds]
+        );
+
+        const completedLessonSet = new Set(completedLessons.map((row) => row.lesson_id));
+        const missingLesson = lessonIds.find((id) => !completedLessonSet.has(id));
+
+        if (missingLesson) {
+          return {
+            hasAccess: false,
+            reason: 'Vous devez compléter le module précédent',
+            requiredModuleId: moduleRow.id,
+            requiredLessonId: missingLesson,
+          };
         }
       }
     }
@@ -459,9 +452,6 @@ class ProgressService {
     return { hasAccess: true, reason: 'Accès autorisé' };
   }
 
-  /**
-   * Déverrouiller la leçon suivante après complétion
-   */
   static async unlockNextLesson(enrollmentId, lessonId) {
     const [lessons] = await pool.execute(
       'SELECT module_id, order_index, course_id FROM lessons WHERE id = ?',
@@ -472,56 +462,55 @@ class ProgressService {
 
     const lesson = lessons[0];
 
-    // Récupérer la leçon suivante du même module
     const [nextLessons] = await pool.execute(
       `SELECT id FROM lessons 
        WHERE module_id = ? 
-       AND order_index = ? + 1
-       AND is_published = TRUE
+         AND order_index = ? + 1
+         AND is_published = TRUE
        LIMIT 1`,
       [lesson.module_id, lesson.order_index]
     );
 
-    // Si pas de leçon suivante dans le module, vérifier le module suivant
-    if (nextLessons.length === 0) {
-      const [currentModule] = await pool.execute(
-        'SELECT order_index FROM modules WHERE id = ?',
-        [lesson.module_id]
-      );
-
-      if (currentModule.length > 0) {
-        const [nextModules] = await pool.execute(
-          `SELECT id FROM modules 
-           WHERE course_id = ? 
-           AND order_index = ? + 1
-           ORDER BY order_index
-           LIMIT 1`,
-          [lesson.course_id, currentModule[0].order_index]
-        );
-
-        if (nextModules.length > 0) {
-          // Déverrouiller la première leçon du module suivant
-          const [firstLessons] = await pool.execute(
-            `SELECT id FROM lessons 
-             WHERE module_id = ? 
-             AND is_published = TRUE
-             ORDER BY order_index
-             LIMIT 1`,
-            [nextModules[0].id]
-          );
-
-          if (firstLessons.length > 0) {
-            // La leçon suivante sera automatiquement déverrouillée
-            // car toutes les leçons précédentes sont complétées
-            return { unlockedLessonId: firstLessons[0].id };
-          }
-        }
-      }
-    } else {
+    if (nextLessons.length > 0) {
       return { unlockedLessonId: nextLessons[0].id };
     }
 
-    return null;
+    const [currentModule] = await pool.execute(
+      'SELECT order_index FROM modules WHERE id = ?',
+      [lesson.module_id]
+    );
+
+    if (currentModule.length === 0) {
+      return null;
+    }
+
+    const [nextModules] = await pool.execute(
+      `SELECT id FROM modules 
+       WHERE course_id = ? 
+         AND order_index = ? + 1
+       ORDER BY order_index
+       LIMIT 1`,
+      [lesson.course_id, currentModule[0].order_index]
+    );
+
+    if (nextModules.length === 0) {
+      return null;
+    }
+
+    const [firstLessons] = await pool.execute(
+      `SELECT id FROM lessons 
+       WHERE module_id = ? 
+         AND is_published = TRUE
+       ORDER BY order_index
+       LIMIT 1`,
+      [nextModules[0].id]
+    );
+
+    if (firstLessons.length === 0) {
+      return null;
+    }
+
+    return { unlockedLessonId: firstLessons[0].id };
   }
 }
 

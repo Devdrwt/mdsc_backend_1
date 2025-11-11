@@ -58,14 +58,12 @@ router.get('/google',
     // Encoder le token dans le paramètre state
     // Passport utilisera ce state et le retournera dans le callback
     const state = Buffer.from(JSON.stringify({ token: roleToken })).toString('base64');
-    req.query.state = state;
     
-    next();
-  },
-  passport.authenticate('google', { 
-    scope: ['profile', 'email']
-  })
-);
+    return passport.authenticate('google', { 
+      scope: ['profile', 'email'],
+      state
+    })(req, res, next);
+  });
 
 // Route de callback Google OAuth
 router.get('/google/callback',

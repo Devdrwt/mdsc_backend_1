@@ -11,6 +11,7 @@ const requireInstructor = [
 router.get('/dashboard', requireInstructor, instructorDashboardController.getDashboard);
 router.get('/courses', requireInstructor, instructorDashboardController.getCourses);
 router.get('/courses/:courseId/performance', requireInstructor, instructorDashboardController.getCoursePerformance);
+router.get('/students', requireInstructor, instructorDashboardController.getStudents);
 router.get('/enrollments/trend', requireInstructor, instructorDashboardController.getEnrollmentTrend);
 router.get('/recent-activity', requireInstructor, instructorDashboardController.getRecentActivity);
 router.get('/messages/unread-count', requireInstructor, instructorDashboardController.getUnreadMessagesCount);

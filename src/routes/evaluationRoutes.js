@@ -6,6 +6,13 @@ const { authenticateToken, authorize } = require('../middleware/auth');
 // Routes pour les étudiants
 router.get('/user/:userId', authenticateToken, evaluationController.getUserEvaluations);
 router.get('/user/:userId/stats', authenticateToken, evaluationController.getUserEvaluationStats);
+router.get(
+  '/instructor/finals',
+  authenticateToken,
+  authorize(['instructor', 'admin']),
+  evaluationController.listFinalEvaluations
+);
+
 router.get('/:id', authenticateToken, evaluationController.getEvaluation);
 router.post('/:id/submit', authenticateToken, evaluationController.submitEvaluation);
 

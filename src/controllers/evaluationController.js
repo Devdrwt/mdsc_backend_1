@@ -1,5 +1,35 @@
 const { pool } = require('../config/database');
 
+const MAX_EVALUATIONS_LIMIT = 100;
+
+const getUserIdentifier = (req) => req.user?.userId || req.user?.id;
+
+const parseLimit = (value, fallback = 20, min = 1, max = MAX_EVALUATIONS_LIMIT) => {
+  const parsed = parseInt(value, 10);
+  if (Number.isNaN(parsed)) {
+    return fallback;
+  }
+  return Math.min(Math.max(parsed, min), max);
+};
+
+const parseOffset = (value) => {
+  const parsed = parseInt(value, 10);
+  if (Number.isNaN(parsed) || parsed < 0) {
+    return 0;
+  }
+  return parsed;
+};
+
+const formatCourseStatus = (row) => {
+  if (row.course_status) {
+    return row.course_status;
+  }
+  if (row.course_is_published === null || row.course_is_published === undefined) {
+    return null;
+  }
+  return row.course_is_published === 1 ? 'published' : 'draft';
+};
+
 // Récupérer les évaluations d'un utilisateur
 const getUserEvaluations = async (req, res) => {
   try {
@@ -451,6 +481,145 @@ const createEvaluation = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la création de l\'évaluation'
+    });
+  }
+};
+
+const listFinalEvaluations = async (req, res) => {
+  try {
+    const userRole = req.user?.role || 'student';
+    const currentUserId = getUserIdentifier(req);
+    const limit = parseLimit(req.query.limit, 20);
+    const offset = parseOffset(req.query.offset);
+    const search = (req.query.search || '').trim();
+    const statusFilter = (req.query.status || '').trim().toLowerCase();
+    const targetInstructorId = userRole === 'admin' && req.query.instructorId
+      ? parseInt(req.query.instructorId, 10)
+      : null;
+
+    const validStatuses = ['draft', 'pending_approval', 'approved', 'rejected', 'published'];
+
+    const whereClauses = [];
+    const params = [];
+
+    if (userRole !== 'admin' || !targetInstructorId) {
+      if (!currentUserId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Accès non autorisé'
+        });
+      }
+      whereClauses.push('c.instructor_id = ?');
+      params.push(currentUserId);
+    } else if (targetInstructorId) {
+      whereClauses.push('c.instructor_id = ?');
+      params.push(targetInstructorId);
+    }
+
+    if (statusFilter && validStatuses.includes(statusFilter)) {
+      whereClauses.push(`COALESCE(c.status, CASE WHEN c.is_published = 1 THEN 'published' ELSE 'draft' END) = ?`);
+      params.push(statusFilter);
+    }
+
+    if (search) {
+      const likeSearch = `%${search}%`;
+      whereClauses.push('(c.title LIKE ? OR ce.title LIKE ?)');
+      params.push(likeSearch, likeSearch);
+    }
+
+    const whereSql = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
+
+    const listQuery = `
+      SELECT
+        ce.id,
+        ce.course_id,
+        ce.title AS evaluation_title,
+        ce.description,
+        ce.passing_score,
+        ce.duration_minutes,
+        ce.max_attempts,
+        ce.is_published,
+        ce.created_at,
+        ce.updated_at,
+        c.title AS course_title,
+        c.slug AS course_slug,
+        COALESCE(c.status, CASE WHEN c.is_published = 1 THEN 'published' ELSE 'draft' END) AS course_status,
+        c.is_published AS course_is_published,
+        c.language AS course_language,
+        COUNT(DISTINCT qq.id) AS questions_count,
+        COUNT(DISTINCT qa.id) AS attempts_count,
+        COUNT(DISTINCT CASE WHEN qa.is_passed = 1 THEN qa.user_id END) AS passed_students
+      FROM course_evaluations ce
+      JOIN courses c ON c.id = ce.course_id
+      LEFT JOIN quiz_questions qq ON qq.course_evaluation_id = ce.id
+      LEFT JOIN quiz_attempts qa ON qa.course_evaluation_id = ce.id
+      ${whereSql}
+      GROUP BY ce.id
+      ORDER BY ce.updated_at DESC
+      LIMIT ?
+      OFFSET ?
+    `;
+
+    const countQuery = `
+      SELECT COUNT(*) AS total
+      FROM course_evaluations ce
+      JOIN courses c ON c.id = ce.course_id
+      ${whereSql}
+    `;
+
+    const [rows] = await pool.execute(listQuery, [...params, limit, offset]);
+    const [[{ total = 0 } = {}]] = await pool.execute(countQuery, params);
+
+    const evaluations = rows.map((row) => ({
+      id: row.id,
+      course_id: row.course_id,
+      evaluation_title: row.evaluation_title,
+      description: row.description,
+      passing_score: Number(row.passing_score || 0),
+      duration_minutes: row.duration_minutes !== null ? Number(row.duration_minutes) : null,
+      max_attempts: row.max_attempts !== null ? Number(row.max_attempts) : null,
+      is_published: row.is_published === 1 || row.is_published === true,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      course: {
+        id: row.course_id,
+        title: row.course_title,
+        slug: row.course_slug,
+        language: row.course_language,
+        status: formatCourseStatus(row),
+        detail_url: row.course_slug
+          ? `/dashboard/instructor/courses/${row.course_slug}`
+          : `/dashboard/instructor/courses/${row.course_id}`
+      },
+      statistics: {
+        questions_count: Number(row.questions_count || 0),
+        attempts_count: Number(row.attempts_count || 0),
+        passed_students: Number(row.passed_students || 0)
+      },
+      links: {
+        api: `/api/evaluations/${row.id}`,
+        detail: `/dashboard/instructor/evaluations/${row.id}`,
+        edit: `/dashboard/instructor/evaluations/${row.id}/edit`
+      }
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        evaluations,
+        pagination: {
+          limit,
+          offset,
+          total: Number(total || 0),
+          pages: limit === 0 ? 0 : Math.ceil(Number(total || 0) / limit)
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Erreur liste évaluations finales:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Impossible de récupérer les évaluations finales'
     });
   }
 };
@@ -1111,6 +1280,7 @@ module.exports = {
   submitEvaluation,
   getUserEvaluationStats,
   createEvaluation,
+  listFinalEvaluations,
   getCourseEvaluations,
   updateEvaluation,
   deleteEvaluation,

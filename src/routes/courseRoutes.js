@@ -5,6 +5,7 @@ const enrollmentController = require('../controllers/enrollmentController');
 const quizController = require('../controllers/quizController');
 const certificateController = require('../controllers/certificateController');
 const evaluationController = require('../controllers/evaluationController');
+const instructorDashboardController = require('../controllers/instructorDashboardController');
 const { authenticateToken, optionalAuth, authorize } = require('../middleware/auth');
 const { 
   validateCourse, 
@@ -29,6 +30,12 @@ router.get('/category/:categoryId', courseController.getCoursesByCategory);
 router.get('/popular', courseController.getPopularCourses);
 router.get('/recommended', authenticateToken, courseController.getRecommendedCourses);
 router.get('/slug/:slug', courseController.getCourseBySlug);
+// Route pour les analytics d'un cours (doit être avant /:id pour éviter les conflits)
+router.get('/:courseId/analytics', 
+  authenticateToken, 
+  authorize(['instructor', 'admin']), 
+  instructorDashboardController.getCoursePerformance
+);
 router.get('/:id/check-enrollment', authenticateToken, courseController.checkEnrollment);
 router.get('/:id', optionalAuth, courseController.getCourseById); // Route avec authentification optionnelle
 // Liste des inscrits d'un cours (protégée)

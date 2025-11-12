@@ -1,5 +1,6 @@
 const { pool } = require('../config/database');
 const { sanitizeValue } = require('../utils/sanitize');
+const { buildMediaUrl } = require('../utils/media');
 
 /**
  * Demander la publication d'un cours
@@ -417,6 +418,7 @@ const getCourseForApproval = async (req, res) => {
 
     const responseData = {
       ...course,
+      thumbnail_url: buildMediaUrl(course.thumbnail_url),
       modules: modules || [],
       final_evaluation: finalEvaluation,
       module_quizzes: moduleQuizzes

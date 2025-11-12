@@ -468,10 +468,14 @@ const uploadCourseFile = async (req, res) => {
     // Déterminer file_category pour media_files
     const fileCategory = category === 'course_thumbnail' ? 'image' : 'video';
     
-    // Construire l'URL
-    const apiUrl = process.env.API_URL || `http://localhost:${process.env.PORT || 5000}`;
+    // Construire l'URL relative pour stockage en base
+    // buildMediaUrl construira l'URL complète lors de la récupération
     const folder = category === 'course_thumbnail' ? 'courses/thumbnails' : 'courses/videos';
-    const fileUrl = `${apiUrl}/uploads/${folder}/${req.file.filename}`;
+    const fileUrl = `/uploads/${folder}/${req.file.filename}`;
+    
+    // URL complète pour la réponse (mais on stocke la relative en base)
+    const apiUrl = process.env.API_URL || `http://localhost:${process.env.PORT || 5000}`;
+    const fullFileUrl = `${apiUrl}${fileUrl}`;
 
     // Sauvegarder dans media_files
     const insertQuery = `
@@ -520,9 +524,9 @@ const uploadCourseFile = async (req, res) => {
         originalName: req.file.originalname,
         mimeType: req.file.mimetype,
         size: req.file.size,
-        url: fileUrl,
+        url: fullFileUrl,
         storage_path: req.file.path,
-        thumbnailUrl: thumbnailUrl,
+        thumbnailUrl: category === 'course_thumbnail' ? fullFileUrl : thumbnailUrl,
         metadata: metadata,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()

@@ -2,6 +2,7 @@ const { pool } = require('../config/database');
 const { sanitizeValue } = require('../utils/sanitize');
 const { buildMediaUrl, formatInstructorMetadata } = require('../utils/media');
 const { v4: uuidv4 } = require('uuid');
+const ModuleService = require('../services/moduleService');
 
 const formatCourseRow = (row = {}) => {
   if (!row) {
@@ -267,16 +268,8 @@ const getCourseById = async (req, res) => {
 
     const course = formatCourseRow(courses[0]);
 
-    // Récupérer les modules du cours
-    const modulesQuery = `
-      SELECT m.*, COUNT(l.id) as lessons_count
-      FROM modules m
-      LEFT JOIN lessons l ON m.id = l.module_id
-      WHERE m.course_id = ?
-      GROUP BY m.id
-      ORDER BY m.order_index ASC
-    `;
-    const [modules] = await pool.execute(modulesQuery, [id]);
+    // Récupérer les modules du cours avec formatage des URLs
+    const modules = await ModuleService.getModulesByCourse(id, false);
 
     // Récupérer les leçons (si pas de modules) ou toutes les leçons du cours
     const lessonsQuery = `
@@ -1335,11 +1328,11 @@ const getInstructorCourses = async (req, res) => {
       id: course.id,
       title: course.title,
       description: course.description,
-      thumbnail: course.thumbnail,
+      thumbnail_url: buildMediaUrl(course.thumbnail_url),
       price: course.price,
       difficulty: course.difficulty,
       language: course.language,
-      duration: course.duration,
+      duration_minutes: course.duration_minutes,
       is_published: course.is_published,
       created_at: course.created_at,
       updated_at: course.updated_at,

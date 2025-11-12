@@ -219,18 +219,60 @@ app.use((req, res, next) => {
 // Servir les fichiers statiques (uploads)
 // Important : cette route doit être avant les routes API pour éviter les conflits
 const uploadsPath = path.join(__dirname, '../uploads');
-app.use('/uploads', express.static(uploadsPath, {
-  setHeaders: (res, filePath) => {
-    // Ajouter les en-têtes CORS pour les fichiers statiques
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-    res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache 1 an
+
+// Route personnalisée pour servir les fichiers avec meilleur contrôle
+app.use('/uploads', (req, res, next) => {
+  // Construire le chemin complet du fichier
+  const filePath = path.join(uploadsPath, req.path);
+  
+  // Vérifier que le chemin est sécurisé (pas de directory traversal)
+  const normalizedPath = path.normalize(filePath);
+  if (!normalizedPath.startsWith(path.normalize(uploadsPath))) {
+    return res.status(403).json({ success: false, message: 'Accès interdit' });
   }
-}));
+  
+  // Vérifier que le fichier existe
+  if (!fs.existsSync(filePath)) {
+    return next(); // Passer à la route suivante (404)
+  }
+  
+  // Vérifier que c'est un fichier (pas un dossier)
+  const stats = fs.statSync(filePath);
+  if (!stats.isFile()) {
+    return next(); // Passer à la route suivante (404)
+  }
+  
+  // Déterminer le type MIME
+  const ext = path.extname(filePath).toLowerCase();
+  const mimeTypes = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.svg': 'image/svg+xml',
+    '.mp4': 'video/mp4',
+    '.webm': 'video/webm',
+    '.pdf': 'application/pdf',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  };
+  
+  // Définir les en-têtes
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Cache-Control', 'public, max-age=31536000');
+  
+  if (mimeTypes[ext]) {
+    res.setHeader('Content-Type', mimeTypes[ext]);
+  }
+  
+  // Servir le fichier
+  res.sendFile(filePath);
+});
 
 // Log pour vérifier que le dossier uploads est accessible
 if (process.env.NODE_ENV === 'development') {
-  const fs = require('fs');
   if (fs.existsSync(uploadsPath)) {
     console.log('✅ Dossier uploads accessible:', uploadsPath);
   } else {

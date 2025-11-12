@@ -12,7 +12,7 @@ const fs = require('fs');
 
 router.use('/uploads', (req, res, next) => {
   // Construire le chemin complet du fichier
-  const filePath = path.join(uploadsPath, req.path);
+  let filePath = path.join(uploadsPath, req.path);
   
   // Vérifier que le chemin est sécurisé (pas de directory traversal)
   const normalizedPath = path.normalize(filePath);
@@ -20,7 +20,27 @@ router.use('/uploads', (req, res, next) => {
     return res.status(403).json({ success: false, message: 'Accès interdit' });
   }
   
-  // Vérifier que le fichier existe
+  // Si le fichier n'existe pas au chemin demandé, chercher dans d'autres dossiers possibles
+  if (!fs.existsSync(filePath)) {
+    const filename = path.basename(req.path);
+    const possiblePaths = [
+      path.join(uploadsPath, 'courses', 'thumbnails', filename),
+      path.join(uploadsPath, 'courses', 'videos', filename),
+      path.join(uploadsPath, 'profiles', filename),
+      path.join(uploadsPath, 'images', filename),
+      path.join(uploadsPath, 'modules', filename)
+    ];
+    
+    // Chercher le fichier dans les dossiers possibles
+    for (const possiblePath of possiblePaths) {
+      if (fs.existsSync(possiblePath)) {
+        filePath = possiblePath;
+        break;
+      }
+    }
+  }
+  
+  // Vérifier que le fichier existe (après recherche)
   if (!fs.existsSync(filePath)) {
     return res.status(404).json({ success: false, message: 'Fichier non trouvé' });
   }

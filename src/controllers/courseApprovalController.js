@@ -107,6 +107,48 @@ const requestPublication = async (req, res) => {
       console.warn('⚠️ Table course_approvals non trouvée. Migration nécessaire.');
     });
 
+    // Récupérer les informations de l'instructeur
+    const [instructors] = await pool.execute(
+      'SELECT first_name, last_name FROM users WHERE id = ?',
+      [instructorId]
+    );
+    const instructor = instructors[0] || {};
+    const instructorName = `${instructor.first_name || ''} ${instructor.last_name || ''}`.trim() || 'Un instructeur';
+
+    // Créer une notification pour tous les admins
+    try {
+      const [admins] = await pool.execute(
+        'SELECT id FROM users WHERE role = "admin"'
+      );
+
+      const notificationTitle = 'Nouvelle demande de publication de cours';
+      const notificationMessage = `Le cours "${course.title}" a été soumis pour validation par ${instructorName}.`;
+      const actionUrl = `/dashboard/admin/courses?courseId=${courseId}`;
+      const metadata = JSON.stringify({
+        course_id: courseId,
+        course_title: course.title,
+        instructor_id: instructorId,
+        instructor_name: instructorName,
+        action: 'review_required',
+        link: actionUrl
+      });
+
+      // Créer une notification pour chaque admin
+      for (const admin of admins) {
+        await pool.execute(
+          `INSERT INTO notifications (
+            user_id, title, message, type, is_read, action_url, metadata
+          ) VALUES (?, ?, ?, 'info', FALSE, ?, ?)`,
+          [admin.id, notificationTitle, notificationMessage, actionUrl, metadata]
+        );
+      }
+
+      console.log(`✅ Notifications créées pour ${admins.length} admin(s) concernant le cours "${course.title}"`);
+    } catch (notificationError) {
+      // Ne pas faire échouer la demande si la création de notification échoue
+      console.error('⚠️ Erreur lors de la création des notifications admin:', notificationError);
+    }
+
     res.json({
       success: true,
       message: 'Demande de publication soumise avec succès'

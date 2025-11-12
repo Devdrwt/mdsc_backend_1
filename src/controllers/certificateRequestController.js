@@ -4,6 +4,7 @@ const PDFDocument = require('pdfkit');
 const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
+const { v4: uuidv4 } = require('uuid');
 
 /**
  * Demander un certificat (étudiant)
@@ -92,9 +93,18 @@ const requestCertificate = async (req, res) => {
     // Créer la demande
     const [requestResult] = await pool.execute(
       `INSERT INTO certificate_requests (
-        enrollment_id, user_id, course_id, status, requested_at
-      ) VALUES (?, ?, ?, 'pending', NOW())`,
-      [enrollmentId, userId, enrollment.course_id]
+        enrollment_id, user_id, course_id, status, user_info
+      ) VALUES (?, ?, ?, 'pending', ?)`,
+      [
+        enrollmentId, 
+        userId, 
+        enrollment.course_id,
+        JSON.stringify({
+          first_name: req.user.first_name || '',
+          last_name: req.user.last_name || '',
+          email: req.user.email || ''
+        })
+      ]
     );
 
     res.status(201).json({
@@ -127,13 +137,15 @@ const getMyCertificateRequests = async (req, res) => {
         cr.*,
         c.title as course_title,
         c.slug as course_slug,
-        cert.certificate_url,
-        cert.issued_at
+        cert.pdf_url as certificate_url,
+        cert.issued_at,
+        cert.certificate_code,
+        cert.certificate_number
        FROM certificate_requests cr
        JOIN courses c ON cr.course_id = c.id
        LEFT JOIN certificates cert ON cr.id = cert.request_id
        WHERE cr.user_id = ?
-       ORDER BY cr.requested_at DESC`,
+       ORDER BY cr.created_at DESC`,
       [userId]
     );
 
@@ -174,14 +186,17 @@ const getAllCertificateRequests = async (req, res) => {
         u.first_name,
         u.last_name,
         u.email,
-        cert.certificate_url,
-        cert.issued_at
+        cert.pdf_url as certificate_url,
+        cert.issued_at,
+        cert.certificate_code,
+        cert.certificate_number,
+        cert.id as certificate_id
        FROM certificate_requests cr
        JOIN courses c ON cr.course_id = c.id
        JOIN users u ON cr.user_id = u.id
        LEFT JOIN certificates cert ON cr.id = cert.request_id
        ${whereClause}
-       ORDER BY cr.requested_at DESC
+       ORDER BY cr.created_at DESC
        LIMIT ? OFFSET ?`,
       [...params, parseInt(limit), offset]
     );
@@ -250,26 +265,31 @@ const approveCertificateRequest = async (req, res) => {
     // Générer le certificat PDF
     const certificateData = await generateCertificatePDF(request);
 
+    // Générer un code unique pour le certificat
+    const certificateCode = uuidv4();
+    const certificateNumber = `MDSC-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+
     // Créer le certificat dans la base de données
     const [certificateResult] = await pool.execute(
       `INSERT INTO certificates (
-        request_id, user_id, course_id, certificate_url, 
-        qr_code_data, issued_by, issued_at
-      ) VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+        request_id, user_id, course_id, certificate_code, certificate_number,
+        pdf_url, qr_code_url
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
         requestId,
         request.user_id,
         request.course_id,
+        certificateCode,
+        certificateNumber,
         certificateData.url,
-        certificateData.qrCodeData,
-        adminId
+        null // qr_code_url sera généré séparément si nécessaire
       ]
     );
 
     // Mettre à jour la demande
     await pool.execute(
       `UPDATE certificate_requests 
-       SET status = 'approved', approved_at = NOW(), approved_by = ?
+       SET status = 'approved', reviewed_at = NOW(), reviewed_by = ?, issued_at = NOW()
        WHERE id = ?`,
       [adminId, requestId]
     );
@@ -323,7 +343,7 @@ const rejectCertificateRequest = async (req, res) => {
 
     await pool.execute(
       `UPDATE certificate_requests 
-       SET status = 'rejected', rejected_at = NOW(), rejected_by = ?, rejection_reason = ?
+       SET status = 'rejected', reviewed_at = NOW(), reviewed_by = ?, rejection_reason = ?
        WHERE id = ?`,
       [adminId, sanitizeValue(rejection_reason), requestId]
     );

@@ -55,8 +55,9 @@ const getCertificateById = async (req, res) => {
   try {
     const { certificateId } = req.params;
     const userId = req.user?.id ?? req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
 
-    const query = `
+    let query = `
       SELECT 
         c.*,
         co.title as course_title,
@@ -68,10 +69,17 @@ const getCertificateById = async (req, res) => {
       FROM certificates c
       JOIN courses co ON c.course_id = co.id
       JOIN users u ON c.user_id = u.id
-      WHERE c.id = ? AND c.user_id = ?
+      WHERE c.id = ?
     `;
+    const params = [certificateId];
 
-    const [certificates] = await pool.execute(query, [certificateId, userId]);
+    // Si ce n'est pas un admin, vérifier que le certificat appartient à l'utilisateur
+    if (!isAdmin) {
+      query += ' AND c.user_id = ?';
+      params.push(userId);
+    }
+
+    const [certificates] = await pool.execute(query, params);
 
     if (certificates.length === 0) {
       return res.status(404).json({
@@ -159,8 +167,9 @@ const downloadCertificate = async (req, res) => {
   try {
     const { certificateId } = req.params;
     const userId = req.user?.id ?? req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
 
-    const query = `
+    let query = `
       SELECT 
         c.*,
         co.title as course_title,
@@ -172,10 +181,17 @@ const downloadCertificate = async (req, res) => {
       FROM certificates c
       JOIN courses co ON c.course_id = co.id
       JOIN users u ON c.user_id = u.id
-      WHERE c.id = ? AND c.user_id = ?
+      WHERE c.id = ?
     `;
+    const params = [certificateId];
 
-    const [certificates] = await pool.execute(query, [certificateId, userId]);
+    // Si ce n'est pas un admin, vérifier que le certificat appartient à l'utilisateur
+    if (!isAdmin) {
+      query += ' AND c.user_id = ?';
+      params.push(userId);
+    }
+
+    const [certificates] = await pool.execute(query, params);
 
     if (certificates.length === 0) {
       return res.status(404).json({
@@ -469,6 +485,196 @@ const generateCertificateForCourse = async (userId, courseId) => {
   }
 };
 
+// Récupérer tous les certificats (admin seulement)
+const getAllCertificates = async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Accès non autorisé'
+      });
+    }
+
+    const { 
+      page = 1, 
+      limit = 20, 
+      status, 
+      search,
+      period,
+      courseId,
+      userId
+    } = req.query;
+
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    let whereClause = 'WHERE 1=1';
+    const params = [];
+
+    // Filtre par statut
+    if (status) {
+      if (status === 'valid') {
+        whereClause += ' AND c.is_valid = TRUE AND (c.expires_at IS NULL OR c.expires_at > NOW()) AND c.revoked_at IS NULL';
+      } else if (status === 'revoked') {
+        whereClause += ' AND c.revoked_at IS NOT NULL';
+      } else if (status === 'expired') {
+        whereClause += ' AND c.expires_at IS NOT NULL AND c.expires_at <= NOW()';
+      } else if (status === 'pending') {
+        // Certificats liés à des demandes en attente
+        whereClause += ' AND cr.status = "pending"';
+      }
+    }
+
+    // Recherche
+    if (search) {
+      whereClause += ` AND (
+        u.first_name LIKE ? OR 
+        u.last_name LIKE ? OR 
+        u.email LIKE ? OR 
+        co.title LIKE ? OR 
+        c.certificate_code LIKE ? OR 
+        c.certificate_number LIKE ?
+      )`;
+      const searchPattern = `%${search}%`;
+      params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
+    }
+
+    // Filtre par période
+    if (period) {
+      const now = new Date();
+      let startDate;
+      if (period === 'today') {
+        startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      } else if (period === '7days') {
+        startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      } else if (period === '30days') {
+        startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      }
+      if (startDate) {
+        whereClause += ' AND c.issued_at >= ?';
+        params.push(startDate.toISOString().slice(0, 19).replace('T', ' '));
+      }
+    }
+
+    // Filtre par cours
+    if (courseId) {
+      whereClause += ' AND c.course_id = ?';
+      params.push(courseId);
+    }
+
+    // Filtre par utilisateur
+    if (userId) {
+      whereClause += ' AND c.user_id = ?';
+      params.push(userId);
+    }
+
+    // Requête principale
+    const query = `
+      SELECT 
+        c.*,
+        co.title as course_title,
+        co.description as course_description,
+        u.id as user_id,
+        u.first_name,
+        u.last_name,
+        u.email,
+        cr.status as request_status,
+        CASE 
+          WHEN c.revoked_at IS NOT NULL THEN 'revoked'
+          WHEN c.expires_at IS NOT NULL AND c.expires_at <= NOW() THEN 'expired'
+          WHEN c.is_valid = FALSE THEN 'invalid'
+          ELSE 'valid'
+        END as certificate_status
+      FROM certificates c
+      JOIN courses co ON c.course_id = co.id
+      JOIN users u ON c.user_id = u.id
+      LEFT JOIN certificate_requests cr ON c.request_id = cr.id
+      ${whereClause}
+      ORDER BY c.issued_at DESC
+      LIMIT ? OFFSET ?
+    `;
+
+    const [certificates] = await pool.execute(query, [...params, parseInt(limit), offset]);
+
+    // Compter le total
+    const countQuery = `
+      SELECT COUNT(*) as total
+      FROM certificates c
+      JOIN courses co ON c.course_id = co.id
+      JOIN users u ON c.user_id = u.id
+      LEFT JOIN certificate_requests cr ON c.request_id = cr.id
+      ${whereClause}
+    `;
+    const [countResult] = await pool.execute(countQuery, params);
+    const total = countResult[0].total;
+
+    // Statistiques
+    const [statsResult] = await pool.execute(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN c.revoked_at IS NOT NULL THEN 1 ELSE 0 END) as revoked,
+        SUM(CASE WHEN c.expires_at IS NOT NULL AND c.expires_at <= NOW() THEN 1 ELSE 0 END) as expired,
+        SUM(CASE WHEN c.is_valid = TRUE AND (c.expires_at IS NULL OR c.expires_at > NOW()) AND c.revoked_at IS NULL THEN 1 ELSE 0 END) as valid,
+        SUM(CASE WHEN cr.status = 'pending' THEN 1 ELSE 0 END) as pending
+      FROM certificates c
+      LEFT JOIN certificate_requests cr ON c.request_id = cr.id
+    `);
+
+    const stats = statsResult[0] || {};
+
+    res.json({
+      success: true,
+      data: {
+        certificates: certificates.map(cert => ({
+          id: cert.id,
+          certificate_code: cert.certificate_code,
+          certificate_number: cert.certificate_number,
+          user: {
+            id: cert.user_id,
+            first_name: cert.first_name,
+            last_name: cert.last_name,
+            email: cert.email,
+            full_name: `${cert.first_name} ${cert.last_name}`
+          },
+          course: {
+            id: cert.course_id,
+            title: cert.course_title,
+            description: cert.course_description
+          },
+          status: cert.certificate_status,
+          request_status: cert.request_status,
+          issued_at: cert.issued_at,
+          expires_at: cert.expires_at,
+          verified: Boolean(cert.verified),
+          is_valid: Boolean(cert.is_valid),
+          revoked_at: cert.revoked_at,
+          revoked_reason: cert.revoked_reason,
+          pdf_url: cert.pdf_url,
+          qr_code_url: cert.qr_code_url
+        })),
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total: Number(total),
+          pages: Math.ceil(total / parseInt(limit))
+        },
+        statistics: {
+          total: Number(stats.total || 0),
+          valid: Number(stats.valid || 0),
+          revoked: Number(stats.revoked || 0),
+          expired: Number(stats.expired || 0),
+          pending: Number(stats.pending || 0)
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la récupération des certificats:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des certificats'
+    });
+  }
+};
+
 // Révocation d'un certificat (admin seulement)
 const revokeCertificate = async (req, res) => {
   try {
@@ -505,6 +711,7 @@ const revokeCertificate = async (req, res) => {
 
 module.exports = {
   getMyCertificates,
+  getAllCertificates,
   getCertificateById,
   verifyCertificate,
   downloadCertificate,

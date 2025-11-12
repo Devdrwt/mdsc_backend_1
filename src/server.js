@@ -43,6 +43,7 @@ const courseRoutes = require('./routes/courseRoutes');
 const courseApprovalRoutes = require('./routes/courses/courseApprovalRoutes');
 const quizRoutes = require('./routes/quizRoutes');
 const certificateRoutes = require('./routes/certificateRoutes');
+const certificateController = require('./controllers/certificateController');
 const enrollmentRoutes = require('./routes/enrollmentRoutes');
 const instructorDashboardRoutes = require('./routes/instructorDashboardRoutes');
 const studentDashboardRoutes = require('./routes/studentDashboardRoutes');
@@ -302,6 +303,13 @@ app.use('/api', courseApprovalRoutes);
 app.use('/api/courses', courseRoutes);
 app.use('/api/quizzes', quizRoutes);
 app.use('/api/certificates', certificateRoutes);
+// Route admin pour tous les certificats (doit être après /api/certificates pour éviter les conflits)
+const { authenticateToken, authorize } = require('./middleware/auth');
+app.get('/api/admin/certificates', 
+  authenticateToken,
+  authorize(['admin']),
+  certificateController.getAllCertificates
+);
 app.use('/api/enrollments', enrollmentRoutes);
 app.use('/api/instructor', instructorDashboardRoutes);
 app.use('/api/student', studentDashboardRoutes);

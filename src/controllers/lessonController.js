@@ -122,17 +122,30 @@ const getLesson = async (req, res) => {
     }
 
     // Récupérer la leçon avec détails
+    // Récupérer aussi les fichiers via lesson_id si media_file_id est NULL
     const lessonQuery = `
       SELECT 
         l.*,
         m.title as module_title, m.order_index as module_order,
-        mf.url as media_url, mf.thumbnail_url, mf.file_category, mf.file_type,
+        mf.url as media_url, 
+        mf.thumbnail_url, 
+        mf.file_category, 
+        mf.file_type,
+        mf.filename,
+        mf.original_filename,
+        mf.file_size,
+        mf.id as media_file_id_from_join,
         q.id as quiz_id, q.title as quiz_title
       FROM lessons l
       LEFT JOIN modules m ON l.module_id = m.id
-      LEFT JOIN media_files mf ON l.media_file_id = mf.id
+      LEFT JOIN media_files mf ON (
+        l.media_file_id = mf.id 
+        OR (l.id = mf.lesson_id AND l.media_file_id IS NULL)
+      )
       LEFT JOIN quizzes q ON l.id = q.lesson_id
       WHERE l.id = ? AND l.course_id = ?
+      ORDER BY mf.uploaded_at DESC
+      LIMIT 1
     `;
 
     const [lessons] = await pool.execute(lessonQuery, [lessonId, courseId]);

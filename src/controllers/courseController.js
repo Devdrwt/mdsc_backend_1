@@ -82,7 +82,9 @@ const getAllCourses = async (req, res) => {
     } = req.query;
 
     const offset = (page - 1) * limit;
-    let whereClause = 'WHERE c.is_published = TRUE';
+    let whereClause = `WHERE c.is_published = TRUE 
+      AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
+      AND COALESCE(c.status, 'draft') != 'draft'`;
     let params = [];
 
     // Filtres
@@ -177,7 +179,7 @@ const getCourseById = async (req, res) => {
 
     // Vérifier d'abord si le cours existe et récupérer ses informations de base
     const [courseExists] = await pool.execute(
-      'SELECT id, instructor_id, is_published FROM courses WHERE id = ?', 
+      'SELECT id, instructor_id, is_published, status FROM courses WHERE id = ?', 
       [id]
     );
     
@@ -205,14 +207,18 @@ const getCourseById = async (req, res) => {
       isInstructor,
       isAdmin,
       isPublished: courseInfo.is_published,
+      status: courseInfo.status,
       userRole
     });
     
-    // Vérifier les permissions : si non publié, seul l'instructeur ou admin peut le voir
-    if (!courseInfo.is_published && !isInstructor && !isAdmin) {
+    // Vérifier les permissions : si non publié, en brouillon ou non approuvé, seul l'instructeur ou admin peut le voir
+    const courseStatus = courseInfo.status || 'draft'; // Si NULL, considérer comme draft
+    const isDraft = courseStatus === 'draft';
+    const isApproved = courseStatus === 'approved' || courseStatus === 'published';
+    if ((!courseInfo.is_published || isDraft || !isApproved) && !isInstructor && !isAdmin) {
       return res.status(403).json({
         success: false,
-        message: 'Ce cours n\'est pas encore publié'
+        message: 'Ce cours n\'est pas disponible'
       });
     }
 
@@ -249,9 +255,11 @@ const getCourseById = async (req, res) => {
       WHERE c.id = ?
     `;
     
-    // Si l'utilisateur n'est pas l'instructeur/admin, ne montrer que les cours publiés
+    // Si l'utilisateur n'est pas l'instructeur/admin, ne montrer que les cours publiés, approuvés et non en brouillon
     if (!isInstructor && !isAdmin) {
-      query += ' AND c.is_published = TRUE';
+      query += ` AND c.is_published = TRUE 
+        AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
+        AND COALESCE(c.status, 'draft') != 'draft'`;
     }
     
     query += ' GROUP BY c.id';
@@ -267,31 +275,73 @@ const getCourseById = async (req, res) => {
 
     const course = formatCourseRow(courses[0]);
 
-    // Récupérer les modules du cours
+    // Récupérer les modules du cours avec leurs quiz et leçons
     const modulesQuery = `
-      SELECT m.*, COUNT(l.id) as lessons_count
+      SELECT 
+        m.*, 
+        COUNT(DISTINCT l.id) as lessons_count,
+        MAX(mq.id) as quiz_id,
+        MAX(mq.title) as quiz_title,
+        MAX(mq.description) as quiz_description,
+        MAX(mq.passing_score) as quiz_passing_score,
+        MAX(mq.time_limit_minutes) as quiz_time_limit_minutes,
+        MAX(mq.max_attempts) as quiz_max_attempts,
+        MAX(mq.is_published) as quiz_is_published
       FROM modules m
-      LEFT JOIN lessons l ON m.id = l.module_id
+      LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+      LEFT JOIN module_quizzes mq ON m.id = mq.module_id AND mq.is_published = TRUE
       WHERE m.course_id = ?
       GROUP BY m.id
       ORDER BY m.order_index ASC
     `;
     const [modules] = await pool.execute(modulesQuery, [id]);
 
-    // Récupérer les leçons (si pas de modules) ou toutes les leçons du cours
-    const lessonsQuery = `
-      SELECT l.*, m.title as module_title, m.id as module_id
-      FROM lessons l
-      LEFT JOIN modules m ON l.module_id = m.id
-      WHERE l.course_id = ?
-      ORDER BY m.order_index ASC, l.order_index ASC
-    `;
-    const [lessons] = await pool.execute(lessonsQuery, [id]);
+    // Pour chaque module, récupérer ses leçons avec toutes les informations nécessaires
+    // Format exact comme dans moduleService.js pour respecter la logique d'ajout
+    const modulesWithLessons = await Promise.all(
+      modules.map(async (module) => {
+        const lessonsQuery = `
+          SELECT 
+            l.*,
+            mf.url as media_url,
+            mf.thumbnail_url,
+            mf.file_category,
+            mf.filename,
+            mf.original_filename,
+            mf.file_size,
+            mf.file_type,
+            mf.id as media_file_id_from_join
+          FROM lessons l
+          LEFT JOIN media_files mf ON (
+            l.media_file_id = mf.id 
+            OR (l.id = mf.lesson_id AND l.media_file_id IS NULL)
+          )
+          WHERE l.module_id = ? AND l.is_published = TRUE
+          ORDER BY l.order_index ASC, mf.uploaded_at DESC
+        `;
+        const [lessons] = await pool.execute(lessonsQuery, [module.id]);
+        
+        // Formater le module avec ses leçons et le quiz (format exact comme lors de la création)
+        return {
+          ...module,
+          lessons: lessons || [],
+          quiz: module.quiz_id ? {
+            id: module.quiz_id,
+            title: module.quiz_title,
+            description: module.quiz_description,
+            passing_score: module.quiz_passing_score,
+            time_limit_minutes: module.quiz_time_limit_minutes,
+            max_attempts: module.quiz_max_attempts,
+            is_published: module.quiz_is_published
+          } : null
+        };
+      })
+    );
 
-    // Récupérer les quiz du cours
+    // Récupérer les quiz du cours (anciens quiz, pas les module_quizzes)
     const quizzesQuery = `
       SELECT * FROM quizzes 
-      WHERE course_id = ?
+      WHERE course_id = ? AND is_published = TRUE
     `;
     const [quizzes] = await pool.execute(quizzesQuery, [id]);
 
@@ -299,8 +349,7 @@ const getCourseById = async (req, res) => {
       success: true,
       data: {
         course,
-        modules,
-        lessons,
+        modules: modulesWithLessons,
         quizzes
       }
     });
@@ -664,7 +713,10 @@ const getCoursesByCategory = async (req, res) => {
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
       LEFT JOIN enrollments e ON c.id = e.course_id
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
-      WHERE c.is_published = TRUE AND c.category_id = ?
+      WHERE c.is_published = TRUE 
+        AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
+        AND COALESCE(c.status, 'draft') != 'draft' 
+        AND c.category_id = ?
       GROUP BY c.id
       ORDER BY c.created_at DESC
       LIMIT ? OFFSET ?
@@ -721,6 +773,8 @@ const searchCourses = async (req, res) => {
       LEFT JOIN enrollments e ON c.id = e.course_id
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
       WHERE c.is_published = TRUE 
+        AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
+        AND COALESCE(c.status, 'draft') != 'draft'
         AND (c.title LIKE ? OR c.description LIKE ? OR c.short_description LIKE ?)
       GROUP BY c.id
       ORDER BY c.created_at DESC
@@ -769,7 +823,10 @@ const getFeaturedCourses = async (req, res) => {
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
       LEFT JOIN enrollments e ON c.id = e.course_id
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
-      WHERE c.is_published = TRUE AND c.is_featured = TRUE
+      WHERE c.is_published = TRUE 
+        AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
+        AND COALESCE(c.status, 'draft') != 'draft' 
+        AND c.is_featured = TRUE
       GROUP BY c.id
       ORDER BY c.created_at DESC
       LIMIT ?
@@ -1436,7 +1493,9 @@ const getPopularCourses = async (req, res) => {
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
       LEFT JOIN enrollments e ON c.id = e.course_id
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
-      WHERE c.is_published = TRUE
+      WHERE c.is_published = TRUE 
+        AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
+        AND COALESCE(c.status, 'draft') != 'draft'
       GROUP BY c.id
       ORDER BY enrollment_count DESC, average_rating DESC
       LIMIT ?
@@ -1552,7 +1611,10 @@ const getCourseBySlug = async (req, res) => {
       ) stats ON stats.course_id = c.id
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
       LEFT JOIN courses cp ON c.prerequisite_course_id = cp.id
-      WHERE c.slug = ? AND c.is_published = TRUE
+      WHERE c.slug = ? 
+        AND c.is_published = TRUE 
+        AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
+        AND COALESCE(c.status, 'draft') != 'draft'
     `;
 
     const [courses] = await pool.execute(query, [slug]);
@@ -1566,24 +1628,71 @@ const getCourseBySlug = async (req, res) => {
 
     const course = formatCourseRow(courses[0]);
 
-    // Récupérer les modules du cours
+    // Récupérer les modules du cours avec leurs quiz
     const modulesQuery = `
       SELECT 
         m.*,
-        COUNT(l.id) as lessons_count
+        MAX(mq.id) as quiz_id,
+        MAX(mq.title) as quiz_title,
+        MAX(mq.description) as quiz_description,
+        MAX(mq.passing_score) as quiz_passing_score,
+        MAX(mq.time_limit_minutes) as quiz_time_limit_minutes,
+        MAX(mq.max_attempts) as quiz_max_attempts,
+        MAX(mq.is_published) as quiz_is_published
       FROM modules m
-      LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+      LEFT JOIN module_quizzes mq ON m.id = mq.module_id AND mq.is_published = TRUE
       WHERE m.course_id = ?
       GROUP BY m.id
       ORDER BY m.order_index ASC
     `;
     const [modules] = await pool.execute(modulesQuery, [course.id]);
 
+    // Pour chaque module, récupérer ses leçons avec toutes les informations nécessaires
+    const modulesWithLessons = await Promise.all(
+      modules.map(async (module) => {
+        const lessonsQuery = `
+          SELECT 
+            l.*,
+            mf.url as media_url,
+            mf.thumbnail_url,
+            mf.file_category,
+            mf.filename,
+            mf.original_filename,
+            mf.file_size,
+            mf.file_type,
+            mf.id as media_file_id_from_join
+          FROM lessons l
+          LEFT JOIN media_files mf ON (
+            l.media_file_id = mf.id 
+            OR (l.id = mf.lesson_id AND l.media_file_id IS NULL)
+          )
+          WHERE l.module_id = ? AND l.is_published = TRUE
+          ORDER BY l.order_index ASC, mf.uploaded_at DESC
+        `;
+        const [lessons] = await pool.execute(lessonsQuery, [module.id]);
+        
+        // Formater le module avec ses leçons et le quiz (format exact comme lors de la création)
+        return {
+          ...module,
+          lessons: lessons || [],
+          quiz: module.quiz_id ? {
+            id: module.quiz_id,
+            title: module.quiz_title,
+            description: module.quiz_description,
+            passing_score: module.quiz_passing_score,
+            time_limit_minutes: module.quiz_time_limit_minutes,
+            max_attempts: module.quiz_max_attempts,
+            is_published: module.quiz_is_published
+          } : null
+        };
+      })
+    );
+
     res.json({
       success: true,
       data: {
         course,
-        modules
+        modules: modulesWithLessons
       }
     });
 

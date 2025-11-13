@@ -202,6 +202,21 @@ app.use(passport.session());
 
 // Log des requêtes (toujours actif pour diagnostiquer les problèmes CORS/email)
 app.use((req, res, next) => {
+  // Log détaillé pour les requêtes DELETE (désinscription)
+  if (req.method === 'DELETE' && (
+    req.path.includes('/unenroll') || 
+    req.path.includes('/enrollments/')
+  )) {
+    console.log(`🗑️ [SERVER] DELETE request: ${req.method} ${req.path}`);
+    console.log(`🗑️ [SERVER] Headers:`, {
+      authorization: req.headers.authorization ? 'Present' : 'Missing',
+      'content-type': req.headers['content-type'],
+      'user-agent': req.get('user-agent')?.substring(0, 50)
+    });
+    console.log(`🗑️ [SERVER] Params:`, req.params);
+    console.log(`🗑️ [SERVER] Query:`, req.query);
+  }
+  
   // Log détaillé pour les requêtes POST importantes
   if (req.method === 'POST' && (
     req.path.includes('/forgot-password') || 
@@ -229,6 +244,59 @@ app.use('/uploads', express.static(uploadsPath, {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
     res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache 1 an
+    
+    // Pour les PDF, s'assurer que le Content-Type est correct et limiter les actions
+    if (filePath.toLowerCase().endsWith('.pdf')) {
+      res.setHeader('Content-Type', 'application/pdf');
+      // Utiliser 'inline' pour afficher dans le navigateur, mais sans suggérer de téléchargement
+      res.setHeader('Content-Disposition', 'inline; filename="' + path.basename(filePath) + '"');
+      // Empêcher la mise en cache pour éviter les téléchargements via le cache
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      // Headers pour limiter certaines fonctionnalités
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+    }
+    
+    // Pour les fichiers PowerPoint, servir avec Content-Disposition: inline
+    if (filePath.toLowerCase().endsWith('.pptx') || filePath.toLowerCase().endsWith('.ppt')) {
+      if (filePath.toLowerCase().endsWith('.pptx')) {
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+      } else {
+        res.setHeader('Content-Type', 'application/vnd.ms-powerpoint');
+      }
+      // Utiliser 'inline' pour éviter le téléchargement automatique
+      res.setHeader('Content-Disposition', 'inline; filename="' + path.basename(filePath) + '"');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+    }
+    
+    // Pour les fichiers audio, servir avec Content-Disposition: inline et protection
+    if (filePath.toLowerCase().endsWith('.mp3') || 
+        filePath.toLowerCase().endsWith('.wav') || 
+        filePath.toLowerCase().endsWith('.ogg') || 
+        filePath.toLowerCase().endsWith('.m4a') ||
+        filePath.toLowerCase().endsWith('.aac')) {
+      if (filePath.toLowerCase().endsWith('.mp3')) {
+        res.setHeader('Content-Type', 'audio/mpeg');
+      } else if (filePath.toLowerCase().endsWith('.wav')) {
+        res.setHeader('Content-Type', 'audio/wav');
+      } else if (filePath.toLowerCase().endsWith('.ogg')) {
+        res.setHeader('Content-Type', 'audio/ogg');
+      } else if (filePath.toLowerCase().endsWith('.m4a')) {
+        res.setHeader('Content-Type', 'audio/mp4');
+      } else if (filePath.toLowerCase().endsWith('.aac')) {
+        res.setHeader('Content-Type', 'audio/aac');
+      }
+      // Utiliser 'inline' pour éviter le téléchargement automatique
+      res.setHeader('Content-Disposition', 'inline; filename="' + path.basename(filePath) + '"');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+    }
   }
 }));
 

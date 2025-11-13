@@ -30,7 +30,15 @@ router.get('/popular', courseController.getPopularCourses);
 router.get('/recommended', authenticateToken, courseController.getRecommendedCourses);
 router.get('/slug/:slug', courseController.getCourseBySlug);
 // Route de désinscription (doit être AVANT /:id pour éviter les conflits)
-router.delete('/:courseId/unenroll', authenticateToken, enrollmentController.unenrollFromCourse);
+router.delete('/:courseId/unenroll', 
+  (req, res, next) => {
+    console.log('🔵 [ROUTE COURSES] DELETE /courses/:courseId/unenroll appelée');
+    console.log('🔵 [ROUTE COURSES] courseId:', req.params.courseId);
+    next();
+  },
+  authenticateToken, 
+  enrollmentController.unenrollFromCourse
+);
 router.get('/:id/check-enrollment', authenticateToken, courseController.checkEnrollment);
 router.get('/:id', optionalAuth, courseController.getCourseById); // Route avec authentification optionnelle
 // Liste des inscrits d'un cours (protégée)

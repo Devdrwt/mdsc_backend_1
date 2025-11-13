@@ -4,7 +4,9 @@ const messageController = require('../controllers/messageController');
 const { authenticateToken } = require('../middleware/auth');
 
 // Routes pour les messages (tous les rôles authentifiés)
+// Recherche d'utilisateurs : accessible à tous, mais filtrée selon le rôle
 router.get('/search', authenticateToken, messageController.searchUserByEmail);
+router.get('/search-users', authenticateToken, messageController.searchUserByEmail); // Alias pour compatibilité frontend
 router.post('/send', authenticateToken, messageController.sendMessage);
 router.get('/received', authenticateToken, messageController.getReceivedMessages);
 router.get('/sent', authenticateToken, messageController.getSentMessages);

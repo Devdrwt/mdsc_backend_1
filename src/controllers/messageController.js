@@ -1,8 +1,12 @@
 const { pool } = require("../config/database");
 
 // Rechercher un utilisateur par email
+// Accessible à tous les utilisateurs authentifiés
+// - Étudiants : peuvent rechercher uniquement d'autres étudiants
+// - Instructeurs et admins : peuvent rechercher tous les utilisateurs
 const searchUserByEmail = async (req, res) => {
   try {
+    const userRole = req.user?.role;
     const { email } = req.query;
 
     if (!email) {
@@ -12,14 +16,24 @@ const searchUserByEmail = async (req, res) => {
       });
     }
 
-    const query = `
+    // Construire la requête avec filtre selon le rôle
+    let query = `
       SELECT id, first_name, last_name, email, role, profile_picture
       FROM users
       WHERE email LIKE ? AND is_active = TRUE
-      LIMIT 10
     `;
+    const params = [`%${email}%`];
 
-    const [users] = await pool.execute(query, [`%${email}%`]);
+    // Si l'utilisateur est un étudiant, ne montrer que les étudiants
+    if (userRole === 'student') {
+      query += ' AND role = ?';
+      params.push('student');
+    }
+    // Les instructeurs et admins peuvent voir tous les utilisateurs (pas de filtre supplémentaire)
+
+    query += ' LIMIT 10';
+
+    const [users] = await pool.execute(query, params);
 
     res.json({
       success: true,
@@ -128,12 +142,42 @@ const sendMessage = async (req, res) => {
       message_type,
     ]);
 
+    const messageId = result.insertId;
+
+    // 🔹 Créer une notification pour le destinataire
+    try {
+      const notificationTitle = 'Nouveau message reçu';
+      const notificationMessage = `Vous avez reçu un nouveau message de ${senderName}${subject ? ` : "${subject}"` : ''}`;
+      const actionUrl = `/messages/${messageId}`;
+      const metadata = JSON.stringify({
+        message_id: messageId,
+        sender_id: senderId,
+        sender_name: senderName,
+        sender_email: sender.email,
+        subject: subject,
+        action: 'view_message',
+        link: actionUrl
+      });
+
+      await pool.execute(
+        `INSERT INTO notifications (
+          user_id, title, message, type, is_read, action_url, metadata
+        ) VALUES (?, ?, ?, 'info', FALSE, ?, ?)`,
+        [recipientId, notificationTitle, notificationMessage, actionUrl, metadata]
+      );
+
+      console.log(`✅ Notification créée pour le destinataire ${recipientName} (ID: ${recipientId}) concernant le message ${messageId}`);
+    } catch (notificationError) {
+      // Ne pas faire échouer l'envoi du message si la création de notification échoue
+      console.error('⚠️ Erreur lors de la création de la notification:', notificationError);
+    }
+
     // 🔹 Réponse enrichie (sender + recipient)
     res.status(201).json({
       success: true,
       message: "Message envoyé avec succès",
       data: {
-        id: result.insertId,
+        id: messageId,
         sender: {
           id: sender.id,
           name: senderName,
@@ -356,6 +400,21 @@ const getMessage = async (req, res) => {
         [messageId]
       );
       message.is_read = true;
+
+      // Marquer aussi la notification associée comme lue
+      try {
+        await pool.execute(
+          `UPDATE notifications 
+           SET is_read = TRUE, read_at = NOW() 
+           WHERE user_id = ? 
+           AND metadata LIKE ? 
+           AND is_read = FALSE`,
+          [userId, `%"message_id":${messageId}%`]
+        );
+      } catch (notificationError) {
+        // Ne pas faire échouer la récupération du message si la mise à jour de notification échoue
+        console.error('⚠️ Erreur lors de la mise à jour de la notification:', notificationError);
+      }
     }
 
     res.json({
@@ -422,6 +481,21 @@ const markAsRead = async (req, res) => {
       "UPDATE messages SET is_read = TRUE, read_at = NOW() WHERE id = ?",
       [messageId]
     );
+
+    // Marquer aussi la notification associée comme lue
+    try {
+      await pool.execute(
+        `UPDATE notifications 
+         SET is_read = TRUE, read_at = NOW() 
+         WHERE user_id = ? 
+         AND metadata LIKE ? 
+         AND is_read = FALSE`,
+        [userId, `%"message_id":${messageId}%`]
+      );
+    } catch (notificationError) {
+      // Ne pas faire échouer le marquage du message si la mise à jour de notification échoue
+      console.error('⚠️ Erreur lors de la mise à jour de la notification:', notificationError);
+    }
 
     res.json({
       success: true,

@@ -9,7 +9,14 @@ const { pool } = require('../config/database');
 const getProgressByEnrollment = async (req, res) => {
   try {
     const { enrollmentId } = req.params;
-    const userId = req.user.id;
+    const tokenUserId = req.user?.id ?? req.user?.userId;
+
+    if (!tokenUserId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Utilisateur non authentifié'
+      });
+    }
 
     // Vérifier que l'utilisateur peut accéder à cette inscription
     const enrollmentQuery = 'SELECT user_id FROM enrollments WHERE id = ?';
@@ -22,10 +29,14 @@ const getProgressByEnrollment = async (req, res) => {
       });
     }
 
-    if (enrollments[0].user_id !== userId && req.user.role !== 'admin' && req.user.role !== 'instructor') {
+    if (
+      enrollments[0].user_id !== Number(tokenUserId) &&
+      req.user.role !== 'admin' &&
+      req.user.role !== 'instructor'
+    ) {
       return res.status(403).json({
         success: false,
-        message: 'Vous n\'êtes pas autorisé à accéder à cette progression'
+        message: "Vous n'êtes pas autorisé à accéder à cette progression"
       });
     }
 
@@ -58,7 +69,14 @@ const markLessonCompleted = async (req, res) => {
   try {
     const { enrollmentId, lessonId } = req.params;
     const { time_spent } = req.body;
-    const userId = req.user.id;
+    const tokenUserId = req.user?.id ?? req.user?.userId;
+
+    if (!tokenUserId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Utilisateur non authentifié'
+      });
+    }
 
     // Vérifier que l'inscription appartient à l'utilisateur
     const enrollmentQuery = 'SELECT user_id FROM enrollments WHERE id = ?';
@@ -71,10 +89,10 @@ const markLessonCompleted = async (req, res) => {
       });
     }
 
-    if (enrollments[0].user_id !== userId) {
+    if (enrollments[0].user_id !== Number(tokenUserId)) {
       return res.status(403).json({
         success: false,
-        message: 'Vous n\'êtes pas autorisé à modifier cette progression'
+        message: "Vous n'êtes pas autorisé à modifier cette progression"
       });
     }
 
@@ -112,7 +130,14 @@ const updateLessonProgress = async (req, res) => {
   try {
     const { enrollmentId, lessonId } = req.params;
     const { completion_percentage, time_spent } = req.body;
-    const userId = req.user.id;
+    const tokenUserId = req.user?.id ?? req.user?.userId;
+
+    if (!tokenUserId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Utilisateur non authentifié'
+      });
+    }
 
     // Vérifier les permissions
     const enrollmentQuery = 'SELECT user_id FROM enrollments WHERE id = ?';
@@ -125,10 +150,10 @@ const updateLessonProgress = async (req, res) => {
       });
     }
 
-    if (enrollments[0].user_id !== userId) {
+    if (enrollments[0].user_id !== Number(tokenUserId)) {
       return res.status(403).json({
         success: false,
-        message: 'Vous n\'êtes pas autorisé à modifier cette progression'
+        message: "Vous n'êtes pas autorisé à modifier cette progression"
       });
     }
 
@@ -164,9 +189,16 @@ const updateLessonProgress = async (req, res) => {
 const getCourseProgress = async (req, res) => {
   try {
     const { courseId } = req.params;
-    const userId = req.user.id;
+    const tokenUserId = req.user?.id ?? req.user?.userId;
 
-    const progress = await ProgressService.getCourseProgress(courseId, userId);
+    if (!tokenUserId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Utilisateur non authentifié'
+      });
+    }
+
+    const progress = await ProgressService.getCourseProgress(courseId, Number(tokenUserId));
 
     if (!progress) {
       return res.status(404).json({
@@ -193,9 +225,16 @@ const getCourseProgress = async (req, res) => {
 const getLessonProgress = async (req, res) => {
   try {
     const { lessonId } = req.params;
-    const userId = req.user.id;
+    const tokenUserId = req.user?.id ?? req.user?.userId;
 
-    const progress = await ProgressService.getLessonProgress(lessonId, userId);
+    if (!tokenUserId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Utilisateur non authentifié'
+      });
+    }
+
+    const progress = await ProgressService.getLessonProgress(lessonId, Number(tokenUserId));
 
     res.json({
       success: true,
@@ -220,7 +259,14 @@ const getLessonProgress = async (req, res) => {
 const checkLessonAccess = async (req, res) => {
   try {
     const { enrollmentId, lessonId } = req.params;
-    const userId = req.user.id;
+    const tokenUserId = req.user?.id ?? req.user?.userId;
+
+    if (!tokenUserId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Utilisateur non authentifié'
+      });
+    }
 
     // Vérifier que l'inscription appartient à l'utilisateur
     const [enrollments] = await pool.execute(
@@ -235,7 +281,7 @@ const checkLessonAccess = async (req, res) => {
       });
     }
 
-    if (enrollments[0].user_id !== userId) {
+    if (enrollments[0].user_id !== Number(tokenUserId)) {
       return res.status(403).json({
         success: false,
         message: 'Non autorisé'
@@ -263,10 +309,39 @@ const completeLesson = async (req, res) => {
   try {
     const { enrollmentId, lessonId } = req.params;
     const { time_spent } = req.body;
-    const userId = req.user.id;
+    const tokenUserId = req.user?.id ?? req.user?.userId;
+
+    if (!tokenUserId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Utilisateur non authentifié'
+      });
+    }
+
+    const [enrollments] = await pool.execute(
+      'SELECT user_id FROM enrollments WHERE id = ?',
+      [enrollmentId]
+    );
+
+    if (enrollments.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Inscription non trouvée'
+      });
+    }
+
+    if (enrollments[0].user_id !== Number(tokenUserId)) {
+      return res.status(403).json({
+        success: false,
+        message: "Vous n'êtes pas autorisé à modifier cette progression"
+      });
+    }
 
     // Vérifier l'accès
-    const access = await ProgressService.checkLessonAccess(enrollmentId, lessonId);
+    const access = await ProgressService.checkLessonAccess(
+      Number(enrollmentId),
+      Number(lessonId)
+    );
 
     if (!access.hasAccess) {
       return res.status(403).json({

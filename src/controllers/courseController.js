@@ -59,11 +59,13 @@ const formatCourseRow = (row = {}) => {
       average_rating: Number(row.average_rating || 0),
       review_count: Number(row.review_count || 0),
       enrollment_count: Number(row.enrollment_count || 0),
+      total_lessons: Number(row.total_lessons || 0),
       total_views: Number(row.total_views || 0)
     },
     average_rating: Number(row.average_rating || 0),
     review_count: Number(row.review_count || 0),
     enrollment_count: Number(row.enrollment_count || 0),
+    total_lessons: Number(row.total_lessons || 0),
     total_views: Number(row.total_views || 0)
   };
 };
@@ -83,7 +85,9 @@ const getAllCourses = async (req, res) => {
     } = req.query;
 
     const offset = (page - 1) * limit;
-    let whereClause = 'WHERE c.is_published = TRUE';
+    let whereClause = `WHERE c.is_published = TRUE 
+      AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
+      AND COALESCE(c.status, 'draft') != 'draft'`;
     let params = [];
 
     // Filtres
@@ -122,8 +126,9 @@ const getAllCourses = async (req, res) => {
           CONCAT('/uploads/profiles/', uf.file_name)
         ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
-        COUNT(cr.id) as review_count,
-        COUNT(e.id) as enrollment_count,
+        COUNT(DISTINCT cr.id) as review_count,
+        COUNT(DISTINCT e.id) as enrollment_count,
+        COALESCE(lesson_counts.total_lessons, 0) as total_lessons,
         COALESCE(ca.total_views, 0) as total_views
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
@@ -141,10 +146,18 @@ const getAllCourses = async (req, res) => {
           AND uf1.file_type = 'profile_picture'
       ) uf ON uf.user_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
-      LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
+      LEFT JOIN (
+        SELECT 
+          m.course_id,
+          COUNT(DISTINCT l.id) as total_lessons
+        FROM modules m
+        LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+        GROUP BY m.course_id
+      ) lesson_counts ON lesson_counts.course_id = c.id
       ${whereClause}
-      GROUP BY c.id
+      GROUP BY c.id, lesson_counts.total_lessons
       ORDER BY c.${sort} ${order}
       LIMIT ? OFFSET ?
     `;
@@ -193,7 +206,7 @@ const getCourseById = async (req, res) => {
 
     // Vérifier d'abord si le cours existe et récupérer ses informations de base
     const [courseExists] = await pool.execute(
-      'SELECT id, instructor_id, is_published FROM courses WHERE id = ?', 
+      'SELECT id, instructor_id, is_published, status FROM courses WHERE id = ?', 
       [id]
     );
     
@@ -221,14 +234,18 @@ const getCourseById = async (req, res) => {
       isInstructor,
       isAdmin,
       isPublished: courseInfo.is_published,
+      status: courseInfo.status,
       userRole
     });
     
-    // Vérifier les permissions : si non publié, seul l'instructeur ou admin peut le voir
-    if (!courseInfo.is_published && !isInstructor && !isAdmin) {
+    // Vérifier les permissions : si non publié, en brouillon ou non approuvé, seul l'instructeur ou admin peut le voir
+    const courseStatus = courseInfo.status || 'draft'; // Si NULL, considérer comme draft
+    const isDraft = courseStatus === 'draft';
+    const isApproved = courseStatus === 'approved' || courseStatus === 'published';
+    if ((!courseInfo.is_published || isDraft || !isApproved) && !isInstructor && !isAdmin) {
       return res.status(403).json({
         success: false,
-        message: 'Ce cours n\'est pas encore publié'
+        message: 'Ce cours n\'est pas disponible'
       });
     }
 
@@ -249,6 +266,7 @@ const getCourseById = async (req, res) => {
         stats.average_rating,
         stats.review_count,
         stats.enrollment_count,
+        COALESCE(lesson_counts.total_lessons, 0) as total_lessons,
         COALESCE(ca.total_views, 0) as total_views
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
@@ -269,25 +287,36 @@ const getCourseById = async (req, res) => {
         SELECT 
           c.id AS course_id,
           AVG(cr.rating) AS average_rating,
-          COUNT(cr.id) AS review_count,
-          COUNT(e.id) AS enrollment_count
+          COUNT(DISTINCT cr.id) AS review_count,
+          COUNT(DISTINCT e.id) AS enrollment_count
         FROM courses c
         LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
-        LEFT JOIN enrollments e ON c.id = e.course_id
+        LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
         WHERE c.id = ?
       ) stats ON stats.course_id = c.id
+      LEFT JOIN (
+        SELECT 
+          m.course_id,
+          COUNT(DISTINCT l.id) as total_lessons
+        FROM modules m
+        LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+        WHERE m.course_id = ?
+        GROUP BY m.course_id
+      ) lesson_counts ON lesson_counts.course_id = c.id
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
       WHERE c.id = ?
     `;
     
-    // Si l'utilisateur n'est pas l'instructeur/admin, ne montrer que les cours publiés
+    // Si l'utilisateur n'est pas l'instructeur/admin, ne montrer que les cours publiés, approuvés et non en brouillon
     if (!isInstructor && !isAdmin) {
-      query += ' AND c.is_published = TRUE';
+      query += ` AND c.is_published = TRUE 
+        AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
+        AND COALESCE(c.status, 'draft') != 'draft'`;
     }
     
-    query += ' GROUP BY c.id';
+    query += ' GROUP BY c.id, lesson_counts.total_lessons';
 
-    const [courses] = await pool.execute(query, [id, id]);
+    const [courses] = await pool.execute(query, [id, id, id]);
 
     if (courses.length === 0) {
       return res.status(404).json({
@@ -298,23 +327,73 @@ const getCourseById = async (req, res) => {
 
     const course = formatCourseRow(courses[0]);
 
-    // Récupérer les modules du cours avec formatage des URLs
-    const modules = await ModuleService.getModulesByCourse(id, false);
-
-    // Récupérer les leçons (si pas de modules) ou toutes les leçons du cours
-    const lessonsQuery = `
-      SELECT l.*, m.title as module_title, m.id as module_id
-      FROM lessons l
-      LEFT JOIN modules m ON l.module_id = m.id
-      WHERE l.course_id = ?
-      ORDER BY m.order_index ASC, l.order_index ASC
+    // Récupérer les modules du cours avec leurs quiz et leçons
+    const modulesQuery = `
+      SELECT 
+        m.*, 
+        COUNT(DISTINCT l.id) as lessons_count,
+        MAX(mq.id) as quiz_id,
+        MAX(mq.title) as quiz_title,
+        MAX(mq.description) as quiz_description,
+        MAX(mq.passing_score) as quiz_passing_score,
+        MAX(mq.time_limit_minutes) as quiz_time_limit_minutes,
+        MAX(mq.max_attempts) as quiz_max_attempts,
+        MAX(mq.is_published) as quiz_is_published
+      FROM modules m
+      LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+      LEFT JOIN module_quizzes mq ON m.id = mq.module_id AND mq.is_published = TRUE
+      WHERE m.course_id = ?
+      GROUP BY m.id
+      ORDER BY m.order_index ASC
     `;
-    const [lessons] = await pool.execute(lessonsQuery, [id]);
+    const [modules] = await pool.execute(modulesQuery, [id]);
 
-    // Récupérer les quiz du cours
+    // Pour chaque module, récupérer ses leçons avec toutes les informations nécessaires
+    // Format exact comme dans moduleService.js pour respecter la logique d'ajout
+    const modulesWithLessons = await Promise.all(
+      modules.map(async (module) => {
+        const lessonsQuery = `
+          SELECT 
+            l.*,
+            mf.url as media_url,
+            mf.thumbnail_url,
+            mf.file_category,
+            mf.filename,
+            mf.original_filename,
+            mf.file_size,
+            mf.file_type,
+            mf.id as media_file_id_from_join
+          FROM lessons l
+          LEFT JOIN media_files mf ON (
+            l.media_file_id = mf.id 
+            OR (l.id = mf.lesson_id AND l.media_file_id IS NULL)
+          )
+          WHERE l.module_id = ? AND l.is_published = TRUE
+          ORDER BY l.order_index ASC, mf.uploaded_at DESC
+        `;
+        const [lessons] = await pool.execute(lessonsQuery, [module.id]);
+        
+        // Formater le module avec ses leçons et le quiz (format exact comme lors de la création)
+        return {
+          ...module,
+          lessons: lessons || [],
+          quiz: module.quiz_id ? {
+            id: module.quiz_id,
+            title: module.quiz_title,
+            description: module.quiz_description,
+            passing_score: module.quiz_passing_score,
+            time_limit_minutes: module.quiz_time_limit_minutes,
+            max_attempts: module.quiz_max_attempts,
+            is_published: module.quiz_is_published
+          } : null
+        };
+      })
+    );
+
+    // Récupérer les quiz du cours (anciens quiz, pas les module_quizzes)
     const quizzesQuery = `
       SELECT * FROM quizzes 
-      WHERE course_id = ?
+      WHERE course_id = ? AND is_published = TRUE
     `;
     const [quizzes] = await pool.execute(quizzesQuery, [id]);
 
@@ -322,8 +401,7 @@ const getCourseById = async (req, res) => {
       success: true,
       data: {
         course,
-        modules,
-        lessons,
+        modules: modulesWithLessons,
         quizzes
       }
     });
@@ -681,8 +759,9 @@ const getCoursesByCategory = async (req, res) => {
           CONCAT('/uploads/profiles/', uf.file_name)
         ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
-        COUNT(cr.id) as review_count,
-        COUNT(e.id) as enrollment_count,
+        COUNT(DISTINCT cr.id) as review_count,
+        COUNT(DISTINCT e.id) as enrollment_count,
+        COALESCE(lesson_counts.total_lessons, 0) as total_lessons,
         COALESCE(ca.total_views, 0) as total_views
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
@@ -700,10 +779,21 @@ const getCoursesByCategory = async (req, res) => {
           AND uf1.file_type = 'profile_picture'
       ) uf ON uf.user_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
-      LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
-      WHERE c.is_published = TRUE AND c.category_id = ?
-      GROUP BY c.id
+      LEFT JOIN (
+        SELECT 
+          m.course_id,
+          COUNT(DISTINCT l.id) as total_lessons
+        FROM modules m
+        LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+        GROUP BY m.course_id
+      ) lesson_counts ON lesson_counts.course_id = c.id
+      WHERE c.is_published = TRUE 
+        AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
+        AND COALESCE(c.status, 'draft') != 'draft' 
+        AND c.category_id = ?
+      GROUP BY c.id, lesson_counts.total_lessons
       ORDER BY c.created_at DESC
       LIMIT ? OFFSET ?
     `;
@@ -752,8 +842,9 @@ const searchCourses = async (req, res) => {
           CONCAT('/uploads/profiles/', uf.file_name)
         ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
-        COUNT(cr.id) as review_count,
-        COUNT(e.id) as enrollment_count,
+        COUNT(DISTINCT cr.id) as review_count,
+        COUNT(DISTINCT e.id) as enrollment_count,
+        COALESCE(lesson_counts.total_lessons, 0) as total_lessons,
         COALESCE(ca.total_views, 0) as total_views
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
@@ -771,11 +862,21 @@ const searchCourses = async (req, res) => {
           AND uf1.file_type = 'profile_picture'
       ) uf ON uf.user_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
-      LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
+      LEFT JOIN (
+        SELECT 
+          m.course_id,
+          COUNT(DISTINCT l.id) as total_lessons
+        FROM modules m
+        LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+        GROUP BY m.course_id
+      ) lesson_counts ON lesson_counts.course_id = c.id
       WHERE c.is_published = TRUE 
+        AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
+        AND COALESCE(c.status, 'draft') != 'draft'
         AND (c.title LIKE ? OR c.description LIKE ? OR c.short_description LIKE ?)
-      GROUP BY c.id
+      GROUP BY c.id, lesson_counts.total_lessons
       ORDER BY c.created_at DESC
       LIMIT ? OFFSET ?
     `;
@@ -816,8 +917,9 @@ const getFeaturedCourses = async (req, res) => {
           CONCAT('/uploads/profiles/', uf.file_name)
         ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
-        COUNT(cr.id) as review_count,
-        COUNT(e.id) as enrollment_count,
+        COUNT(DISTINCT cr.id) as review_count,
+        COUNT(DISTINCT e.id) as enrollment_count,
+        COALESCE(lesson_counts.total_lessons, 0) as total_lessons,
         COALESCE(ca.total_views, 0) as total_views
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
@@ -835,10 +937,21 @@ const getFeaturedCourses = async (req, res) => {
           AND uf1.file_type = 'profile_picture'
       ) uf ON uf.user_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
-      LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
-      WHERE c.is_published = TRUE AND c.is_featured = TRUE
-      GROUP BY c.id
+      LEFT JOIN (
+        SELECT 
+          m.course_id,
+          COUNT(DISTINCT l.id) as total_lessons
+        FROM modules m
+        LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+        GROUP BY m.course_id
+      ) lesson_counts ON lesson_counts.course_id = c.id
+      WHERE c.is_published = TRUE 
+        AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
+        AND COALESCE(c.status, 'draft') != 'draft' 
+        AND c.is_featured = TRUE
+      GROUP BY c.id, lesson_counts.total_lessons
       ORDER BY c.created_at DESC
       LIMIT ?
     `;
@@ -1191,7 +1304,9 @@ const getMyCourses = async (req, res) => {
         stats.average_rating,
         stats.review_count,
         enroll_stats.enrollment_count,
-        COALESCE(ca.total_views, 0) as total_views
+        COALESCE(ca.total_views, 0) as total_views,
+        COALESCE(progress_counts.completed_lessons, 0) as completed_lessons,
+        COALESCE(total_lessons_counts.total_lessons, 0) as total_lessons
       FROM enrollments e
       INNER JOIN courses c ON c.id = e.course_id
       LEFT JOIN categories cat ON c.category_id = cat.id
@@ -1225,19 +1340,45 @@ const getMyCourses = async (req, res) => {
         GROUP BY course_id
       ) enroll_stats ON enroll_stats.course_id = c.id
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
+      LEFT JOIN (
+        SELECT 
+          enrollment_id,
+          COUNT(*) AS completed_lessons
+        FROM progress
+        WHERE status = 'completed'
+        GROUP BY enrollment_id
+      ) progress_counts ON progress_counts.enrollment_id = e.id
+      LEFT JOIN (
+        SELECT 
+          course_id,
+          COUNT(*) AS total_lessons
+        FROM lessons
+        WHERE is_published = TRUE
+        GROUP BY course_id
+      ) total_lessons_counts ON total_lessons_counts.course_id = c.id
       WHERE e.user_id = ? AND e.is_active = TRUE
       ORDER BY e.enrolled_at DESC
     `, [userId]);
 
-    const formattedCourses = (courses || []).map((course) => ({
-      ...formatCourseRow(course),
-      enrollment: {
-        enrolled_at: course.enrolled_at,
-        progress_percentage: Number(course.progress_percentage || 0),
-        completed_at: course.completed_at,
-        is_active: Boolean(course.is_active)
-      }
-    }));
+    const formattedCourses = (courses || []).map((course) => {
+      const progressPercentage = Number(course.progress_percentage || 0);
+      const completedLessons = Number(course.completed_lessons || 0);
+      const totalLessons = Number(course.total_lessons || 0);
+
+      return {
+        ...formatCourseRow(course),
+        progress: progressPercentage,
+        progress_percentage: progressPercentage,
+        completed_lessons: completedLessons,
+        total_lessons: totalLessons,
+        enrollment: {
+          enrolled_at: course.enrolled_at,
+          progress_percentage: progressPercentage,
+          completed_at: course.completed_at,
+          is_active: Boolean(course.is_active)
+        }
+      };
+    });
 
     res.json({
       success: true,
@@ -1391,7 +1532,7 @@ const getInstructorCourses = async (req, res) => {
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
-      LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
       LEFT JOIN lessons l ON c.id = l.course_id
       ${whereClause}
       GROUP BY c.id
@@ -1485,8 +1626,9 @@ const getPopularCourses = async (req, res) => {
           CONCAT('/uploads/profiles/', uf.file_name)
         ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
-        COUNT(cr.id) as review_count,
-        COUNT(e.id) as enrollment_count,
+        COUNT(DISTINCT cr.id) as review_count,
+        COUNT(DISTINCT e.id) as enrollment_count,
+        COALESCE(lesson_counts.total_lessons, 0) as total_lessons,
         COALESCE(ca.total_views, 0) as total_views
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
@@ -1504,10 +1646,20 @@ const getPopularCourses = async (req, res) => {
           AND uf1.file_type = 'profile_picture'
       ) uf ON uf.user_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
-      LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
-      WHERE c.is_published = TRUE
-      GROUP BY c.id
+      LEFT JOIN (
+        SELECT 
+          m.course_id,
+          COUNT(DISTINCT l.id) as total_lessons
+        FROM modules m
+        LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+        GROUP BY m.course_id
+      ) lesson_counts ON lesson_counts.course_id = c.id
+      WHERE c.is_published = TRUE 
+        AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
+        AND COALESCE(c.status, 'draft') != 'draft'
+      GROUP BY c.id, lesson_counts.total_lessons
       ORDER BY enrollment_count DESC, average_rating DESC
       LIMIT ?
     `;
@@ -1567,7 +1719,7 @@ const getRecommendedCourses = async (req, res) => {
           AND uf1.file_type = 'profile_picture'
       ) uf ON uf.user_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
-      LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
       WHERE c.is_published = TRUE
     `;
@@ -1621,6 +1773,7 @@ const getCourseBySlug = async (req, res) => {
         stats.average_rating,
         stats.review_count,
         stats.enrollment_count,
+        COALESCE(lesson_counts.total_lessons, 0) as total_lessons,
         COALESCE(ca.total_views, 0) as total_views,
         cp.title as prerequisite_title,
         cp.id as prerequisite_id
@@ -1643,16 +1796,27 @@ const getCourseBySlug = async (req, res) => {
         SELECT 
           c.id AS course_id,
           AVG(cr.rating) AS average_rating,
-          COUNT(cr.id) AS review_count,
-          COUNT(e.id) AS enrollment_count
+          COUNT(DISTINCT cr.id) AS review_count,
+          COUNT(DISTINCT e.id) AS enrollment_count
         FROM courses c
         LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
-        LEFT JOIN enrollments e ON c.id = e.course_id
+        LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
         GROUP BY c.id
       ) stats ON stats.course_id = c.id
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
       LEFT JOIN courses cp ON c.prerequisite_course_id = cp.id
-      WHERE c.slug = ? AND c.is_published = TRUE
+      LEFT JOIN (
+        SELECT 
+          m.course_id,
+          COUNT(DISTINCT l.id) as total_lessons
+        FROM modules m
+        LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+        GROUP BY m.course_id
+      ) lesson_counts ON lesson_counts.course_id = c.id
+      WHERE c.slug = ? 
+        AND c.is_published = TRUE 
+        AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
+        AND COALESCE(c.status, 'draft') != 'draft'
     `;
 
     const [courses] = await pool.execute(query, [slug]);
@@ -1666,24 +1830,71 @@ const getCourseBySlug = async (req, res) => {
 
     const course = formatCourseRow(courses[0]);
 
-    // Récupérer les modules du cours
+    // Récupérer les modules du cours avec leurs quiz
     const modulesQuery = `
       SELECT 
         m.*,
-        COUNT(l.id) as lessons_count
+        MAX(mq.id) as quiz_id,
+        MAX(mq.title) as quiz_title,
+        MAX(mq.description) as quiz_description,
+        MAX(mq.passing_score) as quiz_passing_score,
+        MAX(mq.time_limit_minutes) as quiz_time_limit_minutes,
+        MAX(mq.max_attempts) as quiz_max_attempts,
+        MAX(mq.is_published) as quiz_is_published
       FROM modules m
-      LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+      LEFT JOIN module_quizzes mq ON m.id = mq.module_id AND mq.is_published = TRUE
       WHERE m.course_id = ?
       GROUP BY m.id
       ORDER BY m.order_index ASC
     `;
     const [modules] = await pool.execute(modulesQuery, [course.id]);
 
+    // Pour chaque module, récupérer ses leçons avec toutes les informations nécessaires
+    const modulesWithLessons = await Promise.all(
+      modules.map(async (module) => {
+        const lessonsQuery = `
+          SELECT 
+            l.*,
+            mf.url as media_url,
+            mf.thumbnail_url,
+            mf.file_category,
+            mf.filename,
+            mf.original_filename,
+            mf.file_size,
+            mf.file_type,
+            mf.id as media_file_id_from_join
+          FROM lessons l
+          LEFT JOIN media_files mf ON (
+            l.media_file_id = mf.id 
+            OR (l.id = mf.lesson_id AND l.media_file_id IS NULL)
+          )
+          WHERE l.module_id = ? AND l.is_published = TRUE
+          ORDER BY l.order_index ASC, mf.uploaded_at DESC
+        `;
+        const [lessons] = await pool.execute(lessonsQuery, [module.id]);
+        
+        // Formater le module avec ses leçons et le quiz (format exact comme lors de la création)
+        return {
+          ...module,
+          lessons: lessons || [],
+          quiz: module.quiz_id ? {
+            id: module.quiz_id,
+            title: module.quiz_title,
+            description: module.quiz_description,
+            passing_score: module.quiz_passing_score,
+            time_limit_minutes: module.quiz_time_limit_minutes,
+            max_attempts: module.quiz_max_attempts,
+            is_published: module.quiz_is_published
+          } : null
+        };
+      })
+    );
+
     res.json({
       success: true,
       data: {
         course,
-        modules
+        modules: modulesWithLessons
       }
     });
 
@@ -1708,7 +1919,7 @@ const checkEnrollment = async (req, res) => {
         c.title as course_title
       FROM enrollments e
       JOIN courses c ON e.course_id = c.id
-      WHERE e.user_id = ? AND e.course_id = ?
+      WHERE e.user_id = ? AND e.course_id = ? AND e.is_active = TRUE
     `;
 
     const [enrollments] = await pool.execute(query, [userId, courseId]);

@@ -30,6 +30,18 @@ router.get('/category/:categoryId', courseController.getCoursesByCategory);
 router.get('/popular', courseController.getPopularCourses);
 router.get('/recommended', authenticateToken, courseController.getRecommendedCourses);
 router.get('/slug/:slug', courseController.getCourseBySlug);
+
+// Route de désinscription (doit être AVANT /:id pour éviter les conflits)
+router.delete('/:courseId/unenroll', 
+  (req, res, next) => {
+    console.log('🔵 [ROUTE COURSES] DELETE /courses/:courseId/unenroll appelée');
+    console.log('🔵 [ROUTE COURSES] courseId:', req.params.courseId);
+    next();
+  },
+  authenticateToken, 
+  enrollmentController.unenrollFromCourse
+);
+
 // Route pour les analytics d'un cours (doit être avant /:id pour éviter les conflits)
 router.get('/:courseId/analytics', 
   authenticateToken, 

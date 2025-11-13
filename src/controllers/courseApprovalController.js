@@ -164,19 +164,103 @@ const requestPublication = async (req, res) => {
 };
 
 /**
- * Liste des cours en attente (Admin)
+ * Mettre un cours en attente de validation (Admin)
+ */
+const setCoursePending = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.user.userId || req.user.id;
+
+    // Vérifier que le cours existe
+    const [courses] = await pool.execute(
+      'SELECT id, status, instructor_id FROM courses WHERE id = ?',
+      [id]
+    );
+
+    if (courses.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Cours non trouvé'
+      });
+    }
+
+    const course = courses[0];
+    const oldStatus = course.status || 'draft';
+
+    // Ne pas mettre en attente si déjà approuvé ou publié
+    if (course.status === 'approved' || course.status === 'published') {
+      return res.status(400).json({
+        success: false,
+        message: 'Ce cours est déjà approuvé ou publié'
+      });
+    }
+
+    // Mettre le cours en attente
+    await pool.execute(
+      'UPDATE courses SET status = "pending_approval" WHERE id = ?',
+      [id]
+    );
+
+    // Créer ou mettre à jour l'entrée dans course_approvals
+    const [existingApprovals] = await pool.execute(
+      'SELECT id FROM course_approvals WHERE course_id = ?',
+      [id]
+    );
+
+    if (existingApprovals.length > 0) {
+      await pool.execute(
+        `UPDATE course_approvals SET 
+          status = 'pending',
+          reviewed_at = NULL
+         WHERE course_id = ?`,
+        [id]
+      );
+    } else {
+      await pool.execute(
+        'INSERT INTO course_approvals (course_id, admin_id, status) VALUES (?, NULL, "pending")',
+        [id]
+      ).catch(() => {
+        console.warn('⚠️ Table course_approvals non trouvée');
+      });
+    }
+
+    console.log(`✅ [ADMIN] Cours ${id} mis en attente de validation par l'admin ${adminId} (ancien statut: ${oldStatus})`);
+
+    res.json({
+      success: true,
+      message: 'Cours mis en attente de validation',
+      data: {
+        course_id: id,
+        old_status: oldStatus,
+        new_status: 'pending_approval'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [ADMIN] Erreur lors de la mise en attente:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la mise en attente',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * Liste des cours en attente (Admin) - inclut les cours en draft et pending_approval
  */
 const getPendingCourses = async (req, res) => {
   try {
     const { page = 1, limit = 10 } = req.query;
     const offset = (page - 1) * limit;
 
+    // Inclure les cours en draft et pending_approval
     const [courses] = await pool.execute(
       `SELECT 
         c.id,
         c.title,
         c.description,
-        c.status,
+        COALESCE(c.status, 'draft') as status,
         c.course_type,
         c.created_at as course_created_at,
         u.first_name as instructor_first_name,
@@ -186,15 +270,18 @@ const getPendingCourses = async (req, res) => {
        FROM courses c
        JOIN users u ON c.instructor_id = u.id
        LEFT JOIN course_approvals ca ON c.id = ca.course_id AND ca.status = 'pending'
-       WHERE c.status = 'pending_approval'
-       ORDER BY COALESCE(ca.created_at, c.created_at) ASC
+       WHERE (c.status = 'pending_approval' OR c.status = 'draft' OR c.status IS NULL)
+       ORDER BY 
+         CASE WHEN c.status = 'pending_approval' THEN 1 ELSE 2 END,
+         COALESCE(ca.created_at, c.created_at) ASC
        LIMIT ? OFFSET ?`,
       [parseInt(limit), offset]
     );
 
-    // Compter le total
+    // Compter le total (draft + pending_approval)
     const [countResult] = await pool.execute(
-      'SELECT COUNT(*) as total FROM courses WHERE status = "pending_approval"'
+      `SELECT COUNT(*) as total FROM courses 
+       WHERE (status = 'pending_approval' OR status = 'draft' OR status IS NULL)`
     );
 
     res.json({
@@ -497,18 +584,18 @@ const approveCourse = async (req, res) => {
   try {
     const { id } = req.params;
     const { comments } = req.body;
-    const adminId = req.user.userId;
+    const adminId = req.user.userId || req.user.id;
 
-    // Vérifier que le cours est en attente
+    // Vérifier que le cours existe et est en attente, en brouillon ou NULL
     const [courses] = await pool.execute(
-      'SELECT * FROM courses WHERE id = ? AND status = "pending_approval"',
+      'SELECT * FROM courses WHERE id = ? AND (status = "pending_approval" OR status = "draft" OR status IS NULL)',
       [id]
     );
 
     if (courses.length === 0) {
       return res.status(404).json({
         success: false,
-        message: 'Cours non trouvé ou déjà traité'
+        message: 'Cours non trouvé ou déjà approuvé'
       });
     }
 
@@ -720,6 +807,145 @@ const rejectCourse = async (req, res) => {
 };
 
 /**
+ * Mettre à jour le statut d'un cours (Admin)
+ */
+const updateCourseStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, comments } = req.body;
+    const adminId = req.user.userId || req.user.id;
+
+    if (!status) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le statut est requis'
+      });
+    }
+
+    // Valider le statut
+    const validStatuses = ['draft', 'pending_approval', 'approved', 'rejected', 'published'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Statut invalide. Statuts valides: ${validStatuses.join(', ')}`
+      });
+    }
+
+    // Vérifier que le cours existe
+    const [courses] = await pool.execute(
+      'SELECT id, status, instructor_id FROM courses WHERE id = ?',
+      [id]
+    );
+
+    if (courses.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Cours non trouvé'
+      });
+    }
+
+    const course = courses[0];
+    const oldStatus = course.status || 'draft';
+
+    // Préparer les champs à mettre à jour
+    const updateFields = ['status = ?'];
+    const updateValues = [status];
+
+    // Si on approuve ou publie, mettre à jour les champs d'approbation
+    if (status === 'approved' || status === 'published') {
+      updateFields.push('approved_by = ?', 'approved_at = NOW()');
+      updateValues.push(adminId);
+      
+      // Si on publie, activer is_published
+      if (status === 'published') {
+        updateFields.push('is_published = TRUE');
+      }
+    }
+
+    // Si on rejette, permettre de définir la raison
+    if (status === 'rejected' && req.body.rejection_reason) {
+      updateFields.push('rejection_reason = ?');
+      updateValues.push(sanitizeValue(req.body.rejection_reason));
+      updateFields.push('approved_by = ?', 'approved_at = NOW()');
+      updateValues.push(adminId);
+    }
+
+    // Si on met en brouillon, désactiver la publication
+    if (status === 'draft') {
+      updateFields.push('is_published = FALSE');
+    }
+
+    updateValues.push(id);
+
+    // Mettre à jour le cours
+    await pool.execute(
+      `UPDATE courses SET ${updateFields.join(', ')} WHERE id = ?`,
+      updateValues
+    );
+
+    // Mettre à jour ou créer l'entrée dans course_approvals si nécessaire
+    if (status === 'approved' || status === 'published' || status === 'rejected') {
+      const approvalStatus = status === 'rejected' ? 'rejected' : 'approved';
+      
+      // Vérifier si une entrée existe déjà
+      const [existingApprovals] = await pool.execute(
+        'SELECT id FROM course_approvals WHERE course_id = ?',
+        [id]
+      );
+
+      if (existingApprovals.length > 0) {
+        // Mettre à jour l'entrée existante
+        const rejectionReasonField = status === 'rejected' && req.body.rejection_reason ? 'rejection_reason = ?,' : '';
+        await pool.execute(
+          `UPDATE course_approvals SET 
+            admin_id = ?,
+            status = ?,
+            comments = ?,
+            ${rejectionReasonField}
+            reviewed_at = NOW()
+           WHERE course_id = ?`,
+          status === 'rejected' && req.body.rejection_reason
+            ? [adminId, approvalStatus, sanitizeValue(comments || ''), sanitizeValue(req.body.rejection_reason), id]
+            : [adminId, approvalStatus, sanitizeValue(comments || ''), id]
+        );
+      } else {
+        // Créer une nouvelle entrée
+        await pool.execute(
+          `INSERT INTO course_approvals (course_id, admin_id, status, comments, ${status === 'rejected' && req.body.rejection_reason ? 'rejection_reason, ' : ''}reviewed_at) 
+           VALUES (?, ?, ?, ?, ${status === 'rejected' && req.body.rejection_reason ? '?, ' : ''}NOW())`,
+          status === 'rejected' && req.body.rejection_reason
+            ? [id, adminId, approvalStatus, sanitizeValue(comments || ''), sanitizeValue(req.body.rejection_reason)]
+            : [id, adminId, approvalStatus, sanitizeValue(comments || '')]
+        ).catch(() => {
+          // Si la table n'existe pas, continuer quand même
+          console.warn('⚠️ Table course_approvals non trouvée');
+        });
+      }
+    }
+
+    console.log(`✅ [ADMIN] Statut du cours ${id} changé de "${oldStatus}" à "${status}" par l'admin ${adminId}`);
+
+    res.json({
+      success: true,
+      message: `Statut du cours mis à jour avec succès: ${status}`,
+      data: {
+        course_id: id,
+        old_status: oldStatus,
+        new_status: status
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [ADMIN] Erreur lors de la mise à jour du statut:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la mise à jour du statut',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
  * Récupérer tous les cours (Admin) - pour modération
  */
 const getAllCourses = async (req, res) => {
@@ -814,6 +1040,8 @@ module.exports = {
   getCourseForApproval,
   getAllCourses,
   approveCourse,
-  rejectCourse
+  rejectCourse,
+  updateCourseStatus,
+  setCoursePending
 };
 

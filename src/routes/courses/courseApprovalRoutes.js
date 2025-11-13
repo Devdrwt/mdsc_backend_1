@@ -41,5 +41,17 @@ router.post('/admin/courses/:id/reject',
   courseApprovalController.rejectCourse
 );
 
+// Admin : Mettre à jour le statut d'un cours (PUT pour modification)
+router.put('/admin/courses/:id/status',
+  authenticateAdminToken,
+  courseApprovalController.updateCourseStatus
+);
+
+// Admin : Mettre un cours en attente de validation
+router.post('/admin/courses/:id/set-pending',
+  authenticateAdminToken,
+  courseApprovalController.setCoursePending
+);
+
 module.exports = router;
 

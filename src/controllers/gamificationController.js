@@ -246,6 +246,24 @@ const recordActivity = async (userId, activityType, pointsEarned, description, m
 
     await pool.execute(query, [userId, activityType, pointsEarned, description, JSON.stringify(metadata)]);
 
+    // Créer une notification pour les points gagnés (seulement si points > 0 et pas déjà notifié ailleurs)
+    // On évite les doublons pour les activités qui créent déjà leurs propres notifications
+    const activitiesWithOwnNotifications = ['badge_earned', 'course_enrolled', 'course_unenrolled', 'quiz_passed', 'quiz_failed', 'evaluation_submitted', 'evaluation_passed', 'evaluation_failed', 'login', 'lesson_completed', 'module_completed', 'course_completed'];
+    if (pointsEarned > 0 && !activitiesWithOwnNotifications.includes(activityType)) {
+      try {
+        await createNotification(
+          userId,
+          '⭐ Points gagnés !',
+          `Vous avez gagné ${pointsEarned} point${pointsEarned > 1 ? 's' : ''} : ${description}`,
+          'points_earned',
+          '/dashboard/student',
+          { activity_type: activityType, points_earned: pointsEarned, description: description }
+        );
+      } catch (notifError) {
+        console.error('Erreur lors de la création de la notification de points:', notifError);
+      }
+    }
+
     // Vérifier les badges
     await checkAndAwardBadges(userId);
 
@@ -257,6 +275,8 @@ const recordActivity = async (userId, activityType, pointsEarned, description, m
 // Vérifier et attribuer des badges
 const checkAndAwardBadges = async (userId) => {
   try {
+    console.log(`🔍 [BADGES] Vérification des badges pour l'utilisateur ${userId}`);
+    
     // Récupérer tous les badges non encore gagnés
     const badgesQuery = `
       SELECT b.* FROM badges b
@@ -266,20 +286,36 @@ const checkAndAwardBadges = async (userId) => {
       )
     `;
     const [badges] = await pool.execute(badgesQuery, [userId]);
+    
+    console.log(`🔍 [BADGES] ${badges.length} badge(s) disponible(s) à vérifier`);
 
     for (const badge of badges) {
-      const criteria = JSON.parse(badge.criteria || '{}');
-      let shouldAward = false;
+      try {
+        const criteria = JSON.parse(badge.criteria || '{}');
+        let shouldAward = false;
 
-      switch (criteria.action) {
+        // Support des deux formats : 'action' (nouveau) et 'type' (ancien)
+        const actionType = criteria.action || criteria.type;
+        
+        console.log(`🔍 [BADGES] Vérification du badge "${badge.name}" (ID: ${badge.id}) - Type: ${actionType}`);
+
+      switch (actionType) {
         case 'first_login':
+        case 'profile_completion':
           const loginCount = await getUserActivityCount(userId, 'login');
-          shouldAward = loginCount >= 1;
+          shouldAward = loginCount >= 1 || criteria.completed === true;
           break;
 
         case 'course_completed':
+        case 'courses_completed':
           const completedCourses = await getUserCompletedCourses(userId);
           shouldAward = completedCourses >= (criteria.count || 1);
+          break;
+
+        case 'courses_enrolled':
+          // Badge pour s'être inscrit à un cours
+          const enrolledCourses = await getUserEnrolledCourses(userId);
+          shouldAward = enrolledCourses >= (criteria.count || 1);
           break;
 
         case 'daily_login':
@@ -303,46 +339,71 @@ const checkAndAwardBadges = async (userId) => {
           break;
 
         case 'forum_posts':
+        case 'pages_visited':
+          // Pour pages_visited, on compte les activités de navigation
           const forumPosts = await getUserForumPosts(userId);
-          shouldAward = forumPosts >= (criteria.count || 10);
+          const pageVisits = await getUserActivityCount(userId, 'page_visit');
+          shouldAward = forumPosts >= (criteria.count || 10) || pageVisits >= (criteria.count || 3);
           break;
       }
 
-      if (shouldAward) {
-        await awardBadgeInternal(userId, badge.id, badge.points_required);
+        if (shouldAward) {
+          console.log(`✅ [BADGES] Attribution du badge "${badge.name}" (ID: ${badge.id}) à l'utilisateur ${userId}`);
+          await awardBadgeInternal(userId, badge.id, badge.points_required || 0);
+        } else {
+          console.log(`❌ [BADGES] Le badge "${badge.name}" (ID: ${badge.id}) n'est pas encore mérité`);
+        }
+      } catch (badgeError) {
+        console.error(`❌ [BADGES] Erreur lors de la vérification du badge ${badge.id}:`, badgeError);
       }
     }
 
+    console.log(`✅ [BADGES] Vérification des badges terminée pour l'utilisateur ${userId}`);
+
   } catch (error) {
-    console.error('Erreur lors de la vérification des badges:', error);
+    console.error('❌ [BADGES] Erreur lors de la vérification des badges:', error);
   }
 };
 
 // Attribuer un badge
 const awardBadgeInternal = async (userId, badgeId, points) => {
   try {
+    console.log(`🎖️ [BADGES] Attribution du badge ${badgeId} à l'utilisateur ${userId} (${points} points)`);
+    
+    // Récupérer les informations du badge
+    const [badges] = await pool.execute(
+      'SELECT id, name, description, icon FROM badges WHERE id = ?',
+      [badgeId]
+    );
+    const badge = badges.length > 0 ? badges[0] : null;
+    const badgeName = badge?.name || `Badge #${badgeId}`;
+    const badgeDescription = badge?.description || '';
+
     const query = `
-      INSERT INTO user_badges (user_id, badge_id, points_earned)
-      VALUES (?, ?, ?)
+      INSERT INTO user_badges (user_id, badge_id, earned_at)
+      VALUES (?, ?, NOW())
     `;
 
-    await pool.execute(query, [userId, badgeId, points]);
+    await pool.execute(query, [userId, badgeId]);
+    console.log(`✅ [BADGES] Badge ${badgeId} attribué avec succès`);
 
     // Enregistrer l'activité
     await recordActivity(
       userId,
       'badge_earned',
-      points,
-      `Badge gagné: ${badgeId}`,
-      { badge_id: badgeId }
+      points || 0,
+      `Badge gagné : ${badgeName}`,
+      { badge_id: badgeId, badge_name: badgeName }
     );
 
-    // Créer une notification
+    // Créer une notification avec le nom du badge
     await createNotification(
       userId,
       '🏆 Nouveau Badge !',
-      `Félicitations ! Vous avez gagné un nouveau badge.`,
-      'badge'
+      `Félicitations ! Vous avez gagné le badge "${badgeName}". ${badgeDescription ? badgeDescription : ''}`,
+      'badge',
+      '/dashboard/student',
+      { badge_id: badgeId, badge_name: badgeName, badge_description: badgeDescription }
     );
 
   } catch (error) {
@@ -359,6 +420,12 @@ const getUserActivityCount = async (userId, activityType) => {
 
 const getUserCompletedCourses = async (userId) => {
   const query = 'SELECT COUNT(*) as count FROM enrollments WHERE user_id = ? AND completed_at IS NOT NULL';
+  const [result] = await pool.execute(query, [userId]);
+  return result[0].count;
+};
+
+const getUserEnrolledCourses = async (userId) => {
+  const query = 'SELECT COUNT(*) as count FROM enrollments WHERE user_id = ? AND is_active = TRUE';
   const [result] = await pool.execute(query, [userId]);
   return result[0].count;
 };
@@ -414,14 +481,33 @@ const getUserPerfectQuizPercentage = async (userId) => {
 };
 
 const getUserForumPosts = async (userId) => {
-  const query = `
-    SELECT COUNT(*) as count
-    FROM forum_replies fr
-    JOIN forum_discussions fd ON fr.discussion_id = fd.id
-    WHERE fr.user_id = ?
-  `;
-  const [result] = await pool.execute(query, [userId]);
-  return result[0].count;
+  try {
+    // Vérifier si la table existe avant de faire la requête
+    const [tables] = await pool.execute(`
+      SELECT COUNT(*) as count 
+      FROM information_schema.tables 
+      WHERE table_schema = DATABASE() 
+      AND table_name = 'forum_replies'
+    `);
+    
+    if (tables[0].count === 0) {
+      // La table n'existe pas, retourner 0
+      return 0;
+    }
+    
+    const query = `
+      SELECT COUNT(*) as count
+      FROM forum_replies fr
+      JOIN forum_discussions fd ON fr.discussion_id = fd.id
+      WHERE fr.user_id = ?
+    `;
+    const [result] = await pool.execute(query, [userId]);
+    return result[0].count;
+  } catch (error) {
+    // Si la table n'existe pas ou autre erreur, retourner 0
+    console.warn(`⚠️ [BADGES] Impossible de récupérer les posts du forum pour l'utilisateur ${userId}:`, error.message);
+    return 0;
+  }
 };
 
 const getNextLevel = (currentLevel) => {
@@ -437,13 +523,20 @@ const getNextLevel = (currentLevel) => {
   return nextLevel || levels[levels.length - 1];
 };
 
-const createNotification = async (userId, title, message, type) => {
+const createNotification = async (userId, title, message, type, actionUrl = null, metadata = null) => {
   try {
     const query = `
-      INSERT INTO notifications (user_id, title, message, type)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO notifications (user_id, title, message, type, action_url, metadata)
+      VALUES (?, ?, ?, ?, ?, ?)
     `;
-    await pool.execute(query, [userId, title, message, type]);
+    await pool.execute(query, [
+      userId, 
+      title, 
+      message, 
+      type, 
+      actionUrl, 
+      metadata ? JSON.stringify(metadata) : null
+    ]);
   } catch (error) {
     console.error('Erreur lors de la création de la notification:', error);
   }

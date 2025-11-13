@@ -358,18 +358,75 @@ const submitQuizAttempt = async (req, res) => {
       attemptId
     ]);
 
-    // Si le quiz est final et réussi, vérifier si on peut générer le certificat
-    const quizQuery = 'SELECT is_final, course_id FROM quizzes WHERE id = ?';
+    // Récupérer les informations du quiz pour les notifications
+    const quizQuery = 'SELECT id, title, is_final, course_id FROM quizzes WHERE id = ?';
     const [quizzes] = await pool.execute(quizQuery, [attempt.quiz_id]);
-    
-    if (quizzes.length > 0 && quizzes[0].is_final && isPassed) {
+    const quiz = quizzes.length > 0 ? quizzes[0] : null;
+    const quizTitle = quiz?.title || 'Quiz';
+
+    // Si le quiz est final et réussi, vérifier si on peut générer le certificat
+    if (quiz && quiz.is_final && isPassed) {
       const { generateCertificateForCourseInternal } = require('./certificateController');
       try {
-        await generateCertificateForCourseInternal(userId, quizzes[0].course_id);
+        await generateCertificateForCourseInternal(userId, quiz.course_id);
       } catch (certError) {
         console.warn('Erreur lors de la génération automatique du certificat:', certError.message);
         // Ne pas faire échouer la soumission du quiz si le certificat ne peut pas être généré
       }
+    }
+
+    // Créer une notification pour le quiz soumis
+    try {
+      const notificationTitle = isPassed 
+        ? `✅ Quiz réussi : ${quizTitle}`
+        : `❌ Quiz échoué : ${quizTitle}`;
+      const notificationMessage = isPassed
+        ? `Félicitations ! Vous avez réussi le quiz "${quizTitle}" avec un score de ${Math.round(percentage)}% (${correctAnswers}/${totalQuestions} bonnes réponses).`
+        : `Vous avez obtenu ${Math.round(percentage)}% au quiz "${quizTitle}" (${correctAnswers}/${totalQuestions} bonnes réponses). Le score minimum requis est ${attempt.passing_score}%.`;
+
+      await pool.execute(
+        `INSERT INTO notifications (user_id, title, message, type, action_url, metadata)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          userId,
+          notificationTitle,
+          notificationMessage,
+          isPassed ? 'quiz_passed' : 'quiz_failed',
+          quiz?.course_id ? `/learn/${quiz.course_id}` : '/dashboard/student',
+          JSON.stringify({ 
+            quizId: attempt.quiz_id, 
+            quizTitle: quizTitle,
+            score: percentage,
+            isPassed: isPassed,
+            correctAnswers: correctAnswers,
+            totalQuestions: totalQuestions
+          })
+        ]
+      );
+    } catch (notificationError) {
+      console.error('Erreur lors de la création de la notification de quiz:', notificationError);
+    }
+
+    // Enregistrer l'activité du quiz
+    try {
+      const { recordActivity } = require('./gamificationController');
+      const pointsEarned = isPassed ? Math.round(percentage / 10) : 0; // Points basés sur le pourcentage
+      await recordActivity(
+        userId,
+        isPassed ? 'quiz_passed' : 'quiz_failed',
+        pointsEarned,
+        `Quiz "${quizTitle}" : ${Math.round(percentage)}% (${correctAnswers}/${totalQuestions} bonnes réponses)`,
+        { 
+          quizId: attempt.quiz_id,
+          quizTitle: quizTitle,
+          score: percentage,
+          isPassed: isPassed,
+          correctAnswers: correctAnswers,
+          totalQuestions: totalQuestions
+        }
+      );
+    } catch (activityError) {
+      console.error('Erreur lors de l\'enregistrement de l\'activité de quiz:', activityError);
     }
 
     res.json({

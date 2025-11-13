@@ -1,6 +1,10 @@
 require('dotenv').config({ override: true });
 const fs = require('fs');
 const path = require('path');
+const warnMissing = [];
+if (!process.env.GOBIPAY_PUBLIC_KEY) warnMissing.push('GOBIPAY_PUBLIC_KEY');
+if (!process.env.GOBIPAY_SECRET_KEY) warnMissing.push('GOBIPAY_SECRET_KEY');
+if (!process.env.GOBIPAY_PLATFORM_MONEY) warnMissing.push('GOBIPAY_PLATFORM_MONEY');
 const express = require('express');
 const cors = require('cors');
 const session = require('express-session');
@@ -199,6 +203,21 @@ app.use(passport.session());
 
 // Log des requêtes (toujours actif pour diagnostiquer les problèmes CORS/email)
 app.use((req, res, next) => {
+  // Log détaillé pour les requêtes DELETE (désinscription)
+  if (req.method === 'DELETE' && (
+    req.path.includes('/unenroll') || 
+    req.path.includes('/enrollments/')
+  )) {
+    console.log(`🗑️ [SERVER] DELETE request: ${req.method} ${req.path}`);
+    console.log(`🗑️ [SERVER] Headers:`, {
+      authorization: req.headers.authorization ? 'Present' : 'Missing',
+      'content-type': req.headers['content-type'],
+      'user-agent': req.get('user-agent')?.substring(0, 50)
+    });
+    console.log(`🗑️ [SERVER] Params:`, req.params);
+    console.log(`🗑️ [SERVER] Query:`, req.query);
+  }
+  
   // Log détaillé pour les requêtes POST importantes
   if (req.method === 'POST' && (
     req.path.includes('/forgot-password') || 
@@ -221,76 +240,68 @@ app.use((req, res, next) => {
 // Important : cette route doit être avant les routes API pour éviter les conflits
 const uploadsPath = path.join(__dirname, '../uploads');
 
-// Route personnalisée pour servir les fichiers avec meilleur contrôle
-app.use('/uploads', (req, res, next) => {
-  // Construire le chemin complet du fichier
-  let filePath = path.join(uploadsPath, req.path);
-  
-  // Vérifier que le chemin est sécurisé (pas de directory traversal)
-  const normalizedPath = path.normalize(filePath);
-  if (!normalizedPath.startsWith(path.normalize(uploadsPath))) {
-    return res.status(403).json({ success: false, message: 'Accès interdit' });
-  }
-  
-  // Si le fichier n'existe pas au chemin demandé, chercher dans d'autres dossiers possibles
-  if (!fs.existsSync(filePath)) {
-    const filename = path.basename(req.path);
-    const possiblePaths = [
-      path.join(uploadsPath, 'courses', 'thumbnails', filename),
-      path.join(uploadsPath, 'courses', 'videos', filename),
-      path.join(uploadsPath, 'profiles', filename),
-      path.join(uploadsPath, 'images', filename),
-      path.join(uploadsPath, 'modules', filename)
-    ];
+// Route pour servir les fichiers statiques avec headers de protection
+app.use('/uploads', express.static(uploadsPath, {
+  setHeaders: (res, filePath, stat) => {
+    // Ajouter les en-têtes CORS pour les fichiers statiques
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache 1 an
     
-    // Chercher le fichier dans les dossiers possibles
-    for (const possiblePath of possiblePaths) {
-      if (fs.existsSync(possiblePath)) {
-        filePath = possiblePath;
-        break;
+    // Pour les PDF, s'assurer que le Content-Type est correct et limiter les actions
+    if (filePath.toLowerCase().endsWith('.pdf')) {
+      res.setHeader('Content-Type', 'application/pdf');
+      // Utiliser 'inline' pour afficher dans le navigateur, mais sans suggérer de téléchargement
+      res.setHeader('Content-Disposition', 'inline; filename="' + path.basename(filePath) + '"');
+      // Empêcher la mise en cache pour éviter les téléchargements via le cache
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      // Headers pour limiter certaines fonctionnalités
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+    }
+    
+    // Pour les fichiers PowerPoint, servir avec Content-Disposition: inline
+    if (filePath.toLowerCase().endsWith('.pptx') || filePath.toLowerCase().endsWith('.ppt')) {
+      if (filePath.toLowerCase().endsWith('.pptx')) {
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+      } else {
+        res.setHeader('Content-Type', 'application/vnd.ms-powerpoint');
       }
+      // Utiliser 'inline' pour éviter le téléchargement automatique
+      res.setHeader('Content-Disposition', 'inline; filename="' + path.basename(filePath) + '"');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+    }
+    
+    // Pour les fichiers audio, servir avec Content-Disposition: inline et protection
+    if (filePath.toLowerCase().endsWith('.mp3') || 
+        filePath.toLowerCase().endsWith('.wav') || 
+        filePath.toLowerCase().endsWith('.ogg') || 
+        filePath.toLowerCase().endsWith('.m4a') ||
+        filePath.toLowerCase().endsWith('.aac')) {
+      if (filePath.toLowerCase().endsWith('.mp3')) {
+        res.setHeader('Content-Type', 'audio/mpeg');
+      } else if (filePath.toLowerCase().endsWith('.wav')) {
+        res.setHeader('Content-Type', 'audio/wav');
+      } else if (filePath.toLowerCase().endsWith('.ogg')) {
+        res.setHeader('Content-Type', 'audio/ogg');
+      } else if (filePath.toLowerCase().endsWith('.m4a')) {
+        res.setHeader('Content-Type', 'audio/mp4');
+      } else if (filePath.toLowerCase().endsWith('.aac')) {
+        res.setHeader('Content-Type', 'audio/aac');
+      }
+      // Utiliser 'inline' pour éviter le téléchargement automatique
+      res.setHeader('Content-Disposition', 'inline; filename="' + path.basename(filePath) + '"');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
     }
   }
-  
-  // Vérifier que le fichier existe (après recherche)
-  if (!fs.existsSync(filePath)) {
-    return next(); // Passer à la route suivante (404)
-  }
-  
-  // Vérifier que c'est un fichier (pas un dossier)
-  const stats = fs.statSync(filePath);
-  if (!stats.isFile()) {
-    return next(); // Passer à la route suivante (404)
-  }
-  
-  // Déterminer le type MIME
-  const ext = path.extname(filePath).toLowerCase();
-  const mimeTypes = {
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.png': 'image/png',
-    '.gif': 'image/gif',
-    '.webp': 'image/webp',
-    '.svg': 'image/svg+xml',
-    '.mp4': 'video/mp4',
-    '.webm': 'video/webm',
-    '.pdf': 'application/pdf',
-    '.doc': 'application/msword',
-    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-  };
-  
-  // Définir les en-têtes
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-  res.setHeader('Cache-Control', 'public, max-age=31536000');
-  
-  if (mimeTypes[ext]) {
-    res.setHeader('Content-Type', mimeTypes[ext]);
-  }
-  
-  // Servir le fichier
-  res.sendFile(filePath);
-});
+}));
 
 // Log pour vérifier que le dossier uploads est accessible
 if (process.env.NODE_ENV === 'development') {

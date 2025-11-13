@@ -229,6 +229,11 @@ router.get('/course/:courseId', mediaController.getCourseMediaFiles);
 // Télécharger un fichier
 router.get('/:id/download', mediaController.downloadMediaFile);
 
+// Convertir un PPTX en images
+const pptxController = require('../controllers/pptxController');
+router.get('/:id/convert-pptx', pptxController.convertPptxToImages);
+router.get('/:id/slides/:filename', pptxController.getSlideImage);
+
 // Supprimer un fichier
 router.delete('/:id',
   authenticateToken,

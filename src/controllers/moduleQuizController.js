@@ -286,6 +286,56 @@ const getModuleQuizForStudent = async (req, res) => {
 
     const quiz = quizzes[0];
 
+    // Récupérer les questions liées au quiz de module
+    const [questions] = await pool.execute(
+      `SELECT 
+        qq.id,
+        qq.question_text,
+        qq.question_type,
+        qq.points,
+        qq.order_index,
+        qq.is_active
+       FROM quiz_questions qq
+       WHERE qq.module_quiz_id = ? AND qq.is_active = TRUE
+       ORDER BY qq.order_index ASC`,
+      [quiz.id]
+    );
+
+    // Récupérer les réponses pour chaque question (sans révéler les bonnes réponses)
+    const questionsWithOptions = await Promise.all(
+      questions.map(async (question) => {
+        const [answers] = await pool.execute(
+          `SELECT 
+            id,
+            answer_text,
+            order_index
+           FROM quiz_answers
+           WHERE question_id = ?
+           ORDER BY order_index ASC`,
+          [question.id]
+        );
+
+        // Pour les questions à choix multiples, retourner les options
+        // Pour les questions vrai/faux, retourner ['Vrai', 'Faux']
+        // Pour les questions à réponse courte, ne pas retourner de réponses
+        let options = [];
+        if (question.question_type === 'multiple_choice') {
+          options = answers.map(a => a.answer_text);
+        } else if (question.question_type === 'true_false') {
+          options = ['Vrai', 'Faux'];
+        }
+
+        return {
+          id: question.id.toString(),
+          question_text: question.question_text,
+          question_type: question.question_type,
+          points: question.points,
+          order_index: question.order_index,
+          options: options
+        };
+      })
+    );
+
     // Récupérer les tentatives précédentes
     const [attempts] = await pool.execute(
       `SELECT * FROM quiz_attempts 
@@ -297,7 +347,10 @@ const getModuleQuizForStudent = async (req, res) => {
     res.json({
       success: true,
       data: {
-        quiz,
+        quiz: {
+          ...quiz,
+          questions: questionsWithOptions
+        },
         previous_attempts: attempts,
         can_attempt: attempts.length < quiz.max_attempts
       }
@@ -316,10 +369,24 @@ const getModuleQuizForStudent = async (req, res) => {
  * Soumettre une tentative de quiz de module
  */
 const submitModuleQuizAttempt = async (req, res) => {
+  // Extraire les paramètres au début pour qu'ils soient accessibles dans le catch
+  const enrollmentId = req.params?.enrollmentId;
+  const moduleId = req.params?.moduleId;
+  const userId = req.user?.userId;
+  
   try {
-    const { enrollmentId, moduleId } = req.params;
     const { answers } = req.body;
-    const userId = req.user.userId;
+
+    // Logs de débogage
+    console.log('📥 [Backend] Soumission quiz reçue:', {
+      enrollmentId,
+      moduleId,
+      userId,
+      answersType: typeof answers,
+      answersIsArray: Array.isArray(answers),
+      answersKeys: answers && typeof answers === 'object' ? Object.keys(answers) : null,
+      answersPreview: answers && typeof answers === 'object' ? Object.entries(answers).slice(0, 3) : answers
+    });
 
     // Vérifier l'inscription
     const [enrollments] = await pool.execute(
@@ -328,6 +395,7 @@ const submitModuleQuizAttempt = async (req, res) => {
     );
 
     if (enrollments.length === 0) {
+      console.error('❌ [Backend] Inscription non trouvée:', { enrollmentId, userId });
       return res.status(404).json({
         success: false,
         message: 'Inscription non trouvée'
@@ -341,6 +409,7 @@ const submitModuleQuizAttempt = async (req, res) => {
     );
 
     if (quizzes.length === 0) {
+      console.error('❌ [Backend] Quiz non trouvé:', { moduleId });
       return res.status(404).json({
         success: false,
         message: 'Quiz non trouvé'
@@ -348,6 +417,7 @@ const submitModuleQuizAttempt = async (req, res) => {
     }
 
     const quiz = quizzes[0];
+    console.log('✅ [Backend] Quiz trouvé:', { quizId: quiz.id, title: quiz.title });
 
     // Vérifier les tentatives
     const [attemptsResult] = await pool.execute(
@@ -356,6 +426,10 @@ const submitModuleQuizAttempt = async (req, res) => {
     );
 
     if (attemptsResult[0].count >= quiz.max_attempts) {
+      console.warn('⚠️ [Backend] Nombre maximum de tentatives atteint:', { 
+        count: attemptsResult[0].count, 
+        max: quiz.max_attempts 
+      });
       return res.status(400).json({
         success: false,
         message: 'Nombre maximum de tentatives atteint'
@@ -371,46 +445,147 @@ const submitModuleQuizAttempt = async (req, res) => {
     );
 
     const attemptId = attemptResult.insertId;
+    console.log('✅ [Backend] Tentative créée:', { attemptId });
 
-    // Calculer le score (similaire à quizController)
-    // Pour simplifier, on réutilise la logique existante
-    // TODO: Adapter selon votre structure de questions
-
+    // Calculer le score
+    // Les réponses peuvent être un objet {questionId: answer} ou un tableau
     let totalPoints = 0;
     let earnedPoints = 0;
     let correctAnswers = 0;
+    let totalQuestions = 0;
 
-    // Traiter les réponses
-    for (const answer of answers) {
-      const { question_id, answer_id, answer_text } = answer;
+    // Récupérer toutes les questions du quiz
+    const [allQuestions] = await pool.execute(
+      'SELECT id, points, question_type FROM quiz_questions WHERE module_quiz_id = ? AND is_active = TRUE',
+      [quiz.id]
+    );
 
-      // Récupérer la question (vérifier qu'elle appartient au quiz de module)
-      const [questions] = await pool.execute(
-        'SELECT points FROM quiz_questions WHERE id = ? AND module_quiz_id = ?',
-        [question_id, quiz.id]
-      );
+    console.log('📋 [Backend] Questions du quiz:', {
+      count: allQuestions.length,
+      questionIds: allQuestions.map(q => q.id)
+    });
 
-      if (questions.length > 0) {
-        const question = questions[0];
-        totalPoints += question.points;
+    // Convertir answers en format standard si c'est un objet
+    let answersArray = [];
+    if (Array.isArray(answers)) {
+      answersArray = answers;
+      console.log('📋 [Backend] Réponses reçues comme tableau:', answersArray.length);
+    } else if (typeof answers === 'object' && answers !== null) {
+      // Convertir l'objet {questionId: answer} en tableau
+      answersArray = Object.entries(answers).map(([questionId, answerText]) => ({
+        question_id: String(questionId), // S'assurer que c'est une string pour la comparaison
+        answer_text: String(answerText || '') // S'assurer que c'est une string
+      }));
+      console.log('📋 [Backend] Réponses converties depuis objet:', {
+        originalKeys: Object.keys(answers),
+        convertedCount: answersArray.length,
+        converted: answersArray.slice(0, 3)
+      });
+    } else {
+      console.error('❌ [Backend] Format de réponses invalide:', typeof answers);
+      return res.status(400).json({
+        success: false,
+        message: 'Format de réponses invalide'
+      });
+    }
 
-        // Vérifier la réponse
-        if (answer_id) {
-          const [correctAnswersList] = await pool.execute(
-            'SELECT is_correct FROM quiz_answers WHERE id = ? AND question_id = ?',
-            [answer_id, question_id]
+    // Traiter chaque question
+    for (const question of allQuestions) {
+      // Convertir les points en nombre pour éviter la concaténation de strings
+      const questionPoints = Number(question.points) || 0;
+      totalPoints += questionPoints;
+      totalQuestions++;
+
+      // Trouver la réponse de l'utilisateur pour cette question
+      // Comparer les IDs en tant que strings pour éviter les problèmes de type
+      const questionIdStr = String(question.id);
+      const userAnswer = answersArray.find(a => {
+        const answerQuestionId = String(a.question_id || a.questionId || '');
+        return answerQuestionId === questionIdStr;
+      });
+
+      if (userAnswer) {
+        const answerText = String(userAnswer.answer_text || userAnswer.answerText || '').trim();
+        
+        // Récupérer les bonnes réponses pour cette question
+        const [correctAnswersList] = await pool.execute(
+          'SELECT answer_text, is_correct FROM quiz_answers WHERE question_id = ? AND is_correct = 1',
+          [question.id]
+        );
+
+        // Vérifier si la réponse est correcte
+        let isCorrect = false;
+        if (question.question_type === 'true_false') {
+          // Pour vrai/faux, normaliser et comparer (insensible à la casse)
+          const normalizedAnswer = answerText.toLowerCase();
+          // Normaliser les réponses de la base de données aussi
+          const normalizedCorrectAnswers = correctAnswersList.map(ca => ca.answer_text.toLowerCase().trim());
+          
+          // Vérifier si la réponse correspond à "vrai" ou "faux" (ou variations)
+          isCorrect = normalizedCorrectAnswers.some(ca => {
+            const caNormalized = ca.toLowerCase().trim();
+            return (
+              caNormalized === normalizedAnswer ||
+              (normalizedAnswer === 'vrai' && (caNormalized === 'vrai' || caNormalized.includes('vrai'))) ||
+              (normalizedAnswer === 'faux' && (caNormalized === 'faux' || caNormalized.includes('faux'))) ||
+              (normalizedAnswer === 'true' && (caNormalized === 'true' || caNormalized === 'vrai')) ||
+              (normalizedAnswer === 'false' && (caNormalized === 'false' || caNormalized === 'faux'))
+            );
+          });
+          
+          console.log(`🔍 [Backend] Question ${question.id} (vrai/faux):`, {
+            userAnswer: normalizedAnswer,
+            correctAnswers: normalizedCorrectAnswers,
+            isCorrect
+          });
+        } else if (question.question_type === 'multiple_choice') {
+          // Pour QCM, comparer le texte exact (mais normaliser les espaces)
+          isCorrect = correctAnswersList.some(ca => 
+            ca.answer_text.trim() === answerText.trim()
           );
-
-          if (correctAnswersList.length > 0 && correctAnswersList[0].is_correct) {
-            earnedPoints += question.points;
-            correctAnswers++;
-          }
+          
+          console.log(`🔍 [Backend] Question ${question.id} (QCM):`, {
+            userAnswer: answerText,
+            correctAnswers: correctAnswersList.map(ca => ca.answer_text.trim()),
+            isCorrect
+          });
+        } else {
+          // Pour réponse courte, comparaison insensible à la casse
+          isCorrect = correctAnswersList.some(ca => 
+            ca.answer_text.toLowerCase().trim() === answerText.toLowerCase().trim()
+          );
+          
+          console.log(`🔍 [Backend] Question ${question.id} (réponse courte):`, {
+            userAnswer: answerText,
+            correctAnswers: correctAnswersList.map(ca => ca.answer_text.trim()),
+            isCorrect
+          });
         }
+
+        if (isCorrect) {
+          // Utiliser questionPoints au lieu de question.points pour éviter les problèmes de type
+          earnedPoints += questionPoints;
+          correctAnswers++;
+        }
+      } else {
+        console.log(`⚠️ [Backend] Pas de réponse pour la question ${question.id}`);
       }
     }
 
     const percentage = totalPoints > 0 ? (earnedPoints / totalPoints) * 100 : 0;
-    const isPassed = percentage >= quiz.passing_score;
+    // S'assurer que passing_score est un nombre pour la comparaison
+    const passingScore = Number(quiz.passing_score) || 0;
+    const isPassed = percentage >= passingScore;
+
+    console.log('📊 [Backend] Calcul du score:', {
+      earnedPoints: Number(earnedPoints),
+      totalPoints: Number(totalPoints),
+      percentage: Math.round(percentage * 100) / 100,
+      correctAnswers,
+      totalQuestions,
+      isPassed,
+      passingScore: passingScore
+    });
 
     // Mettre à jour la tentative
     await pool.execute(
@@ -453,25 +628,54 @@ const submitModuleQuizAttempt = async (req, res) => {
       }
     }
 
+    // Vérifier si un badge a été attribué
+    let badgeEarned = false;
+    let badgeName = null;
+    if (isPassed && quiz.badge_id) {
+      const [badges] = await pool.execute(
+        'SELECT name FROM badges WHERE id = ?',
+        [quiz.badge_id]
+      );
+      if (badges.length > 0) {
+        badgeEarned = true;
+        badgeName = badges[0].name;
+      }
+    }
+
+    const responseData = {
+      attempt_id: attemptId,
+      score: earnedPoints,
+      total_points: totalPoints,
+      percentage: Math.round(percentage * 100) / 100, // Arrondir à 2 décimales
+      passed: isPassed,
+      is_passed: isPassed, // Pour compatibilité
+      correct_answers: correctAnswers,
+      total_questions: totalQuestions,
+      badge_earned: badgeEarned,
+      badge_name: badgeName
+    };
+
+    console.log('✅ [Backend] Réponse envoyée:', responseData);
+
     res.json({
       success: true,
       message: 'Quiz soumis avec succès',
-      data: {
-        attempt_id: attemptId,
-        score: earnedPoints,
-        total_points: totalPoints,
-        percentage: percentage,
-        is_passed: isPassed,
-        correct_answers: correctAnswers,
-        badge_earned: isPassed && quiz.badge_id ? true : false
-      }
+      data: responseData
     });
 
   } catch (error) {
-    console.error('Erreur lors de la soumission:', error);
+    // Les variables sont déjà définies au début de la fonction
+    console.error('❌ [Backend] Erreur lors de la soumission:', {
+      error: error.message,
+      stack: error.stack,
+      enrollmentId: enrollmentId,
+      moduleId: moduleId,
+      userId: userId
+    });
     res.status(500).json({
       success: false,
-      message: 'Erreur lors de la soumission'
+      message: 'Erreur lors de la soumission',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };

@@ -12,10 +12,18 @@ class ModuleService {
     const query = `
       SELECT 
         m.*,
-        COUNT(l.id) as lessons_count,
-        COUNT(CASE WHEN l.is_published = TRUE THEN 1 END) as published_lessons_count
+        COUNT(DISTINCT l.id) as lessons_count,
+        COUNT(DISTINCT CASE WHEN l.is_published = TRUE THEN l.id END) as published_lessons_count,
+        MAX(mq.id) as quiz_id,
+        MAX(mq.title) as quiz_title,
+        MAX(mq.description) as quiz_description,
+        MAX(mq.passing_score) as quiz_passing_score,
+        MAX(mq.time_limit_minutes) as quiz_time_limit_minutes,
+        MAX(mq.max_attempts) as quiz_max_attempts,
+        MAX(mq.is_published) as quiz_is_published
       FROM modules m
       LEFT JOIN lessons l ON m.id = l.module_id
+      LEFT JOIN module_quizzes mq ON m.id = mq.module_id AND mq.is_published = TRUE
       WHERE m.course_id = ?
       GROUP BY m.id
       ORDER BY m.order_index ASC

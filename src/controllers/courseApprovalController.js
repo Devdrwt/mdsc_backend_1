@@ -1,5 +1,6 @@
 const { pool } = require('../config/database');
 const { sanitizeValue } = require('../utils/sanitize');
+const { buildMediaUrl } = require('../utils/media');
 
 /**
  * Demander la publication d'un cours
@@ -105,6 +106,48 @@ const requestPublication = async (req, res) => {
       // Si la table n'existe pas encore, continuer quand même
       console.warn('⚠️ Table course_approvals non trouvée. Migration nécessaire.');
     });
+
+    // Récupérer les informations de l'instructeur
+    const [instructors] = await pool.execute(
+      'SELECT first_name, last_name FROM users WHERE id = ?',
+      [instructorId]
+    );
+    const instructor = instructors[0] || {};
+    const instructorName = `${instructor.first_name || ''} ${instructor.last_name || ''}`.trim() || 'Un instructeur';
+
+    // Créer une notification pour tous les admins
+    try {
+      const [admins] = await pool.execute(
+        'SELECT id FROM users WHERE role = "admin"'
+      );
+
+      const notificationTitle = 'Nouvelle demande de publication de cours';
+      const notificationMessage = `Le cours "${course.title}" a été soumis pour validation par ${instructorName}.`;
+      const actionUrl = `/dashboard/admin/courses?courseId=${courseId}`;
+      const metadata = JSON.stringify({
+        course_id: courseId,
+        course_title: course.title,
+        instructor_id: instructorId,
+        instructor_name: instructorName,
+        action: 'review_required',
+        link: actionUrl
+      });
+
+      // Créer une notification pour chaque admin
+      for (const admin of admins) {
+        await pool.execute(
+          `INSERT INTO notifications (
+            user_id, title, message, type, is_read, action_url, metadata
+          ) VALUES (?, ?, ?, 'info', FALSE, ?, ?)`,
+          [admin.id, notificationTitle, notificationMessage, actionUrl, metadata]
+        );
+      }
+
+      console.log(`✅ Notifications créées pour ${admins.length} admin(s) concernant le cours "${course.title}"`);
+    } catch (notificationError) {
+      // Ne pas faire échouer la demande si la création de notification échoue
+      console.error('⚠️ Erreur lors de la création des notifications admin:', notificationError);
+    }
 
     res.json({
       success: true,
@@ -504,6 +547,7 @@ const getCourseForApproval = async (req, res) => {
 
     const responseData = {
       ...course,
+      thumbnail_url: buildMediaUrl(course.thumbnail_url),
       modules: modules || [],
       final_evaluation: finalEvaluation,
       module_quizzes: moduleQuizzes
@@ -589,7 +633,46 @@ const approveCourse = async (req, res) => {
       [id]
     );
 
-    // TODO: Envoyer notification à l'instructeur
+    // Créer une notification pour l'instructeur
+    try {
+      const course = courses[0];
+      const instructorId = course.instructor_id;
+      
+      // Récupérer les informations de l'admin
+      const [admins] = await pool.execute(
+        'SELECT first_name, last_name FROM users WHERE id = ?',
+        [adminId]
+      );
+      const admin = admins[0] || {};
+      const adminName = `${admin.first_name || ''} ${admin.last_name || ''}`.trim() || 'Un administrateur';
+
+      const notificationTitle = 'Cours approuvé et publié';
+      const notificationMessage = comments 
+        ? `Votre cours "${course.title}" a été approuvé et publié par ${adminName}. Commentaire : ${comments}`
+        : `Votre cours "${course.title}" a été approuvé et publié par ${adminName}.`;
+      const actionUrl = `/dashboard/instructor/courses/${id}`;
+      const metadata = JSON.stringify({
+        course_id: id,
+        course_title: course.title,
+        admin_id: adminId,
+        admin_name: adminName,
+        action: 'course_approved',
+        comments: comments || null,
+        link: actionUrl
+      });
+
+      await pool.execute(
+        `INSERT INTO notifications (
+          user_id, title, message, type, is_read, action_url, metadata
+        ) VALUES (?, ?, ?, 'success', FALSE, ?, ?)`,
+        [instructorId, notificationTitle, notificationMessage, actionUrl, metadata]
+      );
+
+      console.log(`✅ Notification créée pour l'instructeur ${instructorId} concernant l'approbation du cours "${course.title}"`);
+    } catch (notificationError) {
+      // Ne pas faire échouer l'approbation si la création de notification échoue
+      console.error('⚠️ Erreur lors de la création de la notification:', notificationError);
+    }
 
     res.json({
       success: true,
@@ -663,7 +746,51 @@ const rejectCourse = async (req, res) => {
       ).catch(() => {});
     });
 
-    // TODO: Envoyer notification à l'instructeur
+    // Créer une notification pour l'instructeur
+    try {
+      const course = courses[0];
+      const instructorId = course.instructor_id;
+      
+      // Récupérer les informations de l'admin
+      const [admins] = await pool.execute(
+        'SELECT first_name, last_name FROM users WHERE id = ?',
+        [adminId]
+      );
+      const admin = admins[0] || {};
+      const adminName = `${admin.first_name || ''} ${admin.last_name || ''}`.trim() || 'Un administrateur';
+
+      // Construire le message avec la raison du rejet et le commentaire
+      let notificationMessage = `Votre cours "${course.title}" a été rejeté par ${adminName}.`;
+      notificationMessage += `\n\nRaison : ${rejection_reason}`;
+      if (comments) {
+        notificationMessage += `\n\nCommentaire : ${comments}`;
+      }
+
+      const notificationTitle = 'Cours rejeté';
+      const actionUrl = `/dashboard/instructor/courses/${id}`;
+      const metadata = JSON.stringify({
+        course_id: id,
+        course_title: course.title,
+        admin_id: adminId,
+        admin_name: adminName,
+        action: 'course_rejected',
+        rejection_reason: rejection_reason,
+        comments: comments || null,
+        link: actionUrl
+      });
+
+      await pool.execute(
+        `INSERT INTO notifications (
+          user_id, title, message, type, is_read, action_url, metadata
+        ) VALUES (?, ?, ?, 'error', FALSE, ?, ?)`,
+        [instructorId, notificationTitle, notificationMessage, actionUrl, metadata]
+      );
+
+      console.log(`✅ Notification créée pour l'instructeur ${instructorId} concernant le rejet du cours "${course.title}"`);
+    } catch (notificationError) {
+      // Ne pas faire échouer le rejet si la création de notification échoue
+      console.error('⚠️ Erreur lors de la création de la notification:', notificationError);
+    }
 
     res.json({
       success: true,

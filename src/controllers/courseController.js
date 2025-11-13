@@ -2,6 +2,7 @@ const { pool } = require('../config/database');
 const { sanitizeValue } = require('../utils/sanitize');
 const { buildMediaUrl, formatInstructorMetadata } = require('../utils/media');
 const { v4: uuidv4 } = require('uuid');
+const ModuleService = require('../services/moduleService');
 
 const formatCourseRow = (row = {}) => {
   if (!row) {
@@ -120,7 +121,10 @@ const getAllCourses = async (req, res) => {
         u.last_name as instructor_last_name,
         u.email as instructor_email,
         u.organization as instructor_organization,
-        u.profile_picture as instructor_profile_picture,
+        COALESCE(
+          u.profile_picture,
+          CONCAT('/uploads/profiles/', uf.file_name)
+        ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(DISTINCT cr.id) as review_count,
         COUNT(DISTINCT e.id) as enrollment_count,
@@ -129,6 +133,18 @@ const getAllCourses = async (req, res) => {
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
+      LEFT JOIN (
+        SELECT uf1.user_id, uf1.file_name
+        FROM user_files uf1
+        INNER JOIN (
+          SELECT user_id, MAX(created_at) as max_created_at
+          FROM user_files
+          WHERE file_type = 'profile_picture'
+          GROUP BY user_id
+        ) uf2 ON uf1.user_id = uf2.user_id 
+          AND uf1.created_at = uf2.max_created_at
+          AND uf1.file_type = 'profile_picture'
+      ) uf ON uf.user_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
       LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
@@ -243,7 +259,10 @@ const getCourseById = async (req, res) => {
         u.last_name as instructor_last_name,
         u.email as instructor_email,
         u.organization as instructor_organization,
-        u.profile_picture as instructor_profile_picture,
+        COALESCE(
+          u.profile_picture,
+          CONCAT('/uploads/profiles/', uf.file_name)
+        ) as instructor_profile_picture,
         stats.average_rating,
         stats.review_count,
         stats.enrollment_count,
@@ -252,6 +271,18 @@ const getCourseById = async (req, res) => {
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
+      LEFT JOIN (
+        SELECT uf1.user_id, uf1.file_name
+        FROM user_files uf1
+        INNER JOIN (
+          SELECT user_id, MAX(created_at) as max_created_at
+          FROM user_files
+          WHERE file_type = 'profile_picture'
+          GROUP BY user_id
+        ) uf2 ON uf1.user_id = uf2.user_id 
+          AND uf1.created_at = uf2.max_created_at
+          AND uf1.file_type = 'profile_picture'
+      ) uf ON uf.user_id = u.id
       LEFT JOIN (
         SELECT 
           c.id AS course_id,
@@ -723,7 +754,10 @@ const getCoursesByCategory = async (req, res) => {
         u.last_name as instructor_last_name,
         u.email as instructor_email,
         u.organization as instructor_organization,
-        u.profile_picture as instructor_profile_picture,
+        COALESCE(
+          u.profile_picture,
+          CONCAT('/uploads/profiles/', uf.file_name)
+        ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(DISTINCT cr.id) as review_count,
         COUNT(DISTINCT e.id) as enrollment_count,
@@ -732,6 +766,18 @@ const getCoursesByCategory = async (req, res) => {
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
+      LEFT JOIN (
+        SELECT uf1.user_id, uf1.file_name
+        FROM user_files uf1
+        INNER JOIN (
+          SELECT user_id, MAX(created_at) as max_created_at
+          FROM user_files
+          WHERE file_type = 'profile_picture'
+          GROUP BY user_id
+        ) uf2 ON uf1.user_id = uf2.user_id 
+          AND uf1.created_at = uf2.max_created_at
+          AND uf1.file_type = 'profile_picture'
+      ) uf ON uf.user_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
       LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
@@ -791,7 +837,10 @@ const searchCourses = async (req, res) => {
         u.last_name as instructor_last_name,
         u.email as instructor_email,
         u.organization as instructor_organization,
-        u.profile_picture as instructor_profile_picture,
+        COALESCE(
+          u.profile_picture,
+          CONCAT('/uploads/profiles/', uf.file_name)
+        ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(DISTINCT cr.id) as review_count,
         COUNT(DISTINCT e.id) as enrollment_count,
@@ -800,6 +849,18 @@ const searchCourses = async (req, res) => {
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
+      LEFT JOIN (
+        SELECT uf1.user_id, uf1.file_name
+        FROM user_files uf1
+        INNER JOIN (
+          SELECT user_id, MAX(created_at) as max_created_at
+          FROM user_files
+          WHERE file_type = 'profile_picture'
+          GROUP BY user_id
+        ) uf2 ON uf1.user_id = uf2.user_id 
+          AND uf1.created_at = uf2.max_created_at
+          AND uf1.file_type = 'profile_picture'
+      ) uf ON uf.user_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
       LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
@@ -851,7 +912,10 @@ const getFeaturedCourses = async (req, res) => {
         u.last_name as instructor_last_name,
         u.email as instructor_email,
         u.organization as instructor_organization,
-        u.profile_picture as instructor_profile_picture,
+        COALESCE(
+          u.profile_picture,
+          CONCAT('/uploads/profiles/', uf.file_name)
+        ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(DISTINCT cr.id) as review_count,
         COUNT(DISTINCT e.id) as enrollment_count,
@@ -860,6 +924,18 @@ const getFeaturedCourses = async (req, res) => {
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
+      LEFT JOIN (
+        SELECT uf1.user_id, uf1.file_name
+        FROM user_files uf1
+        INNER JOIN (
+          SELECT user_id, MAX(created_at) as max_created_at
+          FROM user_files
+          WHERE file_type = 'profile_picture'
+          GROUP BY user_id
+        ) uf2 ON uf1.user_id = uf2.user_id 
+          AND uf1.created_at = uf2.max_created_at
+          AND uf1.file_type = 'profile_picture'
+      ) uf ON uf.user_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
       LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
@@ -1221,7 +1297,10 @@ const getMyCourses = async (req, res) => {
         u.last_name as instructor_last_name,
         u.email as instructor_email,
         u.organization as instructor_organization,
-        u.profile_picture as instructor_profile_picture,
+        COALESCE(
+          u.profile_picture,
+          CONCAT('/uploads/profiles/', uf.file_name)
+        ) as instructor_profile_picture,
         stats.average_rating,
         stats.review_count,
         enroll_stats.enrollment_count,
@@ -1232,6 +1311,18 @@ const getMyCourses = async (req, res) => {
       INNER JOIN courses c ON c.id = e.course_id
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
+      LEFT JOIN (
+        SELECT uf1.user_id, uf1.file_name
+        FROM user_files uf1
+        INNER JOIN (
+          SELECT user_id, MAX(created_at) as max_created_at
+          FROM user_files
+          WHERE file_type = 'profile_picture'
+          GROUP BY user_id
+        ) uf2 ON uf1.user_id = uf2.user_id 
+          AND uf1.created_at = uf2.max_created_at
+          AND uf1.file_type = 'profile_picture'
+      ) uf ON uf.user_id = u.id
       LEFT JOIN (
         SELECT 
           course_id,
@@ -1468,11 +1559,11 @@ const getInstructorCourses = async (req, res) => {
       id: course.id,
       title: course.title,
       description: course.description,
-      thumbnail: course.thumbnail,
+      thumbnail_url: buildMediaUrl(course.thumbnail_url),
       price: course.price,
       difficulty: course.difficulty,
       language: course.language,
-      duration: course.duration,
+      duration_minutes: course.duration_minutes,
       is_published: course.is_published,
       created_at: course.created_at,
       updated_at: course.updated_at,
@@ -1530,7 +1621,10 @@ const getPopularCourses = async (req, res) => {
         u.last_name as instructor_last_name,
         u.email as instructor_email,
         u.organization as instructor_organization,
-        u.profile_picture as instructor_profile_picture,
+        COALESCE(
+          u.profile_picture,
+          CONCAT('/uploads/profiles/', uf.file_name)
+        ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(DISTINCT cr.id) as review_count,
         COUNT(DISTINCT e.id) as enrollment_count,
@@ -1539,6 +1633,18 @@ const getPopularCourses = async (req, res) => {
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
+      LEFT JOIN (
+        SELECT uf1.user_id, uf1.file_name
+        FROM user_files uf1
+        INNER JOIN (
+          SELECT user_id, MAX(created_at) as max_created_at
+          FROM user_files
+          WHERE file_type = 'profile_picture'
+          GROUP BY user_id
+        ) uf2 ON uf1.user_id = uf2.user_id 
+          AND uf1.created_at = uf2.max_created_at
+          AND uf1.file_type = 'profile_picture'
+      ) uf ON uf.user_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
       LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
@@ -1589,7 +1695,10 @@ const getRecommendedCourses = async (req, res) => {
         u.last_name as instructor_last_name,
         u.email as instructor_email,
         u.organization as instructor_organization,
-        u.profile_picture as instructor_profile_picture,
+        COALESCE(
+          u.profile_picture,
+          CONCAT('/uploads/profiles/', uf.file_name)
+        ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(cr.id) as review_count,
         COUNT(e.id) as enrollment_count,
@@ -1597,6 +1706,18 @@ const getRecommendedCourses = async (req, res) => {
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
+      LEFT JOIN (
+        SELECT uf1.user_id, uf1.file_name
+        FROM user_files uf1
+        INNER JOIN (
+          SELECT user_id, MAX(created_at) as max_created_at
+          FROM user_files
+          WHERE file_type = 'profile_picture'
+          GROUP BY user_id
+        ) uf2 ON uf1.user_id = uf2.user_id 
+          AND uf1.created_at = uf2.max_created_at
+          AND uf1.file_type = 'profile_picture'
+      ) uf ON uf.user_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
       LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
@@ -1645,7 +1766,10 @@ const getCourseBySlug = async (req, res) => {
         u.last_name as instructor_last_name,
         u.email as instructor_email,
         u.organization as instructor_organization,
-        u.profile_picture as instructor_profile_picture,
+        COALESCE(
+          u.profile_picture,
+          CONCAT('/uploads/profiles/', uf.file_name)
+        ) as instructor_profile_picture,
         stats.average_rating,
         stats.review_count,
         stats.enrollment_count,
@@ -1656,6 +1780,18 @@ const getCourseBySlug = async (req, res) => {
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
+      LEFT JOIN (
+        SELECT uf1.user_id, uf1.file_name
+        FROM user_files uf1
+        INNER JOIN (
+          SELECT user_id, MAX(created_at) as max_created_at
+          FROM user_files
+          WHERE file_type = 'profile_picture'
+          GROUP BY user_id
+        ) uf2 ON uf1.user_id = uf2.user_id 
+          AND uf1.created_at = uf2.max_created_at
+          AND uf1.file_type = 'profile_picture'
+      ) uf ON uf.user_id = u.id
       LEFT JOIN (
         SELECT 
           c.id AS course_id,

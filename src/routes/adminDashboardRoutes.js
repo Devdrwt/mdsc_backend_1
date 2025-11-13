@@ -28,6 +28,42 @@ router.get(
   authorize(['admin']),
   adminDashboardController.getServicesStatus
 );
+router.get(
+  '/courses/top',
+  authenticateToken,
+  authorize(['admin']),
+  adminDashboardController.getTopCourses
+);
+router.get(
+  '/instructors/top',
+  authenticateToken,
+  authorize(['admin']),
+  adminDashboardController.getTopInstructors
+);
+router.get(
+  '/payments/recent',
+  authenticateToken,
+  authorize(['admin']),
+  adminDashboardController.getRecentPayments
+);
+router.get(
+  '/support/tickets',
+  authenticateToken,
+  authorize(['admin']),
+  adminDashboardController.getPendingSupportTickets
+);
+router.get(
+  '/moderation/pending',
+  authenticateToken,
+  authorize(['admin']),
+  adminDashboardController.getPendingModeration
+);
+router.get(
+  '/ai/usage',
+  authenticateToken,
+  authorize(['admin']),
+  adminDashboardController.getAiUsage
+);
 
 module.exports = router;
 

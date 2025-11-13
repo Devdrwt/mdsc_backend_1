@@ -38,5 +38,12 @@ router.delete(
   adminUserController.deleteUser
 );
 
+router.post(
+  '/users/:userId/suspend',
+  authenticateToken,
+  authorize(['admin']),
+  adminUserController.suspendUser
+);
+
 module.exports = router;
 

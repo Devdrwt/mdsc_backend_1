@@ -114,12 +114,14 @@ const getCourses = async (req, res) => {
         cert.issued_at AS certificate_issued_at,
         last_lp.lesson_id AS last_lesson_id,
         last_lesson.title AS last_lesson_title,
-        last_lesson.order_index AS last_lesson_order
+        last_lesson.order_index AS last_lesson_order,
+        COUNT(DISTINCT e2.id) AS enrollment_count
       FROM enrollments e
       JOIN courses c ON c.id = e.course_id
       LEFT JOIN categories cat ON cat.id = c.category_id
       LEFT JOIN users inst ON inst.id = c.instructor_id
       LEFT JOIN certificates cert ON cert.course_id = c.id AND cert.user_id = e.user_id
+      LEFT JOIN enrollments e2 ON e2.course_id = c.id AND e2.is_active = TRUE
       LEFT JOIN (
         SELECT
           latest.user_id,
@@ -143,6 +145,10 @@ const getCourses = async (req, res) => {
         AND last_lp.course_id = e.course_id
       LEFT JOIN lessons last_lesson ON last_lesson.id = last_lp.lesson_id
       WHERE e.user_id = ? AND e.is_active = TRUE
+      GROUP BY e.id, e.course_id, e.enrolled_at, e.progress_percentage, e.completed_at, e.last_accessed_at,
+               c.title, c.slug, c.thumbnail_url, c.language, c.duration_minutes, c.difficulty, c.price, c.currency,
+               cat.name, cat.color, inst.id, inst.first_name, inst.last_name, inst.email, inst.organization, inst.profile_picture,
+               cert.id, cert.issued_at, last_lp.lesson_id, last_lesson.title, last_lesson.order_index
       ORDER BY e.enrolled_at DESC
     `,
       [studentId]
@@ -168,6 +174,8 @@ const getCourses = async (req, res) => {
             profile_picture: course.instructor_profile_picture
           })
         : null,
+      instructor_first_name: course.instructor_first_name,
+      instructor_last_name: course.instructor_last_name,
       progress_percentage: Number(course.progress_percentage || 0),
       completed_at: course.completed_at,
       enrolled_at: course.enrolled_at,
@@ -189,7 +197,11 @@ const getCourses = async (req, res) => {
       difficulty: course.difficulty,
       duration_minutes: Number(course.duration_minutes || 0),
       price: Number(course.price || 0),
-      currency: course.currency
+      currency: course.currency,
+      enrollment_count: Number(course.enrollment_count || 0),
+      metrics: {
+        enrollment_count: Number(course.enrollment_count || 0)
+      }
     }));
 
     res.json({

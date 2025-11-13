@@ -380,11 +380,11 @@ const awardBadgeInternal = async (userId, badgeId, points) => {
     const badgeDescription = badge?.description || '';
 
     const query = `
-      INSERT INTO user_badges (user_id, badge_id, points_earned, earned_at)
-      VALUES (?, ?, ?, NOW())
+      INSERT INTO user_badges (user_id, badge_id, earned_at)
+      VALUES (?, ?, NOW())
     `;
 
-    await pool.execute(query, [userId, badgeId, points || 0]);
+    await pool.execute(query, [userId, badgeId]);
     console.log(`✅ [BADGES] Badge ${badgeId} attribué avec succès`);
 
     // Enregistrer l'activité
@@ -481,14 +481,33 @@ const getUserPerfectQuizPercentage = async (userId) => {
 };
 
 const getUserForumPosts = async (userId) => {
-  const query = `
-    SELECT COUNT(*) as count
-    FROM forum_replies fr
-    JOIN forum_discussions fd ON fr.discussion_id = fd.id
-    WHERE fr.user_id = ?
-  `;
-  const [result] = await pool.execute(query, [userId]);
-  return result[0].count;
+  try {
+    // Vérifier si la table existe avant de faire la requête
+    const [tables] = await pool.execute(`
+      SELECT COUNT(*) as count 
+      FROM information_schema.tables 
+      WHERE table_schema = DATABASE() 
+      AND table_name = 'forum_replies'
+    `);
+    
+    if (tables[0].count === 0) {
+      // La table n'existe pas, retourner 0
+      return 0;
+    }
+    
+    const query = `
+      SELECT COUNT(*) as count
+      FROM forum_replies fr
+      JOIN forum_discussions fd ON fr.discussion_id = fd.id
+      WHERE fr.user_id = ?
+    `;
+    const [result] = await pool.execute(query, [userId]);
+    return result[0].count;
+  } catch (error) {
+    // Si la table n'existe pas ou autre erreur, retourner 0
+    console.warn(`⚠️ [BADGES] Impossible de récupérer les posts du forum pour l'utilisateur ${userId}:`, error.message);
+    return 0;
+  }
 };
 
 const getNextLevel = (currentLevel) => {

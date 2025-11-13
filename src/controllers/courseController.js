@@ -58,11 +58,13 @@ const formatCourseRow = (row = {}) => {
       average_rating: Number(row.average_rating || 0),
       review_count: Number(row.review_count || 0),
       enrollment_count: Number(row.enrollment_count || 0),
+      total_lessons: Number(row.total_lessons || 0),
       total_views: Number(row.total_views || 0)
     },
     average_rating: Number(row.average_rating || 0),
     review_count: Number(row.review_count || 0),
     enrollment_count: Number(row.enrollment_count || 0),
+    total_lessons: Number(row.total_lessons || 0),
     total_views: Number(row.total_views || 0)
   };
 };
@@ -120,17 +122,26 @@ const getAllCourses = async (req, res) => {
         u.organization as instructor_organization,
         u.profile_picture as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
-        COUNT(cr.id) as review_count,
-        COUNT(e.id) as enrollment_count,
+        COUNT(DISTINCT cr.id) as review_count,
+        COUNT(DISTINCT e.id) as enrollment_count,
+        COALESCE(lesson_counts.total_lessons, 0) as total_lessons,
         COALESCE(ca.total_views, 0) as total_views
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
-      LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
+      LEFT JOIN (
+        SELECT 
+          m.course_id,
+          COUNT(DISTINCT l.id) as total_lessons
+        FROM modules m
+        LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+        GROUP BY m.course_id
+      ) lesson_counts ON lesson_counts.course_id = c.id
       ${whereClause}
-      GROUP BY c.id
+      GROUP BY c.id, lesson_counts.total_lessons
       ORDER BY c.${sort} ${order}
       LIMIT ? OFFSET ?
     `;
@@ -236,6 +247,7 @@ const getCourseById = async (req, res) => {
         stats.average_rating,
         stats.review_count,
         stats.enrollment_count,
+        COALESCE(lesson_counts.total_lessons, 0) as total_lessons,
         COALESCE(ca.total_views, 0) as total_views
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
@@ -244,13 +256,22 @@ const getCourseById = async (req, res) => {
         SELECT 
           c.id AS course_id,
           AVG(cr.rating) AS average_rating,
-          COUNT(cr.id) AS review_count,
-          COUNT(e.id) AS enrollment_count
+          COUNT(DISTINCT cr.id) AS review_count,
+          COUNT(DISTINCT e.id) AS enrollment_count
         FROM courses c
         LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
-        LEFT JOIN enrollments e ON c.id = e.course_id
+        LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
         WHERE c.id = ?
       ) stats ON stats.course_id = c.id
+      LEFT JOIN (
+        SELECT 
+          m.course_id,
+          COUNT(DISTINCT l.id) as total_lessons
+        FROM modules m
+        LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+        WHERE m.course_id = ?
+        GROUP BY m.course_id
+      ) lesson_counts ON lesson_counts.course_id = c.id
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
       WHERE c.id = ?
     `;
@@ -262,9 +283,9 @@ const getCourseById = async (req, res) => {
         AND COALESCE(c.status, 'draft') != 'draft'`;
     }
     
-    query += ' GROUP BY c.id';
+    query += ' GROUP BY c.id, lesson_counts.total_lessons';
 
-    const [courses] = await pool.execute(query, [id, id]);
+    const [courses] = await pool.execute(query, [id, id, id]);
 
     if (courses.length === 0) {
       return res.status(404).json({
@@ -704,20 +725,29 @@ const getCoursesByCategory = async (req, res) => {
         u.organization as instructor_organization,
         u.profile_picture as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
-        COUNT(cr.id) as review_count,
-        COUNT(e.id) as enrollment_count,
+        COUNT(DISTINCT cr.id) as review_count,
+        COUNT(DISTINCT e.id) as enrollment_count,
+        COALESCE(lesson_counts.total_lessons, 0) as total_lessons,
         COALESCE(ca.total_views, 0) as total_views
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
-      LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
+      LEFT JOIN (
+        SELECT 
+          m.course_id,
+          COUNT(DISTINCT l.id) as total_lessons
+        FROM modules m
+        LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+        GROUP BY m.course_id
+      ) lesson_counts ON lesson_counts.course_id = c.id
       WHERE c.is_published = TRUE 
         AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
         AND COALESCE(c.status, 'draft') != 'draft' 
         AND c.category_id = ?
-      GROUP BY c.id
+      GROUP BY c.id, lesson_counts.total_lessons
       ORDER BY c.created_at DESC
       LIMIT ? OFFSET ?
     `;
@@ -763,20 +793,29 @@ const searchCourses = async (req, res) => {
         u.organization as instructor_organization,
         u.profile_picture as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
-        COUNT(cr.id) as review_count,
-        COUNT(e.id) as enrollment_count,
+        COUNT(DISTINCT cr.id) as review_count,
+        COUNT(DISTINCT e.id) as enrollment_count,
+        COALESCE(lesson_counts.total_lessons, 0) as total_lessons,
         COALESCE(ca.total_views, 0) as total_views
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
-      LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
+      LEFT JOIN (
+        SELECT 
+          m.course_id,
+          COUNT(DISTINCT l.id) as total_lessons
+        FROM modules m
+        LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+        GROUP BY m.course_id
+      ) lesson_counts ON lesson_counts.course_id = c.id
       WHERE c.is_published = TRUE 
         AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
         AND COALESCE(c.status, 'draft') != 'draft'
         AND (c.title LIKE ? OR c.description LIKE ? OR c.short_description LIKE ?)
-      GROUP BY c.id
+      GROUP BY c.id, lesson_counts.total_lessons
       ORDER BY c.created_at DESC
       LIMIT ? OFFSET ?
     `;
@@ -814,20 +853,29 @@ const getFeaturedCourses = async (req, res) => {
         u.organization as instructor_organization,
         u.profile_picture as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
-        COUNT(cr.id) as review_count,
-        COUNT(e.id) as enrollment_count,
+        COUNT(DISTINCT cr.id) as review_count,
+        COUNT(DISTINCT e.id) as enrollment_count,
+        COALESCE(lesson_counts.total_lessons, 0) as total_lessons,
         COALESCE(ca.total_views, 0) as total_views
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
-      LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
+      LEFT JOIN (
+        SELECT 
+          m.course_id,
+          COUNT(DISTINCT l.id) as total_lessons
+        FROM modules m
+        LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+        GROUP BY m.course_id
+      ) lesson_counts ON lesson_counts.course_id = c.id
       WHERE c.is_published = TRUE 
         AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
         AND COALESCE(c.status, 'draft') != 'draft' 
         AND c.is_featured = TRUE
-      GROUP BY c.id
+      GROUP BY c.id, lesson_counts.total_lessons
       ORDER BY c.created_at DESC
       LIMIT ?
     `;
@@ -1393,7 +1441,7 @@ const getInstructorCourses = async (req, res) => {
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
-      LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
       LEFT JOIN lessons l ON c.id = l.course_id
       ${whereClause}
       GROUP BY c.id
@@ -1484,19 +1532,28 @@ const getPopularCourses = async (req, res) => {
         u.organization as instructor_organization,
         u.profile_picture as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
-        COUNT(cr.id) as review_count,
-        COUNT(e.id) as enrollment_count,
+        COUNT(DISTINCT cr.id) as review_count,
+        COUNT(DISTINCT e.id) as enrollment_count,
+        COALESCE(lesson_counts.total_lessons, 0) as total_lessons,
         COALESCE(ca.total_views, 0) as total_views
       FROM courses c
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
-      LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
+      LEFT JOIN (
+        SELECT 
+          m.course_id,
+          COUNT(DISTINCT l.id) as total_lessons
+        FROM modules m
+        LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+        GROUP BY m.course_id
+      ) lesson_counts ON lesson_counts.course_id = c.id
       WHERE c.is_published = TRUE 
         AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
         AND COALESCE(c.status, 'draft') != 'draft'
-      GROUP BY c.id
+      GROUP BY c.id, lesson_counts.total_lessons
       ORDER BY enrollment_count DESC, average_rating DESC
       LIMIT ?
     `;
@@ -1541,7 +1598,7 @@ const getRecommendedCourses = async (req, res) => {
       LEFT JOIN categories cat ON c.category_id = cat.id
       LEFT JOIN users u ON c.instructor_id = u.id
       LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
-      LEFT JOIN enrollments e ON c.id = e.course_id
+      LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
       WHERE c.is_published = TRUE
     `;
@@ -1592,6 +1649,7 @@ const getCourseBySlug = async (req, res) => {
         stats.average_rating,
         stats.review_count,
         stats.enrollment_count,
+        COALESCE(lesson_counts.total_lessons, 0) as total_lessons,
         COALESCE(ca.total_views, 0) as total_views,
         cp.title as prerequisite_title,
         cp.id as prerequisite_id
@@ -1602,15 +1660,23 @@ const getCourseBySlug = async (req, res) => {
         SELECT 
           c.id AS course_id,
           AVG(cr.rating) AS average_rating,
-          COUNT(cr.id) AS review_count,
-          COUNT(e.id) AS enrollment_count
+          COUNT(DISTINCT cr.id) AS review_count,
+          COUNT(DISTINCT e.id) AS enrollment_count
         FROM courses c
         LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
-        LEFT JOIN enrollments e ON c.id = e.course_id
+        LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
         GROUP BY c.id
       ) stats ON stats.course_id = c.id
       LEFT JOIN course_analytics ca ON ca.course_id = c.id
       LEFT JOIN courses cp ON c.prerequisite_course_id = cp.id
+      LEFT JOIN (
+        SELECT 
+          m.course_id,
+          COUNT(DISTINCT l.id) as total_lessons
+        FROM modules m
+        LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+        GROUP BY m.course_id
+      ) lesson_counts ON lesson_counts.course_id = c.id
       WHERE c.slug = ? 
         AND c.is_published = TRUE 
         AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 

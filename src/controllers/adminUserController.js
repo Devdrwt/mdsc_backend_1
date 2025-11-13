@@ -462,11 +462,86 @@ const deleteUser = async (req, res) => {
   }
 };
 
+const suspendUser = async (req, res) => {
+  if (!ensureAdmin(req, res)) {
+    return;
+  }
+
+  const userId = parseInt(req.params.userId, 10);
+  if (Number.isNaN(userId)) {
+    res.status(400).json({
+      success: false,
+      message: 'Identifiant utilisateur invalide'
+    });
+    return;
+  }
+
+  try {
+    const [[user]] = await pool.execute(
+      'SELECT id, is_active, role FROM users WHERE id = ? LIMIT 1',
+      [userId]
+    );
+
+    if (!user) {
+      res.status(404).json({
+        success: false,
+        message: 'Utilisateur introuvable'
+      });
+      return;
+    }
+
+    // Empêcher la suspension d'un autre admin
+    if (user.role === 'admin' && req.user.userId !== userId) {
+      res.status(403).json({
+        success: false,
+        message: 'Vous ne pouvez pas suspendre un autre administrateur'
+      });
+      return;
+    }
+
+    // Empêcher l'auto-suspension
+    if (req.user.userId === userId) {
+      res.status(400).json({
+        success: false,
+        message: 'Vous ne pouvez pas vous suspendre vous-même'
+      });
+      return;
+    }
+
+    // Basculer le statut is_active
+    const newStatus = !user.is_active;
+    
+    await pool.execute(
+      'UPDATE users SET is_active = ?, updated_at = NOW() WHERE id = ?',
+      [newStatus, userId]
+    );
+
+    const updatedUser = await fetchUserWithStats(userId);
+
+    res.json({
+      success: true,
+      message: newStatus 
+        ? 'Utilisateur réactivé avec succès' 
+        : 'Utilisateur suspendu avec succès',
+      data: {
+        user: updatedUser
+      }
+    });
+  } catch (error) {
+    console.error('Erreur suspension utilisateur admin:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Impossible de modifier le statut de l\'utilisateur'
+    });
+  }
+};
+
 module.exports = {
   getUsers,
   promoteUser,
   demoteUser,
   updateUserRole,
-  deleteUser
+  deleteUser,
+  suspendUser
 };
 

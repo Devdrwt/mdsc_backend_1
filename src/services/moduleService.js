@@ -1,4 +1,5 @@
 const { pool } = require('../config/database');
+const { buildMediaUrl } = require('../utils/media');
 
 /**
  * Service de gestion des modules
@@ -29,6 +30,13 @@ class ModuleService {
     `;
 
     const [modules] = await pool.execute(query, [courseId]);
+
+    // Formater les URLs des images
+    modules.forEach(module => {
+      if (module.image_url) {
+        module.image_url = buildMediaUrl(module.image_url);
+      }
+    });
 
     if (includeLessons) {
       for (const module of modules) {
@@ -72,6 +80,11 @@ class ModuleService {
 
     const module = modules[0];
 
+    // Formater l'URL de l'image
+    if (module.image_url) {
+      module.image_url = buildMediaUrl(module.image_url);
+    }
+
     if (includeLessons) {
       const lessonsQuery = `
         SELECT 
@@ -95,11 +108,11 @@ class ModuleService {
    * Créer un module
    */
   static async createModule(courseId, moduleData) {
-    const { title, description, order_index } = moduleData;
+    const { title, description, order_index, image_url } = moduleData;
 
     const query = `
-      INSERT INTO modules (course_id, title, description, order_index, is_unlocked)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO modules (course_id, title, description, image_url, order_index, is_unlocked)
+      VALUES (?, ?, ?, ?, ?, ?)
     `;
 
     // Si c'est le premier module, le déverrouiller
@@ -109,25 +122,22 @@ class ModuleService {
       courseId,
       title,
       description || null,
+      image_url || null,
       order_index || 0,
       isFirst // Premier module toujours déverrouillé
     ]);
 
-    return {
-      id: result.insertId,
-      course_id: courseId,
-      title,
-      description,
-      order_index,
-      is_unlocked: isFirst
-    };
+    // Récupérer le module créé avec l'image_url formatée
+    const createdModule = await this.getModuleById(result.insertId);
+
+    return createdModule;
   }
 
   /**
    * Mettre à jour un module
    */
   static async updateModule(moduleId, moduleData) {
-    const { title, description, order_index, is_unlocked } = moduleData;
+    const { title, description, order_index, is_unlocked, image_url } = moduleData;
 
     const updateFields = [];
     const params = [];
@@ -139,6 +149,10 @@ class ModuleService {
     if (description !== undefined) {
       updateFields.push('description = ?');
       params.push(description);
+    }
+    if (image_url !== undefined) {
+      updateFields.push('image_url = ?');
+      params.push(image_url || null);
     }
     if (order_index !== undefined) {
       updateFields.push('order_index = ?');

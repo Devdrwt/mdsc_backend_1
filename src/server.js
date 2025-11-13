@@ -47,6 +47,7 @@ const courseRoutes = require('./routes/courseRoutes');
 const courseApprovalRoutes = require('./routes/courses/courseApprovalRoutes');
 const quizRoutes = require('./routes/quizRoutes');
 const certificateRoutes = require('./routes/certificateRoutes');
+const certificateController = require('./controllers/certificateController');
 const enrollmentRoutes = require('./routes/enrollmentRoutes');
 const instructorDashboardRoutes = require('./routes/instructorDashboardRoutes');
 const studentDashboardRoutes = require('./routes/studentDashboardRoutes');
@@ -238,8 +239,10 @@ app.use((req, res, next) => {
 // Servir les fichiers statiques (uploads)
 // Important : cette route doit être avant les routes API pour éviter les conflits
 const uploadsPath = path.join(__dirname, '../uploads');
+
+// Route pour servir les fichiers statiques avec headers de protection
 app.use('/uploads', express.static(uploadsPath, {
-  setHeaders: (res, filePath) => {
+  setHeaders: (res, filePath, stat) => {
     // Ajouter les en-têtes CORS pour les fichiers statiques
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
@@ -302,7 +305,6 @@ app.use('/uploads', express.static(uploadsPath, {
 
 // Log pour vérifier que le dossier uploads est accessible
 if (process.env.NODE_ENV === 'development') {
-  const fs = require('fs');
   if (fs.existsSync(uploadsPath)) {
     console.log('✅ Dossier uploads accessible:', uploadsPath);
   } else {
@@ -332,6 +334,13 @@ app.use('/api', courseApprovalRoutes);
 app.use('/api/courses', courseRoutes);
 app.use('/api/quizzes', quizRoutes);
 app.use('/api/certificates', certificateRoutes);
+// Route admin pour tous les certificats (doit être après /api/certificates pour éviter les conflits)
+const { authenticateToken, authorize } = require('./middleware/auth');
+app.get('/api/admin/certificates', 
+  authenticateToken,
+  authorize(['admin']),
+  certificateController.getAllCertificates
+);
 app.use('/api/enrollments', enrollmentRoutes);
 app.use('/api/instructor', instructorDashboardRoutes);
 app.use('/api/student', studentDashboardRoutes);

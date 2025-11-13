@@ -78,7 +78,7 @@ const getModuleById = async (req, res) => {
 const createModule = async (req, res) => {
   try {
     const { courseId } = req.params;
-    const { title, description, order_index } = req.body;
+    const { title, description, order_index, image_url } = req.body;
     const userId = req.user?.id ?? req.user?.userId;
 
     // Vérifier que l'utilisateur est propriétaire du cours
@@ -109,7 +109,8 @@ const createModule = async (req, res) => {
     const module = await ModuleService.createModule(courseId, {
       title,
       description,
-      order_index: order_index || 0
+      order_index: order_index || 0,
+      image_url
     });
 
     res.status(201).json({
@@ -131,7 +132,7 @@ const createModule = async (req, res) => {
 const updateModule = async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, description, order_index, is_unlocked } = req.body;
+    const { title, description, order_index, is_unlocked, image_url } = req.body;
     const userId = req.user?.id ?? req.user?.userId;
 
     // Vérifier les permissions
@@ -157,7 +158,8 @@ const updateModule = async (req, res) => {
       title,
       description,
       order_index,
-      is_unlocked
+      is_unlocked,
+      image_url
     });
 
     res.json({

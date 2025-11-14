@@ -271,6 +271,22 @@ class ProgressService {
           moduleId: lessons[0].module_id || null,
         },
       });
+
+      // 🔹 NOUVEAU : Synchroniser avec le calendrier
+      try {
+        const CalendarSyncService = require('./calendarSyncService');
+        await CalendarSyncService.syncProgressToCalendar({
+          type: 'lesson_completed',
+          lessonId,
+          enrollmentId,
+          completedAt: new Date(),
+          moduleId: lessons[0].module_id || null
+        });
+        console.log(`✅ [PROGRESS] Progression synchronisée avec le calendrier pour la leçon ${lessonId}`);
+      } catch (calendarError) {
+        // Ne pas bloquer la complétion si la synchronisation échoue
+        console.error('⚠️ [PROGRESS] Erreur lors de la synchronisation calendrier:', calendarError);
+      }
     }
 
     let moduleCompleted = false;

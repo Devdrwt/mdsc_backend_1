@@ -346,6 +346,24 @@ const enrollInCourse = async (req, res) => {
       // Ne pas bloquer l'inscription si l'activité échoue
     }
 
+    // 🔹 NOUVEAU : Générer le planning automatique pour le calendrier
+    try {
+      const CalendarSyncService = require('../services/calendarSyncService');
+      const [enrollmentResult] = await pool.execute(
+        'SELECT id FROM enrollments WHERE user_id = ? AND course_id = ? ORDER BY enrolled_at DESC LIMIT 1',
+        [userId, courseId]
+      );
+      
+      if (enrollmentResult.length > 0) {
+        const enrollmentId = enrollmentResult[0].id;
+        await CalendarSyncService.generateSchedule(enrollmentId, courseId, userId);
+        console.log(`✅ [ENROLLMENT] Planning automatique généré pour l'inscription ${enrollmentId}`);
+      }
+    } catch (calendarError) {
+      // Ne pas bloquer l'inscription si la génération du planning échoue
+      console.error('⚠️ [ENROLLMENT] Erreur lors de la génération du planning automatique:', calendarError);
+    }
+
     res.status(201).json({
       success: true,
       message: 'Inscription réussie',

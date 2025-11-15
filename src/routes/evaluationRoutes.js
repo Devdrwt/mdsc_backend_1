@@ -14,6 +14,8 @@ router.get(
 );
 
 router.get('/:id', authenticateToken, evaluationController.getEvaluation);
+router.get('/:id/attempt', authenticateToken, evaluationController.checkEvaluationAttempt);
+router.post('/:id/start', authenticateToken, evaluationController.startEvaluationAttempt);
 router.post('/:id/submit', authenticateToken, evaluationController.submitEvaluation);
 
 // Routes pour les instructeurs (Évaluation finale)

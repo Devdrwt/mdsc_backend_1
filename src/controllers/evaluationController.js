@@ -87,7 +87,9 @@ const getUserEvaluations = async (req, res) => {
         e.id as enrollment_id,
         COUNT(DISTINCT CASE WHEN qa.completed_at IS NOT NULL THEN qa.id END) as attempts_count,
         MAX(CASE WHEN qa.completed_at IS NOT NULL THEN qa.percentage END) as best_score,
-        MAX(CASE WHEN qa.completed_at IS NOT NULL THEN qa.completed_at END) as passed_at
+        MAX(CASE WHEN qa.completed_at IS NOT NULL THEN qa.completed_at END) as passed_at,
+        COUNT(DISTINCT CASE WHEN qa.completed_at IS NULL THEN qa.id END) as incomplete_attempts_count,
+        MAX(CASE WHEN qa.completed_at IS NULL THEN qa.started_at END) as incomplete_started_at
       FROM course_evaluations ce
       INNER JOIN courses c ON ce.course_id = c.id
       INNER JOIN enrollments e ON c.id = e.course_id AND e.user_id = ? AND e.is_active = TRUE
@@ -119,6 +121,7 @@ const getUserEvaluations = async (req, res) => {
     // Formater les évaluations finales pour correspondre à l'interface Evaluation du frontend
     const formattedFinalEvaluations = finalEvaluations.map(evaluation => {
       const attemptsCount = Number(evaluation.attempts_count || 0);
+      const incompleteAttemptsCount = Number(evaluation.incomplete_attempts_count || 0);
       const maxAttempts = Number(evaluation.max_attempts || 1);
       const canAttempt = attemptsCount < maxAttempts;
       const bestScore = evaluation.best_score !== null && evaluation.best_score !== undefined ? Number(evaluation.best_score) : null;
@@ -126,12 +129,15 @@ const getUserEvaluations = async (req, res) => {
       const isPassed = bestScore !== null && bestScore >= passingScore;
       
       // Déterminer le statut selon l'interface Evaluation
+      // Si une tentative incomplète existe (minuterie en cours), l'évaluation est "en cours"
       let status = 'not-started';
-      if (attemptsCount > 0) {
+      if (incompleteAttemptsCount > 0) {
+        status = 'in-progress'; // Minuterie active
+      } else if (attemptsCount > 0) {
         if (isPassed) {
           status = 'graded';
         } else if (canAttempt) {
-          status = 'in-progress';
+          status = 'not-started'; // Peut recommencer
         } else {
           status = 'graded'; // Échoué après toutes les tentatives
         }
@@ -157,7 +163,9 @@ const getUserEvaluations = async (req, res) => {
         duration_minutes: evaluation.duration_minutes,
         max_attempts: maxAttempts,
         attempts_count: attemptsCount,
-        is_final: true
+        is_final: true,
+        // Informations de tentative incomplète pour le timer
+        incomplete_started_at: evaluation.incomplete_started_at ? new Date(evaluation.incomplete_started_at).toISOString() : null
       };
     });
 

@@ -169,8 +169,128 @@ const getUserEvaluations = async (req, res) => {
       };
     });
 
-    // Combiner les deux types d'évaluations
-    const allEvaluations = [...formattedEvaluations, ...formattedFinalEvaluations];
+    // Récupérer les quiz de modules pour les cours auxquels l'utilisateur est inscrit
+    const moduleQuizzesQuery = `
+      SELECT 
+        mq.id,
+        mq.title,
+        mq.description,
+        mq.passing_score,
+        mq.time_limit_minutes,
+        mq.max_attempts,
+        mq.is_published,
+        mq.created_at,
+        mq.updated_at,
+        m.id as module_id,
+        m.title as module_title,
+        m.order_index as module_order,
+        c.id as course_id,
+        c.title as course_title,
+        c.slug as course_slug,
+        e.id as enrollment_id,
+        -- Vérifier si toutes les leçons du module sont complétées
+        (
+          SELECT COUNT(DISTINCT l.id) as total_lessons
+          FROM lessons l
+          WHERE l.module_id = m.id AND l.is_published = TRUE
+        ) as total_lessons,
+        (
+          SELECT COUNT(DISTINCT l.id) as completed_lessons
+          FROM lessons l
+          LEFT JOIN progress p ON l.id = p.lesson_id AND p.enrollment_id = e.id
+          WHERE l.module_id = m.id 
+            AND l.is_published = TRUE 
+            AND p.status = 'completed'
+        ) as completed_lessons,
+        -- Trouver la leçon quiz ou la dernière leçon du module pour la redirection
+        (
+          SELECT l.id
+          FROM lessons l
+          WHERE l.module_id = m.id 
+            AND l.is_published = TRUE
+            AND (l.content_type = 'quiz' OR l.content_type = 'exercise')
+          ORDER BY l.order_index DESC
+          LIMIT 1
+        ) as quiz_lesson_id,
+        -- Si pas de leçon quiz, prendre la dernière leçon du module
+        (
+          SELECT l.id
+          FROM lessons l
+          WHERE l.module_id = m.id 
+            AND l.is_published = TRUE
+          ORDER BY l.order_index DESC
+          LIMIT 1
+        ) as last_lesson_id,
+        -- Meilleur score du quiz
+        MAX(CASE WHEN qa.completed_at IS NOT NULL THEN qa.percentage END) as best_score,
+        COUNT(DISTINCT CASE WHEN qa.completed_at IS NOT NULL THEN qa.id END) as attempts_count
+      FROM module_quizzes mq
+      INNER JOIN modules m ON mq.module_id = m.id
+      INNER JOIN courses c ON m.course_id = c.id
+      INNER JOIN enrollments e ON c.id = e.course_id AND e.user_id = ? AND e.is_active = TRUE
+      LEFT JOIN quiz_attempts qa ON mq.id = qa.module_quiz_id AND qa.user_id = ?
+      WHERE mq.is_published = TRUE
+      GROUP BY mq.id, m.id, c.id, e.id
+      ORDER BY m.order_index ASC, mq.created_at DESC
+    `;
+
+    const [moduleQuizzes] = await pool.execute(moduleQuizzesQuery, [userId, userId]);
+
+    // Formater les quiz de modules
+    const formattedModuleQuizzes = moduleQuizzes.map(quiz => {
+      const totalLessons = Number(quiz.total_lessons || 0);
+      const completedLessons = Number(quiz.completed_lessons || 0);
+      const isModuleCompleted = totalLessons > 0 && completedLessons === totalLessons;
+      const bestScore = quiz.best_score !== null && quiz.best_score !== undefined ? Number(quiz.best_score) : null;
+      const attemptsCount = Number(quiz.attempts_count || 0);
+      const passingScore = Number(quiz.passing_score || 70);
+      const isPassed = bestScore !== null && bestScore >= passingScore;
+      
+      // Déterminer le statut
+      let status = 'not-started';
+      if (!isModuleCompleted) {
+        status = 'locked'; // Module non complété
+      } else if (attemptsCount > 0) {
+        if (isPassed) {
+          status = 'graded';
+        } else {
+          status = 'graded'; // Échoué
+        }
+      }
+
+      // Déterminer la leçon pour la redirection (priorité à quiz_lesson_id, sinon last_lesson_id)
+      const lessonId = quiz.quiz_lesson_id || quiz.last_lesson_id;
+
+      return {
+        id: `module_quiz_${quiz.id}`, // Préfixe pour distinguer des autres évaluations
+        courseId: String(quiz.course_id),
+        courseName: quiz.course_title,
+        title: quiz.title,
+        description: quiz.description || '',
+        type: 'quiz',
+        status: status,
+        dueDate: null,
+        score: bestScore,
+        maxScore: 100,
+        instructions: quiz.description || '',
+        createdAt: quiz.created_at ? new Date(quiz.created_at).toISOString() : new Date().toISOString(),
+        updatedAt: quiz.updated_at ? new Date(quiz.updated_at).toISOString() : new Date().toISOString(),
+        // Champs supplémentaires pour les quiz de modules
+        is_module_quiz: true,
+        module_id: quiz.module_id,
+        module_title: quiz.module_title,
+        lesson_id: lessonId,
+        enrollment_id: quiz.enrollment_id,
+        passing_score: passingScore,
+        time_limit_minutes: quiz.time_limit_minutes,
+        max_attempts: quiz.max_attempts,
+        attempts_count: attemptsCount,
+        is_locked: !isModuleCompleted
+      };
+    });
+
+    // Combiner tous les types d'évaluations
+    const allEvaluations = [...formattedEvaluations, ...formattedFinalEvaluations, ...formattedModuleQuizzes];
 
     res.json({
       success: true,

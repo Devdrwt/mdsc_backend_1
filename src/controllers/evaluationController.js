@@ -624,6 +624,8 @@ const getEvaluation = async (req, res) => {
         );
         return {
           ...question,
+          points: Number(question.points) || 0, // S'assurer que points est un nombre
+          order_index: Number(question.order_index) || 0,
           answers: answers.map(a => ({
             id: a.id,
             text: a.answer_text,
@@ -827,6 +829,16 @@ const submitEvaluation = async (req, res) => {
         ]
       );
 
+      // Recalculer la progression du cours après la complétion de l'évaluation finale
+      try {
+        const ProgressService = require('../services/progressService');
+        await ProgressService.updateCourseProgress(enrollmentId);
+        console.log(`✅ [Evaluation] Progression recalculée pour l'enrollment ${enrollmentId} après soumission de l'évaluation finale`);
+      } catch (progressError) {
+        console.error('❌ [Evaluation] Erreur lors du recalcul de la progression:', progressError);
+        // Ne pas bloquer la réponse si le recalcul échoue
+      }
+
       // Créer une notification
       const notificationTitle = isPassed 
         ? `✅ Évaluation finale réussie : ${evaluation.title}`
@@ -865,7 +877,8 @@ const submitEvaluation = async (req, res) => {
           totalPoints: totalPoints,
           percentage: Math.round(percentage),
           isPassed: isPassed,
-          attemptId: attemptId
+          attemptId: attemptId,
+          enrollmentId: enrollmentId
         }
       });
     }
@@ -1911,6 +1924,54 @@ const getEnrollmentEvaluation = async (req, res) => {
 
     const evaluation = evaluations[0];
 
+    // Récupérer les questions de l'évaluation finale
+    const [questions] = await pool.execute(
+      `SELECT 
+        qq.id,
+        qq.question_text,
+        qq.question_type,
+        qq.points,
+        qq.order_index,
+        qq.is_active
+       FROM quiz_questions qq
+       WHERE qq.course_evaluation_id = ? AND qq.is_active = TRUE
+       ORDER BY qq.order_index ASC`,
+      [evaluation.id]
+    );
+
+    // Récupérer les réponses pour chaque question
+    const questionsWithAnswers = await Promise.all(
+      questions.map(async (question) => {
+        const [answers] = await pool.execute(
+          `SELECT 
+            id,
+            answer_text,
+            is_correct,
+            order_index
+           FROM quiz_answers
+           WHERE question_id = ?
+           ORDER BY order_index ASC`,
+          [question.id]
+        );
+
+        return {
+          id: String(question.id),
+          question_text: question.question_text,
+          question_type: question.question_type,
+          points: Number(question.points) || 0, // S'assurer que points est un nombre
+          order_index: Number(question.order_index) || 0,
+          options: answers.map(a => a.answer_text),
+          correct_answer: answers.find(a => a.is_correct)?.answer_text || '',
+          answers: answers.map(a => ({
+            id: String(a.id),
+            answer_text: a.answer_text,
+            is_correct: a.is_correct,
+            orderIndex: a.order_index
+          }))
+        };
+      })
+    );
+
     // Récupérer les tentatives précédentes
     const [attempts] = await pool.execute(
       `SELECT * FROM quiz_attempts 
@@ -1919,10 +1980,24 @@ const getEnrollmentEvaluation = async (req, res) => {
       [enrollmentId, evaluation.id]
     );
 
+    console.log(`[EvaluationController] 📊 Tentatives récupérées pour enrollment ${enrollmentId}, evaluation ${evaluation.id}:`, {
+      attemptsCount: attempts.length,
+      attempts: attempts.map(a => ({
+        id: a.id,
+        completed_at: a.completed_at,
+        percentage: a.percentage,
+        is_passed: a.is_passed,
+        started_at: a.started_at
+      }))
+    });
+
     res.json({
       success: true,
       data: {
-        evaluation,
+        evaluation: {
+          ...evaluation,
+          questions: questionsWithAnswers
+        },
         previous_attempts: attempts,
         can_attempt: attempts.length < evaluation.max_attempts
       }
@@ -2067,6 +2142,16 @@ const submitEvaluationAttempt = async (req, res) => {
         attemptId
       ]
     );
+
+    // Recalculer la progression du cours après la complétion de l'évaluation finale
+    try {
+      const ProgressService = require('../services/progressService');
+      await ProgressService.updateCourseProgress(enrollmentId);
+      console.log(`✅ [Evaluation] Progression recalculée pour l'enrollment ${enrollmentId} après soumission de l'évaluation finale (submitEvaluationAttempt)`);
+    } catch (progressError) {
+      console.error('❌ [Evaluation] Erreur lors du recalcul de la progression:', progressError);
+      // Ne pas bloquer la réponse si le recalcul échoue
+    }
 
     // Créer une notification pour l'évaluation finale soumise
     try {

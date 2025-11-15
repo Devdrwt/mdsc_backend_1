@@ -89,7 +89,36 @@ const getUserEvaluations = async (req, res) => {
         MAX(CASE WHEN qa.completed_at IS NOT NULL THEN qa.percentage END) as best_score,
         MAX(CASE WHEN qa.completed_at IS NOT NULL THEN qa.completed_at END) as passed_at,
         COUNT(DISTINCT CASE WHEN qa.completed_at IS NULL THEN qa.id END) as incomplete_attempts_count,
-        MAX(CASE WHEN qa.completed_at IS NULL THEN qa.started_at END) as incomplete_started_at
+        MAX(CASE WHEN qa.completed_at IS NULL THEN qa.started_at END) as incomplete_started_at,
+        -- Vérifier si tous les modules sont complétés
+        (
+          SELECT COUNT(DISTINCT m.id) as total_modules
+          FROM modules m
+          WHERE m.course_id = c.id
+        ) as total_modules,
+        (
+          SELECT COUNT(DISTINCT m.id) as completed_modules
+          FROM modules m
+          WHERE m.course_id = c.id
+          AND (
+            -- Un module est complété si toutes ses leçons sont complétées
+            SELECT COUNT(DISTINCT l.id) as total_lessons
+            FROM lessons l
+            WHERE l.module_id = m.id AND l.is_published = TRUE
+          ) = (
+            SELECT COUNT(DISTINCT l.id) as completed_lessons
+            FROM lessons l
+            LEFT JOIN progress p ON l.id = p.lesson_id AND p.enrollment_id = e.id
+            WHERE l.module_id = m.id 
+              AND l.is_published = TRUE 
+              AND p.status = 'completed'
+          )
+          AND (
+            SELECT COUNT(DISTINCT l.id) as total_lessons
+            FROM lessons l
+            WHERE l.module_id = m.id AND l.is_published = TRUE
+          ) > 0
+        ) as completed_modules
       FROM course_evaluations ce
       INNER JOIN courses c ON ce.course_id = c.id
       INNER JOIN enrollments e ON c.id = e.course_id AND e.user_id = ? AND e.is_active = TRUE
@@ -128,10 +157,17 @@ const getUserEvaluations = async (req, res) => {
       const passingScore = Number(evaluation.passing_score || 70);
       const isPassed = bestScore !== null && bestScore >= passingScore;
       
+      // Vérifier si tous les modules sont complétés
+      const totalModules = Number(evaluation.total_modules || 0);
+      const completedModules = Number(evaluation.completed_modules || 0);
+      const allModulesCompleted = totalModules > 0 && completedModules === totalModules;
+      
       // Déterminer le statut selon l'interface Evaluation
-      // Si une tentative incomplète existe (minuterie en cours), l'évaluation est "en cours"
+      // Si tous les modules ne sont pas complétés, l'évaluation est verrouillée
       let status = 'not-started';
-      if (incompleteAttemptsCount > 0) {
+      if (!allModulesCompleted) {
+        status = 'locked'; // Modules non complétés
+      } else if (incompleteAttemptsCount > 0) {
         status = 'in-progress'; // Minuterie active
       } else if (attemptsCount > 0) {
         if (isPassed) {
@@ -164,6 +200,7 @@ const getUserEvaluations = async (req, res) => {
         max_attempts: maxAttempts,
         attempts_count: attemptsCount,
         is_final: true,
+        is_locked: !allModulesCompleted,
         // Informations de tentative incomplète pour le timer
         incomplete_started_at: evaluation.incomplete_started_at ? new Date(evaluation.incomplete_started_at).toISOString() : null
       };
@@ -977,29 +1014,61 @@ const getUserEvaluationStats = async (req, res) => {
     `;
     const [finalStats] = await pool.execute(finalStatsQuery, [userId, userId]);
 
-    // Combiner les statistiques
+    // Statistiques pour les quiz de modules
+    const moduleQuizStatsQuery = `
+      SELECT 
+        COUNT(DISTINCT mq.id) as total_evaluations,
+        COUNT(DISTINCT CASE WHEN qa.completed_at IS NOT NULL THEN mq.id END) as evaluations_attempted,
+        COUNT(DISTINCT CASE WHEN qa.completed_at IS NOT NULL THEN mq.id END) as evaluations_submitted,
+        COUNT(DISTINCT CASE WHEN qa.completed_at IS NOT NULL THEN mq.id END) as evaluations_graded,
+        AVG(CASE WHEN qa.completed_at IS NOT NULL THEN qa.percentage END) as average_score,
+        MAX(CASE WHEN qa.completed_at IS NOT NULL THEN qa.percentage END) as highest_score,
+        MIN(CASE WHEN qa.completed_at IS NOT NULL THEN qa.percentage END) as lowest_score
+      FROM module_quizzes mq
+      INNER JOIN modules m ON mq.module_id = m.id
+      INNER JOIN courses c ON m.course_id = c.id
+      INNER JOIN enrollments en ON c.id = en.course_id AND en.user_id = ? AND en.is_active = TRUE
+      LEFT JOIN quiz_attempts qa ON mq.id = qa.module_quiz_id AND qa.user_id = ? AND qa.completed_at IS NOT NULL
+      WHERE mq.is_published = TRUE
+    `;
+    const [moduleQuizStats] = await pool.execute(moduleQuizStatsQuery, [userId, userId]);
+
+    // Combiner les statistiques (évaluations classiques + évaluations finales + quiz de modules)
+    const totalEvaluations = (classicStats[0].total_evaluations || 0) + (finalStats[0].total_evaluations || 0) + (moduleQuizStats[0].total_evaluations || 0);
+    const totalGraded = (classicStats[0].evaluations_graded || 0) + (finalStats[0].evaluations_graded || 0) + (moduleQuizStats[0].evaluations_graded || 0);
+    
+    // Calculer "En attente" : toutes les évaluations non complétées (not-started, in-progress, locked, etc.)
+    const evaluationsPending = totalEvaluations - totalGraded;
+    
+    // Calculer la moyenne pondérée pour tous les types
+    const classicAvg = classicStats[0].average_score || 0;
+    const finalAvg = finalStats[0].average_score || 0;
+    const moduleQuizAvg = moduleQuizStats[0].average_score || 0;
+    const classicCount = classicStats[0].evaluations_graded || 0;
+    const finalCount = finalStats[0].evaluations_graded || 0;
+    const moduleQuizCount = moduleQuizStats[0].evaluations_graded || 0;
+    const totalCount = classicCount + finalCount + moduleQuizCount;
+    const averageScore = totalCount === 0 ? 0 : ((classicAvg * classicCount) + (finalAvg * finalCount) + (moduleQuizAvg * moduleQuizCount)) / totalCount;
+    
     const stats = [{
-      total_evaluations: (classicStats[0].total_evaluations || 0) + (finalStats[0].total_evaluations || 0),
-      evaluations_attempted: (classicStats[0].evaluations_attempted || 0) + (finalStats[0].evaluations_attempted || 0),
-      evaluations_submitted: (classicStats[0].evaluations_submitted || 0) + (finalStats[0].evaluations_submitted || 0),
-      evaluations_graded: (classicStats[0].evaluations_graded || 0) + (finalStats[0].evaluations_graded || 0),
-      average_score: (() => {
-        const classicAvg = classicStats[0].average_score || 0;
-        const finalAvg = finalStats[0].average_score || 0;
-        const classicCount = classicStats[0].evaluations_graded || 0;
-        const finalCount = finalStats[0].evaluations_graded || 0;
-        const totalCount = classicCount + finalCount;
-        if (totalCount === 0) return 0;
-        return ((classicAvg * classicCount) + (finalAvg * finalCount)) / totalCount;
-      })(),
-      highest_score: Math.max(classicStats[0].highest_score || 0, finalStats[0].highest_score || 0),
+      total_evaluations: totalEvaluations,
+      evaluations_attempted: (classicStats[0].evaluations_attempted || 0) + (finalStats[0].evaluations_attempted || 0) + (moduleQuizStats[0].evaluations_attempted || 0),
+      evaluations_submitted: (classicStats[0].evaluations_submitted || 0) + (finalStats[0].evaluations_submitted || 0) + (moduleQuizStats[0].evaluations_submitted || 0),
+      evaluations_graded: totalGraded,
+      evaluations_pending: evaluationsPending,
+      average_score: averageScore,
+      highest_score: Math.max(
+        classicStats[0].highest_score || 0, 
+        finalStats[0].highest_score || 0,
+        moduleQuizStats[0].highest_score || 0
+      ),
       lowest_score: (() => {
         const classicMin = classicStats[0].lowest_score;
         const finalMin = finalStats[0].lowest_score;
-        if (classicMin === null && finalMin === null) return null;
-        if (classicMin === null) return finalMin;
-        if (finalMin === null) return classicMin;
-        return Math.min(classicMin, finalMin);
+        const moduleQuizMin = moduleQuizStats[0].lowest_score;
+        const allMins = [classicMin, finalMin, moduleQuizMin].filter(v => v !== null && v !== undefined);
+        if (allMins.length === 0) return null;
+        return Math.min(...allMins);
       })()
     }];
 
@@ -1046,6 +1115,7 @@ const getUserEvaluationStats = async (req, res) => {
           evaluations_attempted: stats[0].evaluations_attempted || 0,
           evaluations_submitted: stats[0].evaluations_submitted || 0,
           evaluations_graded: stats[0].evaluations_graded || 0,
+          evaluations_pending: stats[0].evaluations_pending || 0,
           average_score: stats[0].average_score || 0,
           highest_score: stats[0].highest_score || 0,
           lowest_score: stats[0].lowest_score || 0,

@@ -100,6 +100,20 @@ const adminEventRoutes = require('./routes/adminEventRoutes');
 
 const app = express();
 
+const DEFAULT_AVATAR_SVG = `
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="avatarGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4f46e5"/>
+      <stop offset="100%" stop-color="#0ea5e9"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#avatarGradient)"/>
+  <circle cx="64" cy="56" r="26" fill="#f8fafc"/>
+  <path d="M28 112c4-26 32-38 36-38s32 12 36 38" fill="#e2e8f0"/>
+</svg>
+`.trim();
+
 // Middleware
 // CORS avancé: support liste d'origines (FRONTEND_URLS=sep par virgules) et credentials
 const allowedOrigins = ((process.env.FRONTEND_URLS || process.env.FRONTEND_URL || '')
@@ -343,6 +357,12 @@ app.get('/health', (req, res) => {
     message: 'API d\'authentification MdSC - Fonctionne correctement',
     timestamp: new Date().toISOString()
   });
+});
+
+app.get('/default-avatar.png', (req, res) => {
+  res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+  res.setHeader('Cache-Control', 'public, max-age=604800'); // 7 jours
+  res.send(DEFAULT_AVATAR_SVG);
 });
 
 // Routes API

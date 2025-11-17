@@ -13,7 +13,7 @@ Créez la base de données en exécutant les scripts SQL dans l'ordre:
 mysql -u root  -P 3306 < database/schema.sql
 
 # 2. Schéma des cours et fonctionnalités MOOC
-mysql -u root -p -P 3306 < database/courses_schema.sql
+mysql -u root  -P 3306 < database/courses_schema.sql
 
 # 3. Tables manquantes (IA, gamification, analytics)
 mysql -u root -p -P 3306 < database/add_missing_tables.sql

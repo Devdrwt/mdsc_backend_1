@@ -10,6 +10,7 @@ const requireStudent = [
 
 router.get('/courses', requireStudent, studentDashboardController.getCourses);
 router.get('/progress/:courseId', requireStudent, studentDashboardController.getCourseProgress);
+router.get('/schedule/:courseId', requireStudent, studentDashboardController.getCourseSchedule);
 router.get('/stats', requireStudent, studentDashboardController.getStats);
 router.get('/recent-activity', requireStudent, studentDashboardController.getRecentActivity);
 router.get('/badges', requireStudent, studentDashboardController.getBadges);

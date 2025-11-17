@@ -40,6 +40,12 @@ router.get('/my',
   fileController.getUserFiles
 );
 
+// Récupérer les fichiers d'un utilisateur spécifique (par ID)
+router.get('/user/:userId', 
+  authenticateToken, 
+  fileController.getUserFilesById
+);
+
 router.delete('/:fileId', 
   authenticateToken, 
   fileController.deleteProfileFile

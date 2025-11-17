@@ -6,11 +6,11 @@ API backend complète pour la plateforme MOOC Maison de la Société Civile avec
 
 ### 1. Configuration de la base de données
 
-Créez la base de données en exécutant les scripts SQL dans l'ordre :
+Créez la base de données en exécutant les scripts SQL dans l'ordre:
 
 ```bash
 # 1. Schéma principal d'authentification
-mysql -u root -p -P 3306 < database/schema.sql
+mysql -u root  -P 3306 < database/schema.sql
 
 # 2. Schéma des cours et fonctionnalités MOOC
 mysql -u root -p -P 3306 < database/courses_schema.sql

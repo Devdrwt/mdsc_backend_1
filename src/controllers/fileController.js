@@ -191,6 +191,78 @@ const getUserFiles = async (req, res) => {
   }
 };
 
+// Récupérer les fichiers d'un utilisateur spécifique (par ID)
+const getUserFilesById = async (req, res) => {
+  try {
+    const { userId: targetUserId } = req.params;
+    const currentUserId = req.user?.id ?? req.user?.userId;
+    const userRole = req.user?.role;
+
+    // Vérifier les permissions
+    // 1. L'utilisateur peut voir ses propres fichiers
+    // 2. Les admins peuvent voir tous les fichiers
+    // 3. Les autres peuvent voir uniquement les fichiers publics (profile_picture) d'autres utilisateurs
+    const isOwnFiles = parseInt(currentUserId) === parseInt(targetUserId);
+    const isAdmin = userRole === 'admin';
+    const canViewAll = isOwnFiles || isAdmin;
+
+    let query;
+    let params;
+
+    if (canViewAll) {
+      // Voir tous les fichiers de l'utilisateur
+      query = `
+        SELECT 
+          id, file_type, file_name, original_name, file_size,
+          mime_type, is_verified, verified_at, created_at
+        FROM user_files 
+        WHERE user_id = ?
+        ORDER BY file_type, created_at DESC
+      `;
+      params = [targetUserId];
+    } else {
+      // Voir uniquement les fichiers publics (photos de profil)
+      query = `
+        SELECT 
+          id, file_type, file_name, original_name, file_size,
+          mime_type, is_verified, verified_at, created_at
+        FROM user_files 
+        WHERE user_id = ? AND file_type = 'profile_picture'
+        ORDER BY created_at DESC
+      `;
+      params = [targetUserId];
+    }
+
+    const [files] = await pool.execute(query, params);
+
+    // Construire l'URL complète pour chaque fichier
+    const apiUrl = process.env.API_URL || `http://localhost:${process.env.PORT || 5000}`;
+
+    res.json({
+      success: true,
+      data: files.map(file => ({
+        id: file.id,
+        file_type: file.file_type,
+        file_name: file.file_name,
+        original_name: file.original_name,
+        file_size: file.file_size,
+        mime_type: file.mime_type,
+        is_verified: file.is_verified,
+        verified_at: file.verified_at,
+        created_at: file.created_at,
+        url: file.file_name ? `${apiUrl}/uploads/profiles/${file.file_name}` : null
+      }))
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la récupération des fichiers:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des fichiers'
+    });
+  }
+};
+
 // Supprimer un fichier de profil
 const deleteProfileFile = async (req, res) => {
   try {
@@ -548,6 +620,7 @@ module.exports = {
   uploadProfileFile,
   uploadCourseFile,
   getUserFiles,
+  getUserFilesById,
   deleteProfileFile,
   verifyFile,
   getPendingFiles

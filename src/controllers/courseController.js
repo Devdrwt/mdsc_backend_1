@@ -122,8 +122,8 @@ const getAllCourses = async (req, res) => {
         u.email as instructor_email,
         u.organization as instructor_organization,
         COALESCE(
-          u.profile_picture,
-          CONCAT('/uploads/profiles/', uf.file_name)
+          CONCAT('/uploads/profiles/', uf.file_name),
+          u.profile_picture
         ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(DISTINCT cr.id) as review_count,
@@ -260,8 +260,8 @@ const getCourseById = async (req, res) => {
         u.email as instructor_email,
         u.organization as instructor_organization,
         COALESCE(
-          u.profile_picture,
-          CONCAT('/uploads/profiles/', uf.file_name)
+          CONCAT('/uploads/profiles/', uf.file_name),
+          u.profile_picture
         ) as instructor_profile_picture,
         stats.average_rating,
         stats.review_count,
@@ -755,8 +755,8 @@ const getCoursesByCategory = async (req, res) => {
         u.email as instructor_email,
         u.organization as instructor_organization,
         COALESCE(
-          u.profile_picture,
-          CONCAT('/uploads/profiles/', uf.file_name)
+          CONCAT('/uploads/profiles/', uf.file_name),
+          u.profile_picture
         ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(DISTINCT cr.id) as review_count,
@@ -838,8 +838,8 @@ const searchCourses = async (req, res) => {
         u.email as instructor_email,
         u.organization as instructor_organization,
         COALESCE(
-          u.profile_picture,
-          CONCAT('/uploads/profiles/', uf.file_name)
+          CONCAT('/uploads/profiles/', uf.file_name),
+          u.profile_picture
         ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(DISTINCT cr.id) as review_count,
@@ -913,8 +913,8 @@ const getFeaturedCourses = async (req, res) => {
         u.email as instructor_email,
         u.organization as instructor_organization,
         COALESCE(
-          u.profile_picture,
-          CONCAT('/uploads/profiles/', uf.file_name)
+          CONCAT('/uploads/profiles/', uf.file_name),
+          u.profile_picture
         ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(DISTINCT cr.id) as review_count,
@@ -1298,8 +1298,8 @@ const getMyCourses = async (req, res) => {
         u.email as instructor_email,
         u.organization as instructor_organization,
         COALESCE(
-          u.profile_picture,
-          CONCAT('/uploads/profiles/', uf.file_name)
+          CONCAT('/uploads/profiles/', uf.file_name),
+          u.profile_picture
         ) as instructor_profile_picture,
         stats.average_rating,
         stats.review_count,
@@ -1622,8 +1622,8 @@ const getPopularCourses = async (req, res) => {
         u.email as instructor_email,
         u.organization as instructor_organization,
         COALESCE(
-          u.profile_picture,
-          CONCAT('/uploads/profiles/', uf.file_name)
+          CONCAT('/uploads/profiles/', uf.file_name),
+          u.profile_picture
         ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(DISTINCT cr.id) as review_count,
@@ -1696,8 +1696,8 @@ const getRecommendedCourses = async (req, res) => {
         u.email as instructor_email,
         u.organization as instructor_organization,
         COALESCE(
-          u.profile_picture,
-          CONCAT('/uploads/profiles/', uf.file_name)
+          CONCAT('/uploads/profiles/', uf.file_name),
+          u.profile_picture
         ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(cr.id) as review_count,
@@ -1767,8 +1767,8 @@ const getCourseBySlug = async (req, res) => {
         u.email as instructor_email,
         u.organization as instructor_organization,
         COALESCE(
-          u.profile_picture,
-          CONCAT('/uploads/profiles/', uf.file_name)
+          CONCAT('/uploads/profiles/', uf.file_name),
+          u.profile_picture
         ) as instructor_profile_picture,
         stats.average_rating,
         stats.review_count,

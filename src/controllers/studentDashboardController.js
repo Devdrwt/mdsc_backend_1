@@ -979,61 +979,6 @@ const updateSettingsPolicies = async (req, res) => {
   });
 };
 
-// Récupérer le planning d'un cours pour l'étudiant
-const getCourseSchedule = async (req, res) => {
-  const studentId = ensureStudent(req, res);
-  if (!studentId) {
-    return;
-  }
-
-  const courseId = parseInt(req.params.courseId, 10);
-  if (Number.isNaN(courseId)) {
-    res.status(400).json({
-      success: false,
-      message: 'Identifiant de cours invalide'
-    });
-    return;
-  }
-
-  try {
-    // Vérifier que l'étudiant est inscrit au cours
-    const [[enrollment]] = await pool.execute(
-      'SELECT id FROM enrollments WHERE user_id = ? AND course_id = ? AND is_active = TRUE',
-      [studentId, courseId]
-    );
-
-    if (!enrollment) {
-      res.status(404).json({
-        success: false,
-        message: 'Vous n\'êtes pas inscrit à ce cours'
-      });
-      return;
-    }
-
-    // Récupérer le planning
-    const CalendarSyncService = require('../services/calendarSyncService');
-    const schedule = await CalendarSyncService.getStudentSchedule(enrollment.id);
-
-    // Marquer les items en retard
-    await CalendarSyncService.markOverdueItems(enrollment.id);
-
-    res.json({
-      success: true,
-      data: {
-        enrollment_id: enrollment.id,
-        course_id: courseId,
-        schedule: schedule
-      }
-    });
-  } catch (error) {
-    console.error('Erreur récupération planning:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Impossible de récupérer le planning'
-    });
-  }
-};
-
 module.exports = {
   getCourses,
   getCourseProgress,
@@ -1045,8 +990,7 @@ module.exports = {
   getCatalogCategories,
   getSettings,
   updateSettings,
-  updateSettingsPolicies,
-  getCourseSchedule
+  updateSettingsPolicies
 };
 
                                                                                                                                                                                       

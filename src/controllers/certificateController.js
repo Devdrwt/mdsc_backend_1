@@ -238,7 +238,7 @@ const downloadCertificate = async (req, res) => {
   }
 };
 
-// Générer un certificat PDF avec QR code
+// Générer un certificat PDF avec un design proche du CertificatePreview (bords bleus, titres, QR)
 const generateCertificatePDF = async (certificate) => {
   return new Promise((resolve, reject) => {
     try {
@@ -253,93 +253,128 @@ const generateCertificatePDF = async (certificate) => {
       const doc = new PDFDocument({
         size: 'A4',
         layout: 'landscape',
-        margin: 50
+        margin: 24 // ~8mm pour éviter toute coupe à l'impression/téléchargement
       });
 
       const stream = fs.createWriteStream(filePath);
       doc.pipe(stream);
 
-      const primaryColor = '#007bff';
-      const secondaryColor = '#28a745';
-      const textColor = '#333333';
+      const primaryBlue = '#006599';
+      const textColor = '#1f2937';
 
-      // Fond
-      doc.rect(0, 0, doc.page.width, doc.page.height)
-         .fill('#f8f9fa');
+      const pageW = doc.page.width;
+      const pageH = doc.page.height;
+      const m = doc.page.margins; // {top,left,right,bottom}
+      const left = m.left;
+      const top = m.top;
+      const usableW = pageW - m.left - m.right;
+      const usableH = pageH - m.top - m.bottom;
 
-      // Bordure
-      doc.rect(30, 30, doc.page.width - 60, doc.page.height - 60)
-         .stroke(primaryColor, 3);
+      // Fond blanc
+      doc.save();
+      doc.rect(0, 0, pageW, pageH).fill('#FFFFFF');
+      doc.restore();
 
-      // En-tête
-      doc.fontSize(24)
-         .fill(primaryColor)
-         .text('MAISON DE LA SOCIÉTÉ CIVILE', 50, 80, { align: 'center' });
+      // Bordure externe (15px ≈ 11.34 pt)
+      const outerThickness = 15 * 0.75; // px -> pt
+      const innerThickness = 4 * 0.75;  // px -> pt
+      const insetGap = 2 * 0.75;       // px -> pt
 
-      doc.fontSize(16)
-         .fill(secondaryColor)
-         .text('CERTIFICAT DE FORMATION', 50, 120, { align: 'center' });
+      // Outer border
+      doc.save();
+      doc.lineWidth(outerThickness);
+      doc.strokeColor(primaryBlue);
+      doc.rect(
+        left + outerThickness / 2,
+        top + outerThickness / 2,
+        usableW - outerThickness,
+        usableH - outerThickness
+      ).stroke();
+      doc.restore();
 
-      // Contenu
-      doc.fontSize(18)
-         .fill(textColor)
-         .text('Ceci certifie que', 50, 180, { align: 'center' });
+      // Inner border
+      const inset = outerThickness + insetGap + innerThickness / 2;
+      const innerW = usableW - (inset * 2);
+      const innerH = usableH - (inset * 2);
+      doc.save();
+      doc.lineWidth(innerThickness);
+      doc.strokeColor(primaryBlue);
+      doc.rect(left + inset, top + inset, innerW, innerH).stroke();
+      doc.restore();
 
-      doc.fontSize(28)
-         .fill(primaryColor)
-         .text(`${certificate.first_name} ${certificate.last_name}`, 50, 220, { align: 'center' });
+      // Titres
+      // "CERTIFICAT DE RECONNAISSANCE"
+      doc.fillColor(textColor);
+      doc.fontSize(30);
+      doc.font('Helvetica-Bold');
+      doc.text('CERTIFICAT DE RECONNAISSANCE', left, top + 66, { width: usableW, align: 'center' });
 
-      doc.fontSize(16)
-         .fill(textColor)
-         .text('a suivi avec succès la formation', 50, 260, { align: 'center' });
+      // "Ce diplôme est décerné à :"
+      doc.moveDown(1);
+      doc.fontSize(16);
+      doc.fillColor(primaryBlue);
+      doc.font('Helvetica');
+      doc.text('Ce diplôme est décerné à :', left, top + 116, { width: usableW, align: 'center' });
 
-      doc.fontSize(22)
-         .fill(primaryColor)
-         .text(`"${certificate.course_title}"`, 50, 300, { align: 'center' });
+      // Nom bénéficiaire
+      const fullName = `${certificate.first_name || ''} ${certificate.last_name || ''}`.trim();
+      doc.font('Helvetica-Bold');
+      doc.fillColor(textColor);
+      doc.fontSize(28);
+      doc.text(fullName || '—', left, top + 151, { width: usableW, align: 'center' });
 
-      // Date et durée
-      const issuedDate = new Date(certificate.issued_at).toLocaleDateString('fr-FR', {
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric'
+      // Description
+      const courseTitle = certificate.course_title || '—';
+      const issuedDate = new Date(certificate.issued_at || Date.now()).toLocaleDateString('fr-FR', {
+        year: 'numeric', month: 'long', day: 'numeric'
       });
+      const paragraphY = top + 196;
+      doc.font('Helvetica');
+      doc.fontSize(14);
+      doc.fillColor(textColor);
+      const desc = `Nous certifions par la présente que ${fullName || '—'} a complété avec succès la formation « ${courseTitle} ». Ses réalisations exceptionnelles, son professionnalisme et sa quête d’excellence constituent une véritable source d’inspiration.`;
+      doc.text(desc, left + usableW * 0.12, paragraphY, { width: usableW * 0.76, align: 'center' });
 
-      doc.fontSize(14)
-         .fill(textColor)
-         .text(`Durée: ${certificate.duration_minutes} minutes`, 50, 360, { align: 'center' })
-         .text(`Délivré le: ${issuedDate}`, 50, 380, { align: 'center' });
+      // Ligne "Fait à ...   Le ..."
+      const lineY = paragraphY + 110;
+      const leftX = left + usableW * 0.25;
+      const midGap = 60;
+      const labelFontSize = 12;
 
-      // Numéro de certificat
-      doc.fontSize(12)
-         .fill('#666666')
-         .text(`N°: ${certificate.certificate_number}`, 50, 420, { align: 'center' });
+      doc.fontSize(labelFontSize);
+      doc.fillColor(textColor);
+      doc.text('Fait à :', leftX, lineY);
+      const locationText = (certificate.location || 'Cotonou, Bénin');
+      const locWidth = doc.widthOfString(locationText);
+      const locX = leftX + doc.widthOfString('Fait à : ') + 6;
+      // Souligner uniquement la valeur
+      doc.text(locationText, locX, lineY);
+      doc.moveTo(locX, lineY + 14).lineTo(locX + locWidth, lineY + 14).strokeColor(textColor).lineWidth(0.5).stroke();
 
-      // QR Code (si disponible)
+      const rightStartX = leftX + 200 + midGap;
+      doc.text('Le :', rightStartX, lineY);
+      const dateWidth = doc.widthOfString(issuedDate);
+      const dateX = rightStartX + doc.widthOfString('Le : ') + 6;
+      doc.text(issuedDate, dateX, lineY);
+      doc.moveTo(dateX, lineY + 14).lineTo(dateX + dateWidth, lineY + 14).strokeColor(textColor).lineWidth(0.5).stroke();
+
+      // QR code (si présent) en bas à gauche et code
       if (certificate.qr_code_url && fs.existsSync(path.join(__dirname, '../../', certificate.qr_code_url))) {
         const qrCodePath = path.join(__dirname, '../../', certificate.qr_code_url);
-        doc.image(qrCodePath, doc.page.width - 150, doc.page.height - 150, {
-          fit: [100, 100]
-        });
-        doc.fontSize(8)
-           .fill('#666666')
-           .text('Vérifier en ligne', doc.page.width - 150, doc.page.height - 50, {
-             width: 100,
-             align: 'center'
-           });
+        doc.image(qrCodePath, left + 26, top + usableH - 180, { fit: [120, 120] });
+        doc.fontSize(10).fillColor('#374151');
+        doc.text(certificate.certificate_code || '', left + 26, top + usableH - 50, { width: 150, align: 'center' });
       }
 
-      // Signature
-      doc.fontSize(14)
-         .fill(textColor)
-         .text('Directeur de la Formation', 50, 480, { align: 'right' });
-
-      doc.moveTo(doc.page.width - 200, 500)
-         .lineTo(doc.page.width - 50, 500)
-         .stroke(textColor, 1);
-
-      doc.fontSize(10)
-         .fill('#666666')
-         .text('Ce certificat est délivré électroniquement et peut être vérifié en ligne', 50, 520, { align: 'center' });
+      // Sceau (si un fichier est disponible côté backend, optionnel)
+      const possibleSealPaths = [
+        path.join(__dirname, '../../public/Sceau.png'),
+        path.join(__dirname, '../../Sceau.png'),
+      ];
+      const sealPath = possibleSealPaths.find(p => fs.existsSync(p));
+      if (sealPath) {
+        doc.image(sealPath, left + usableW - 220, top + usableH - 220, { fit: [150, 150] });
+      }
 
       doc.end();
 
@@ -465,8 +500,22 @@ const generateCertificateForCourse = async (userId, courseId) => {
       return existingCerts[0].id;
     }
 
-    // Générer un code unique pour le certificat (pour QR code)
-    const certificateCode = uuidv4();
+    // Générer un code unique pour le certificat au format Mdsc-xxxxxxxx-Bj (8 chiffres)
+    const generateMdscCode = () => {
+      const num = Math.floor(10000000 + Math.random() * 90000000); // 8 chiffres
+      return `Mdsc-${num}-Bj`;
+    };
+
+    // S'assurer de l'unicité du code
+    let certificateCode = generateMdscCode();
+    for (let i = 0; i < 5; i++) {
+      const [dup] = await pool.execute(
+        'SELECT id FROM certificates WHERE certificate_code = ? LIMIT 1',
+        [certificateCode]
+      );
+      if (!dup || dup.length === 0) break;
+      certificateCode = generateMdscCode();
+    }
     
     // Générer un numéro de certificat unique pour affichage
     const certificateNumber = `MDSC-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
@@ -492,9 +541,9 @@ const generateCertificateForCourse = async (userId, courseId) => {
     const insertQuery = `
       INSERT INTO certificates (
         user_id, course_id, certificate_code, certificate_number, 
-        qr_code_url, issued_at
+        qr_code_url, issued_at, is_valid
       )
-      VALUES (?, ?, ?, ?, ?, NOW())
+      VALUES (?, ?, ?, ?, ?, NOW(), TRUE)
     `;
     const [result] = await pool.execute(insertQuery, [
       userId, 
@@ -504,7 +553,71 @@ const generateCertificateForCourse = async (userId, courseId) => {
       qrCodeUrl
     ]);
 
-    return result.insertId;
+    const insertedCertificateId = result.insertId;
+
+    // Récupérer infos utilisateur et cours pour activité/notification
+    try {
+      const [[userRow = {}] = []] = await pool.execute(
+        'SELECT first_name, last_name FROM users WHERE id = ? LIMIT 1',
+        [userId]
+      );
+      const [[courseRow = {}] = []] = await pool.execute(
+        'SELECT title FROM courses WHERE id = ? LIMIT 1',
+        [courseId]
+      );
+
+      // Enregistrer l'activité "certificat obtenu"
+      try {
+        const { recordActivity } = require('./gamificationController');
+        await recordActivity(
+          userId,
+          'certificate_issued',
+          0,
+          `Certificat obtenu pour "${courseRow.title || 'Votre formation'}"`,
+          {
+            certificateId: insertedCertificateId,
+            certificateCode,
+            certificateNumber,
+            courseId,
+            courseTitle: courseRow.title || 'Votre formation',
+            user: {
+              first_name: userRow.first_name || null,
+              last_name: userRow.last_name || null
+            }
+          }
+        );
+      } catch (activityError) {
+        console.error('Erreur activité (certificate_issued):', activityError);
+      }
+
+      // Créer une notification pour l'étudiant
+      try {
+        await pool.execute(
+          `INSERT INTO notifications (user_id, title, message, type, is_read, action_url, metadata)
+           VALUES (?, ?, ?, ?, FALSE, ?, ?)`,
+          [
+            userId,
+            '🎓 Certificat obtenu',
+            `Votre certificat pour "${courseRow.title || 'votre formation'}" est disponible.`,
+            'certificate_issued',
+            '/dashboard/student/certificates',
+            JSON.stringify({
+              certificateId: insertedCertificateId,
+              certificateCode,
+              certificateNumber,
+              courseId,
+              courseTitle: courseRow.title || 'Votre formation'
+            })
+          ]
+        );
+      } catch (notifError) {
+        console.error('Erreur notification (certificate_issued):', notifError);
+      }
+    } catch (metaError) {
+      console.error('Erreur récupération métadonnées certificat:', metaError);
+    }
+
+    return insertedCertificateId;
 
   } catch (error) {
     console.error('Erreur lors de la génération du certificat:', error);

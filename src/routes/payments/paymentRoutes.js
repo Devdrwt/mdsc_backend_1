@@ -21,5 +21,11 @@ router.get('/my-payments',
   paymentController.getMyPayments
 );
 
+// Finaliser un paiement Kkiapay (appelé par le frontend après succès)
+router.post('/finalize-kkiapay',
+  authenticateToken,
+  paymentController.finalizeKkiapayPayment
+);
+
 module.exports = router;
 

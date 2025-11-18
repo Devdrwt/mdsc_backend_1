@@ -207,6 +207,12 @@ const getCourseProgress = async (req, res) => {
       });
     }
 
+    console.log(`[ProgressController] 📊 Progression retournée pour courseId ${courseId}, userId ${tokenUserId}:`, {
+      enrollmentId: progress.enrollment?.id,
+      progress_percentage: progress.enrollment?.progress_percentage,
+      status: progress.enrollment?.status
+    });
+
     res.json({
       success: true,
       data: progress

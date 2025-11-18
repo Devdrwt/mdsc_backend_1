@@ -1660,7 +1660,8 @@ const getPopularCourses = async (req, res) => {
         AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
         AND COALESCE(c.status, 'draft') != 'draft'
       GROUP BY c.id, lesson_counts.total_lessons
-      ORDER BY enrollment_count DESC, average_rating DESC
+      HAVING COUNT(DISTINCT e.id) >= 1
+      ORDER BY COUNT(DISTINCT e.id) DESC, average_rating DESC
       LIMIT ?
     `;
 

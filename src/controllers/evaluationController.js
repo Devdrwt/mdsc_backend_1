@@ -104,6 +104,88 @@ const getUserEvaluations = async (req, res) => {
   }
 };
 
+// Récupérer les tentatives d'une évaluation finale
+const getEvaluationAttempts = async (req, res) => {
+  try {
+    const evaluationId = req.params.id;
+    const userId = req.user.userId;
+
+    // Vérifier si c'est une évaluation finale (course_evaluations)
+    const [evaluations] = await pool.execute(
+      'SELECT * FROM course_evaluations WHERE id = ? AND is_published = TRUE',
+      [evaluationId]
+    );
+
+    if (evaluations.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Évaluation non trouvée'
+      });
+    }
+
+    const evaluation = evaluations[0];
+    const courseId = evaluation.course_id;
+
+    // Récupérer l'inscription de l'utilisateur pour ce cours
+    const [enrollments] = await pool.execute(
+      'SELECT id FROM enrollments WHERE course_id = ? AND user_id = ? AND is_active = TRUE',
+      [courseId, userId]
+    );
+
+    if (enrollments.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Vous n\'êtes pas inscrit à ce cours'
+      });
+    }
+
+    const enrollmentId = enrollments[0].id;
+
+    // Récupérer les tentatives
+    const [attempts] = await pool.execute(
+      `SELECT 
+        qa.id,
+        qa.score,
+        qa.total_points,
+        qa.percentage,
+        qa.is_passed,
+        qa.started_at,
+        qa.completed_at
+       FROM quiz_attempts qa
+       WHERE qa.enrollment_id = ? AND qa.course_evaluation_id = ?
+       ORDER BY qa.started_at DESC`,
+      [enrollmentId, evaluation.id]
+    );
+
+    res.json({
+      success: true,
+      data: {
+        evaluation_id: evaluation.id,
+        evaluation_title: evaluation.title,
+        max_attempts: evaluation.max_attempts,
+        attempts: attempts.map(attempt => ({
+          id: attempt.id,
+          score: attempt.score,
+          total_points: attempt.total_points,
+          percentage: attempt.percentage,
+          is_passed: Boolean(attempt.is_passed),
+          started_at: attempt.started_at,
+          completed_at: attempt.completed_at
+        })),
+        can_attempt: attempts.length < evaluation.max_attempts,
+        attempts_count: attempts.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la récupération des tentatives:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des tentatives'
+    });
+  }
+};
+
 // Récupérer une évaluation spécifique
 const getEvaluation = async (req, res) => {
   try {
@@ -175,14 +257,180 @@ const submitEvaluation = async (req, res) => {
   try {
     const evaluationId = req.params.id;
     const userId = req.user.userId;
-    const { answers, score } = req.body;
+    const { answers, score, enrollmentId } = req.body;
 
-    // Vérifier que l'évaluation existe et est publiée
-    const evaluationQuery = `
+    // Vérifier d'abord si c'est une évaluation finale (course_evaluations)
+    let evaluationQuery = `
+      SELECT * FROM course_evaluations 
+      WHERE id = ? AND is_published = TRUE
+    `;
+    let [evaluations] = await pool.execute(evaluationQuery, [evaluationId]);
+    let isFinalEvaluation = evaluations.length > 0;
+
+    // Si c'est une évaluation finale, utiliser la logique de submitEvaluationAttempt
+    if (isFinalEvaluation) {
+      const evaluation = evaluations[0];
+      const courseId = evaluation.course_id;
+
+      // Si enrollmentId n'est pas fourni, le récupérer automatiquement
+      let actualEnrollmentId = enrollmentId;
+      if (!actualEnrollmentId) {
+        const [enrollments] = await pool.execute(
+          'SELECT id FROM enrollments WHERE course_id = ? AND user_id = ? AND is_active = TRUE',
+          [courseId, userId]
+        );
+
+        if (enrollments.length === 0) {
+          return res.status(404).json({
+            success: false,
+            message: 'Vous n\'êtes pas inscrit à ce cours'
+          });
+        }
+
+        actualEnrollmentId = enrollments[0].id;
+      } else {
+        // Vérifier l'inscription si fournie
+        const [enrollments] = await pool.execute(
+          'SELECT course_id FROM enrollments WHERE id = ? AND user_id = ? AND is_active = TRUE',
+          [actualEnrollmentId, userId]
+        );
+
+        if (enrollments.length === 0) {
+          return res.status(404).json({
+            success: false,
+            message: 'Inscription non trouvée'
+          });
+        }
+
+        // Vérifier que l'évaluation appartient bien au cours
+        if (enrollments[0].course_id !== courseId) {
+          return res.status(403).json({
+            success: false,
+            message: 'Cette évaluation n\'appartient pas à votre cours'
+          });
+        }
+      }
+
+      // Vérifier les tentatives
+      const [attemptsResult] = await pool.execute(
+        `SELECT COUNT(*) as count FROM quiz_attempts 
+         WHERE enrollment_id = ? AND course_evaluation_id = ?`,
+        [actualEnrollmentId, evaluation.id]
+      );
+
+      if (attemptsResult[0].count >= evaluation.max_attempts) {
+        return res.status(400).json({
+          success: false,
+          message: 'Nombre maximum de tentatives atteint'
+        });
+      }
+
+      // Créer la tentative
+      const [attemptResult] = await pool.execute(
+        `INSERT INTO quiz_attempts (
+          user_id, quiz_id, course_id, course_evaluation_id, enrollment_id, started_at
+        ) VALUES (?, NULL, ?, ?, ?, NOW())`,
+        [userId, courseId, evaluation.id, actualEnrollmentId]
+      );
+
+      const attemptId = attemptResult.insertId;
+
+      // Calculer le score
+      let totalPoints = 0;
+      let earnedPoints = 0;
+      let correctAnswers = 0;
+      let totalQuestions = 0;
+
+      // Récupérer toutes les questions de l'évaluation
+      const [allQuestions] = await pool.execute(
+        'SELECT id, points FROM quiz_questions WHERE course_evaluation_id = ? AND is_active = TRUE',
+        [evaluation.id]
+      );
+
+      // Convertir answers en format standard si c'est un objet
+      let answersArray = [];
+      if (Array.isArray(answers)) {
+        answersArray = answers;
+      } else if (typeof answers === 'object' && answers !== null) {
+        answersArray = Object.entries(answers).map(([question_id, answer_value]) => ({
+          question_id: String(question_id),
+          answer_id: typeof answer_value === 'object' && answer_value !== null ? answer_value.id : answer_value,
+          answer_text: typeof answer_value === 'object' && answer_value !== null ? answer_value.text : String(answer_value || '')
+        }));
+      }
+
+      // Traiter chaque question
+      for (const question of allQuestions) {
+        const questionPoints = Number(question.points) || 0;
+        totalPoints += questionPoints;
+        totalQuestions++;
+
+        const answer = answersArray.find(a => String(a.question_id) === String(question.id));
+        if (!answer) continue;
+
+        const { answer_id, answer_text } = answer;
+
+        if (answer_id) {
+          const [correctAnswersList] = await pool.execute(
+            'SELECT is_correct FROM quiz_answers WHERE id = ? AND question_id = ?',
+            [answer_id, question.id]
+          );
+
+          if (correctAnswersList.length > 0 && correctAnswersList[0].is_correct) {
+            earnedPoints += questionPoints;
+            correctAnswers++;
+          }
+        } else if (answer_text) {
+          const [correctAnswersList] = await pool.execute(
+            'SELECT answer_text FROM quiz_answers WHERE question_id = ? AND is_correct = TRUE',
+            [question.id]
+          );
+
+          if (correctAnswersList.length > 0) {
+            const correctText = correctAnswersList[0].answer_text?.toLowerCase().trim();
+            const userText = answer_text.toLowerCase().trim();
+            if (correctText === userText) {
+              earnedPoints += questionPoints;
+              correctAnswers++;
+            }
+          }
+        }
+      }
+
+      const percentage = totalPoints > 0 ? (earnedPoints / totalPoints) * 100 : 0;
+      const passingScore = Number(evaluation.passing_score) || 70;
+      const isPassed = percentage >= passingScore;
+
+      // Mettre à jour la tentative avec le score
+      await pool.execute(
+        `UPDATE quiz_attempts 
+         SET score = ?, total_points = ?, percentage = ?, is_passed = ?, completed_at = NOW()
+         WHERE id = ?`,
+        [earnedPoints, totalPoints, percentage, isPassed, attemptId]
+      );
+
+      return res.json({
+        success: true,
+        message: 'Évaluation soumise avec succès',
+        data: {
+          attempt_id: attemptId,
+          score: earnedPoints,
+          total_points: totalPoints,
+          percentage: Math.round(percentage * 100) / 100,
+          passed: isPassed,
+          is_passed: isPassed,
+          correct_answers: correctAnswers,
+          total_questions: totalQuestions
+        }
+      });
+    }
+
+    // Si ce n'est pas une évaluation finale, chercher dans l'ancienne table
+    evaluationQuery = `
       SELECT * FROM evaluations 
       WHERE id = ? AND is_published = TRUE
     `;
-    const [evaluations] = await pool.execute(evaluationQuery, [evaluationId]);
+    [evaluations] = await pool.execute(evaluationQuery, [evaluationId]);
 
     if (evaluations.length === 0) {
       return res.status(404).json({
@@ -1139,6 +1387,63 @@ const getEnrollmentEvaluation = async (req, res) => {
 
     const evaluation = evaluations[0];
 
+    // Récupérer les questions liées à l'évaluation finale
+    const [questions] = await pool.execute(
+      `SELECT 
+        qq.id,
+        qq.question_text,
+        qq.question_type,
+        qq.points,
+        qq.order_index,
+        qq.is_active
+       FROM quiz_questions qq
+       WHERE qq.course_evaluation_id = ? AND qq.is_active = TRUE
+       ORDER BY qq.order_index ASC`,
+      [evaluation.id]
+    );
+
+    // Récupérer les réponses pour chaque question (sans révéler les bonnes réponses pour l'étudiant)
+    const questionsWithOptions = await Promise.all(
+      questions.map(async (question) => {
+        const [answers] = await pool.execute(
+          `SELECT 
+            id,
+            answer_text,
+            order_index
+           FROM quiz_answers
+           WHERE question_id = ?
+           ORDER BY order_index ASC`,
+          [question.id]
+        );
+
+        // Pour les questions à choix multiples, retourner les options
+        // Pour les questions vrai/faux, utiliser les réponses de la base de données
+        // Pour les questions à réponse courte, ne pas retourner de réponses
+        let options = [];
+        if (question.question_type === 'multiple_choice') {
+          options = answers.map(a => ({
+            id: a.id,
+            text: a.answer_text
+          }));
+        } else if (question.question_type === 'true_false') {
+          // Utiliser les réponses stockées dans la base (Vrai/Faux avec leurs IDs)
+          options = answers.map(a => ({
+            id: a.id,
+            text: a.answer_text
+          }));
+        }
+
+        return {
+          id: question.id.toString(),
+          question_text: question.question_text,
+          question_type: question.question_type,
+          points: question.points,
+          order_index: question.order_index,
+          options: options
+        };
+      })
+    );
+
     // Récupérer les tentatives précédentes
     const [attempts] = await pool.execute(
       `SELECT * FROM quiz_attempts 
@@ -1150,7 +1455,10 @@ const getEnrollmentEvaluation = async (req, res) => {
     res.json({
       success: true,
       data: {
-        evaluation,
+        evaluation: {
+          ...evaluation,
+          questions: questionsWithOptions
+        },
         previous_attempts: attempts,
         can_attempt: attempts.length < evaluation.max_attempts
       }
@@ -1373,6 +1681,7 @@ const submitEvaluationAttempt = async (req, res) => {
 module.exports = {
   getUserEvaluations,
   getEvaluation,
+  getEvaluationAttempts,
   submitEvaluation,
   getUserEvaluationStats,
   createEvaluation,

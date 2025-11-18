@@ -401,29 +401,56 @@ const generateCertificateForCourse = async (userId, courseId) => {
       throw new Error('Cours non complété');
     }
 
-    // Si il y a un quiz final, vérifier qu'il est réussi
-    const finalQuizQuery = `
-      SELECT q.id, q.passing_score
-      FROM quizzes q
-      WHERE q.course_id = ? AND q.is_final = TRUE AND q.is_published = TRUE
-      ORDER BY q.created_at DESC
+    // Vérifier s'il y a une évaluation finale (course_evaluations) - PRIORITAIRE
+    const finalEvaluationQuery = `
+      SELECT ce.id, ce.passing_score
+      FROM course_evaluations ce
+      WHERE ce.course_id = ? AND ce.is_published = TRUE
+      ORDER BY ce.created_at DESC
       LIMIT 1
     `;
-    const [finalQuizzes] = await pool.execute(finalQuizQuery, [courseId]);
+    const [finalEvaluations] = await pool.execute(finalEvaluationQuery, [courseId]);
 
-    if (finalQuizzes.length > 0) {
-      const finalQuiz = finalQuizzes[0];
-      // Vérifier qu'il y a une tentative réussie du quiz final
+    if (finalEvaluations.length > 0) {
+      const finalEvaluation = finalEvaluations[0];
+      // Utiliser l'enrollment déjà récupéré au début de la fonction
+      const enrollmentId = enrollments[0].id;
       const finalAttemptQuery = `
         SELECT id FROM quiz_attempts
-        WHERE user_id = ? AND quiz_id = ? AND is_passed = TRUE
+        WHERE enrollment_id = ? AND course_evaluation_id = ? AND is_passed = TRUE
         ORDER BY completed_at DESC
         LIMIT 1
       `;
-      const [finalAttempts] = await pool.execute(finalAttemptQuery, [userId, finalQuiz.id]);
+      const [finalAttempts] = await pool.execute(finalAttemptQuery, [enrollmentId, finalEvaluation.id]);
 
       if (finalAttempts.length === 0) {
-        throw new Error('Quiz final non réussi');
+        throw new Error('Évaluation finale non réussie');
+      }
+    } else {
+      // Si pas d'évaluation finale, vérifier s'il y a un quiz final (ancien système)
+      const finalQuizQuery = `
+        SELECT q.id, q.passing_score
+        FROM quizzes q
+        WHERE q.course_id = ? AND q.is_final = TRUE AND q.is_published = TRUE
+        ORDER BY q.created_at DESC
+        LIMIT 1
+      `;
+      const [finalQuizzes] = await pool.execute(finalQuizQuery, [courseId]);
+
+      if (finalQuizzes.length > 0) {
+        const finalQuiz = finalQuizzes[0];
+        // Vérifier qu'il y a une tentative réussie du quiz final
+        const finalAttemptQuery = `
+          SELECT id FROM quiz_attempts
+          WHERE user_id = ? AND quiz_id = ? AND is_passed = TRUE
+          ORDER BY completed_at DESC
+          LIMIT 1
+        `;
+        const [finalAttempts] = await pool.execute(finalAttemptQuery, [userId, finalQuiz.id]);
+
+        if (finalAttempts.length === 0) {
+          throw new Error('Quiz final non réussi');
+        }
       }
     }
 

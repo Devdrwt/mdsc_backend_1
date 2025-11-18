@@ -13,6 +13,7 @@ router.get(
   evaluationController.listFinalEvaluations
 );
 
+router.get('/:id/attempt', authenticateToken, evaluationController.getEvaluationAttempts);
 router.get('/:id', authenticateToken, evaluationController.getEvaluation);
 router.post('/:id/submit', authenticateToken, evaluationController.submitEvaluation);
 

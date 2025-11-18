@@ -1,4 +1,5 @@
 const { pool } = require('../config/database');
+const { buildMediaUrl } = require('../utils/media');
 
 const createNotification = async ({
   userId,
@@ -76,26 +77,118 @@ class ProgressService {
 
     const enrollment = enrollments[0];
 
-    // Récupérer la progression des leçons
+    // Récupérer la progression des leçons (inclure les leçons sans enregistrement de progression)
+    // Inclure aussi les médias uploadés par l'instructeur
     const progressQuery = `
       SELECT 
-        p.*,
-        l.id as lesson_id,
-        l.title as lesson_title,
+        l.id AS lesson_id,
+        l.title AS lesson_title,
         l.module_id,
         l.content_type,
         l.duration_minutes,
-        l.order_index as lesson_order,
-        m.title as module_title,
-        m.order_index as module_order
-      FROM progress p
-      JOIN lessons l ON p.lesson_id = l.id
+        l.order_index AS lesson_order,
+        l.content,
+        l.content_text,
+        l.content_url,
+        l.video_url,
+        l.description,
+        l.is_required,
+        m.title AS module_title,
+        m.order_index AS module_order,
+        p.id AS progress_id,
+        COALESCE(p.status, 'not_started') AS status,
+        COALESCE(p.completion_percentage, 0) AS completion_percentage,
+        COALESCE(p.time_spent, 0) AS time_spent,
+        p.completed_at,
+        p.updated_at,
+        mf.id AS media_file_id,
+        mf.url AS media_url,
+        mf.thumbnail_url,
+        mf.file_category,
+        mf.filename,
+        mf.original_filename,
+        mf.file_size,
+        mf.file_type,
+        mf.duration AS media_duration
+      FROM lessons l
       LEFT JOIN modules m ON l.module_id = m.id
-      WHERE p.enrollment_id = ?
-      ORDER BY COALESCE(m.order_index, 0), l.order_index
+      LEFT JOIN progress p 
+        ON p.lesson_id = l.id 
+        AND p.enrollment_id = ?
+      LEFT JOIN media_files mf ON (
+        l.media_file_id = mf.id 
+        OR (l.id = mf.lesson_id AND l.media_file_id IS NULL)
+      )
+      WHERE l.course_id = ?
+        AND l.is_published = TRUE
+      ORDER BY COALESCE(m.order_index, 0), l.order_index, mf.uploaded_at DESC
     `;
 
-    const [progress] = await pool.execute(progressQuery, [enrollmentId]);
+    const [progress] = await pool.execute(progressQuery, [enrollmentId, enrollment.course_id]);
+    
+    // Grouper les résultats par leçon (une leçon peut avoir plusieurs médias)
+    const lessonsMap = new Map();
+    
+    progress.forEach((row) => {
+      const lessonId = row.lesson_id;
+      
+      if (!lessonsMap.has(lessonId)) {
+        // Créer l'entrée de base pour la leçon
+        lessonsMap.set(lessonId, {
+          id: lessonId,
+          title: row.lesson_title,
+          module_id: row.module_id,
+          content_type: row.content_type,
+          duration_minutes: row.duration_minutes,
+          order_index: row.lesson_order,
+          content: row.content,
+          content_text: row.content_text,
+          content_url: row.content_url,
+          video_url: row.video_url ? buildMediaUrl(row.video_url) : null,
+          description: row.description,
+          is_required: Boolean(row.is_required),
+          module_title: row.module_title,
+          module_order: row.module_order,
+          progress: {
+            id: row.progress_id,
+            status: row.status,
+            completion_percentage: row.completion_percentage,
+            time_spent: row.time_spent,
+            completed_at: row.completed_at,
+            updated_at: row.updated_at
+          },
+          media: [] // Tableau pour stocker tous les médias
+        });
+      }
+      
+      // Ajouter le média s'il existe
+      if (row.media_file_id) {
+        const lesson = lessonsMap.get(lessonId);
+        lesson.media.push({
+          id: row.media_file_id,
+          url: buildMediaUrl(row.media_url),
+          thumbnail_url: row.thumbnail_url ? buildMediaUrl(row.thumbnail_url) : null,
+          file_category: row.file_category,
+          filename: row.filename,
+          original_filename: row.original_filename,
+          file_size: row.file_size,
+          file_type: row.file_type,
+          duration: row.media_duration
+        });
+      }
+    });
+    
+    // Convertir la Map en tableau et formater les médias
+    const formattedProgress = Array.from(lessonsMap.values()).map((lesson) => {
+      // Si un seul média, retourner l'objet directement, sinon retourner le tableau
+      if (lesson.media.length === 0) {
+        lesson.media = null;
+      } else if (lesson.media.length === 1) {
+        lesson.media = lesson.media[0];
+      }
+      // Si plusieurs médias, garder le tableau
+      return lesson;
+    });
 
     // Récupérer les modules et leur statut
     const modulesQuery = `
@@ -115,13 +208,13 @@ class ProgressService {
 
     return {
       enrollment,
-      progress,
+      progress: formattedProgress,
       modules,
       summary: {
-        total_lessons: progress.length,
-        completed_lessons: progress.filter(p => p.status === 'completed').length,
-        in_progress: progress.filter(p => p.status === 'in_progress').length,
-        not_started: progress.filter(p => p.status === 'not_started').length
+        total_lessons: formattedProgress.length,
+        completed_lessons: formattedProgress.filter(p => p.progress.status === 'completed').length,
+        in_progress: formattedProgress.filter(p => p.progress.status === 'in_progress').length,
+        not_started: formattedProgress.filter(p => p.progress.status === 'not_started').length
       }
     };
   }

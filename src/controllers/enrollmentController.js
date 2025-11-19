@@ -583,16 +583,18 @@ const unenrollFromCourse = async (req, res) => {
 
     console.log('✅ [UNENROLL] Paramètres validés - courseId:', courseId, 'userId:', userId);
 
-    // Vérifier que l'utilisateur est inscrit au cours (tous statuts sauf completed/certified)
+    // Vérifier que l'utilisateur est inscrit au cours (tous statuts, tant que l'inscription est active)
     const enrollmentQuery = `
-      SELECT id FROM enrollments 
+      SELECT id, status FROM enrollments 
       WHERE user_id = ? AND course_id = ? 
       AND is_active = TRUE
-      AND (status IS NULL OR status IN ('enrolled', 'in_progress'))
     `;
     const [enrollments] = await pool.execute(enrollmentQuery, [userId, courseId]);
 
+    console.log('🔍 [UNENROLL] Résultat de la requête d\'inscription:', enrollments.length > 0 ? `Inscription trouvée: ${enrollments[0].id}, statut: ${enrollments[0].status}` : 'Aucune inscription active trouvée');
+
     if (enrollments.length === 0) {
+      console.log('❌ [UNENROLL] Aucune inscription active trouvée pour cet utilisateur et ce cours');
       return res.status(404).json({
         success: false,
         message: 'Vous n\'êtes pas inscrit à ce cours'

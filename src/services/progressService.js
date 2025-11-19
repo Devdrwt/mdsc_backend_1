@@ -549,70 +549,7 @@ class ProgressService {
     const [completedResult] = await pool.execute(completedQuery, [enrollmentId]);
     const completedLessons = completedResult[0].completed;
 
-    // Calculer la progression basée sur les leçons (90% max si évaluation finale existe)
-    let progressFromLessons = Math.round((completedLessons / totalLessons) * 100);
-
-    // Vérifier si une évaluation finale existe pour ce cours
-    const finalEvaluationQuery = `
-      SELECT id FROM course_evaluations 
-      WHERE course_id = ? AND is_published = TRUE
-      LIMIT 1
-    `;
-    const [finalEvaluations] = await pool.execute(finalEvaluationQuery, [enrollment.course_id]);
-    const hasFinalEvaluation = finalEvaluations.length > 0;
-
-    // Vérifier si l'évaluation finale est complétée (peu importe si réussie ou échouée)
-    let finalEvaluationCompleted = false;
-    if (hasFinalEvaluation) {
-      const finalEvaluationId = finalEvaluations[0].id;
-      const evaluationAttemptQuery = `
-        SELECT COUNT(*) as completed_count
-        FROM quiz_attempts
-        WHERE course_evaluation_id = ? 
-          AND user_id = ? 
-          AND completed_at IS NOT NULL
-      `;
-      const [attemptResult] = await pool.execute(evaluationAttemptQuery, [
-        finalEvaluationId,
-        enrollment.user_id
-      ]);
-      finalEvaluationCompleted = attemptResult[0].completed_count > 0;
-      
-      console.log(`[ProgressService] 🔍 Vérification évaluation finale pour enrollment ${enrollmentId}:`, {
-        finalEvaluationId,
-        userId: enrollment.user_id,
-        completedCount: attemptResult[0].completed_count,
-        finalEvaluationCompleted
-      });
-    }
-
-    // Calculer la progression finale
-    let progressPercentage;
-    if (hasFinalEvaluation) {
-      // Si évaluation finale existe :
-      // - Modules complétés = 90% max
-      // - Évaluation finale complétée (réussie OU échouée) = 100%
-      if (progressFromLessons >= 100) {
-        // Tous les modules sont complétés
-        if (finalEvaluationCompleted) {
-          // Évaluation finale complétée (peu importe le résultat)
-          progressPercentage = 100;
-          console.log(`[ProgressService] ✅ Progression calculée à 100% (évaluation finale complétée) pour enrollment ${enrollmentId}`);
-        } else {
-          // Modules complétés mais évaluation finale pas encore complétée
-          progressPercentage = 90;
-          console.log(`[ProgressService] ⚠️ Progression limitée à 90% (évaluation finale non complétée) pour enrollment ${enrollmentId}`);
-        }
-      } else {
-        // Pas tous les modules complétés
-        progressPercentage = progressFromLessons;
-        console.log(`[ProgressService] 📊 Progression basée sur les leçons: ${progressPercentage}% pour enrollment ${enrollmentId}`);
-      }
-    } else {
-      // Pas d'évaluation finale, progression normale
-      progressPercentage = progressFromLessons;
-      console.log(`[ProgressService] 📊 Progression normale (pas d'évaluation finale): ${progressPercentage}% pour enrollment ${enrollmentId}`);
-    }
+    const progressPercentage = Math.round((completedLessons / totalLessons) * 100);
 
     // Déterminer le statut
     let status = 'in_progress';
@@ -658,15 +595,6 @@ class ProgressService {
       completedAt,
       enrollmentId
     ]);
-
-    console.log(`[ProgressService] ✅ Progression mise à jour pour enrollment ${enrollmentId}:`, {
-      progress_percentage: progressPercentage,
-      status,
-      completed_lessons: completedLessons,
-      total_lessons: totalLessons,
-      hasFinalEvaluation,
-      finalEvaluationCompleted
-    });
 
     return {
       progress_percentage: progressPercentage,

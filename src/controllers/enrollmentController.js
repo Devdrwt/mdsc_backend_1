@@ -108,6 +108,19 @@ const enrollInCourse = async (req, res) => {
       });
     }
 
+    // Vérifier le nombre maximum d'étudiants
+    if (course.max_students) {
+      const enrollmentCountQuery = 'SELECT COUNT(*) as count FROM enrollments WHERE course_id = ? AND is_active = TRUE';
+      const [countResult] = await pool.execute(enrollmentCountQuery, [courseId]);
+      
+      if (countResult[0].count >= course.max_students) {
+        return res.status(400).json({
+          success: false,
+          message: 'Le cours a atteint le nombre maximum d\'étudiants'
+        });
+      }
+    }
+
     // Vérifier les prérequis si nécessaire (sauf pour les admins et instructeurs du cours)
     const isInstructor = course.instructor_id && parseInt(course.instructor_id) === parseInt(userId);
     const isAdmin = userRole === 'admin';
@@ -167,125 +180,128 @@ const enrollInCourse = async (req, res) => {
       }
     }
 
-    // Utiliser une transaction avec verrou pour éviter les conflits de concurrence
-    let connection = null;
-    
-    try {
-      connection = await pool.getConnection();
-      await connection.beginTransaction();
+    // Vérifier si l'utilisateur est déjà inscrit (seulement les inscriptions actives)
+    const existingEnrollmentQuery = `
+      SELECT id, is_active FROM enrollments 
+      WHERE user_id = ? AND course_id = ?
+    `;
+    const [existingEnrollments] = await pool.execute(existingEnrollmentQuery, [userId, courseId]);
+
+    if (existingEnrollments.length > 0) {
+      const existingEnrollment = existingEnrollments[0];
       
-      // Vérifier le nombre maximum d'étudiants DANS la transaction avec verrou pour éviter les dépassements
-      if (course.max_students) {
-        // Verrouiller le cours pour éviter les race conditions sur max_students
-        const [courseLock] = await connection.execute(
-          'SELECT max_students FROM courses WHERE id = ? FOR UPDATE',
+      // Si l'inscription existe mais est inactive, on la réactive au lieu de créer une nouvelle
+      // MAIS on doit d'abord supprimer toutes les données restantes pour repartir à zéro
+      if (!existingEnrollment.is_active) {
+        console.log(`🔄 [ENROLLMENT] Réactivation de l'inscription existante pour le cours ${courseId}`);
+        const enrollmentId = existingEnrollment.id;
+        
+        // IMPORTANT: Supprimer toutes les données de progression restantes avant de réactiver
+        console.log(`🧹 [ENROLLMENT] Nettoyage des données restantes avant réactivation (enrollment ${enrollmentId})`);
+        
+        try {
+          // Supprimer les tentatives de quiz
+          const [quizDeleted] = await pool.execute(
+            `DELETE FROM quiz_attempts 
+             WHERE (enrollment_id = ?) OR (user_id = ? AND course_id = ?)`,
+            [enrollmentId, userId, courseId]
+          );
+          console.log(`✅ [ENROLLMENT] ${quizDeleted.affectedRows} tentative(s) de quiz supprimée(s) avant réactivation`);
+
+          // Supprimer la progression
+          const [progressDeleted] = await pool.execute(
+            'DELETE FROM progress WHERE enrollment_id = ?',
+            [enrollmentId]
+          );
+          console.log(`✅ [ENROLLMENT] ${progressDeleted.affectedRows} enregistrement(s) de progression supprimé(s)`);
+
+          // Supprimer la progression des leçons
+          const [lessonProgressDeleted] = await pool.execute(
+            'DELETE FROM lesson_progress WHERE user_id = ? AND course_id = ?',
+            [userId, courseId]
+          );
+          console.log(`✅ [ENROLLMENT] ${lessonProgressDeleted.affectedRows} enregistrement(s) de progression de leçon supprimé(s)`);
+        } catch (cleanupError) {
+          console.error('❌ [ENROLLMENT] Erreur lors du nettoyage avant réactivation:', cleanupError);
+          // Continuer quand même la réactivation
+        }
+        
+        // Maintenant réactiver l'inscription
+        await pool.execute(
+          `UPDATE enrollments 
+           SET is_active = TRUE, 
+               enrolled_at = NOW(),
+               payment_id = ?,
+               status = 'enrolled',
+               progress_percentage = 0
+           WHERE id = ?`,
+          [course.price > 0 ? paymentId : null, enrollmentId]
+        );
+        console.log(`✅ [ENROLLMENT] Inscription ${enrollmentId} réactivée avec progression à 0`);
+        
+        // Récupérer le titre du cours pour la notification
+        const [courseTitleResult] = await pool.execute(
+          'SELECT title FROM courses WHERE id = ?',
           [courseId]
         );
-        
-        const enrollmentCountQuery = 'SELECT COUNT(*) as count FROM enrollments WHERE course_id = ? AND is_active = TRUE';
-        const [countResult] = await connection.execute(enrollmentCountQuery, [courseId]);
-        
-        if (countResult[0].count >= course.max_students) {
-          await connection.rollback();
-          return res.status(400).json({
-            success: false,
-            message: 'Le cours a atteint le nombre maximum d\'étudiants'
-          });
+        const courseTitle = courseTitleResult.length > 0 ? courseTitleResult[0].title : 'Votre formation';
+
+        // Créer une notification de réinscription
+        try {
+          await pool.execute(
+            `INSERT INTO notifications (user_id, title, message, type, action_url, metadata)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [
+              userId,
+              '🎓 Réinscription réussie',
+              `Vous êtes à nouveau inscrit au cours "${courseTitle}". Bienvenue de retour !`,
+              'course_enrolled',
+              `/learn/${courseId}`,
+              JSON.stringify({ courseId: courseId, courseTitle: courseTitle, reactivated: true })
+            ]
+          );
+        } catch (notificationError) {
+          console.error('Erreur lors de la création de la notification de réinscription:', notificationError);
         }
-      }
-      
-      // Vérifier si l'utilisateur est déjà inscrit (tous statuts) avec verrou
-      const existingEnrollmentQuery = `
-        SELECT id, is_active, status FROM enrollments 
-        WHERE user_id = ? AND course_id = ?
-        LIMIT 1 FOR UPDATE
-      `;
-      const [existingEnrollments] = await connection.execute(existingEnrollmentQuery, [userId, courseId]);
 
-      if (existingEnrollments.length > 0) {
-        const existingEnrollment = existingEnrollments[0];
-        
-        // Si l'inscription existe mais est inactive OU a le statut 'in_progress', la supprimer complètement pour repartir à zéro
-        const isInactive = !existingEnrollment.is_active;
-        const isInProgress = existingEnrollment.status === 'in_progress';
-        
-        if (isInactive || isInProgress) {
-          console.log(`🗑️ [ENROLLMENT] Suppression de l'inscription pour repartir à zéro (enrollment ${existingEnrollment.id}, reason: ${isInactive ? 'inactive' : 'in_progress'}, status: ${existingEnrollment.status})`);
-          
-          try {
-            // Supprimer toutes les données de progression restantes
-            const [quizDeleted] = await connection.execute(
-              `DELETE FROM quiz_attempts 
-               WHERE (enrollment_id = ?) OR (user_id = ? AND course_id = ?)`,
-              [existingEnrollment.id, userId, courseId]
-            );
-            console.log(`✅ [ENROLLMENT] ${quizDeleted.affectedRows} tentative(s) de quiz supprimée(s)`);
+        // Enregistrer l'activité de réinscription
+        try {
+          const { recordActivity } = require('./gamificationController');
+          await recordActivity(
+            userId,
+            'course_enrolled',
+            10,
+            `Réinscription au cours "${courseTitle}"`,
+            { courseId: courseId, courseTitle: courseTitle, reactivated: true }
+          );
+        } catch (activityError) {
+          console.error('Erreur lors de l\'enregistrement de l\'activité de réinscription:', activityError);
+        }
 
-            const [progressDeleted] = await connection.execute(
-              'DELETE FROM progress WHERE enrollment_id = ?',
-              [existingEnrollment.id]
-            );
-            console.log(`✅ [ENROLLMENT] ${progressDeleted.affectedRows} enregistrement(s) de progression supprimé(s)`);
-
-            const [lessonProgressDeleted] = await connection.execute(
-              'DELETE FROM lesson_progress WHERE user_id = ? AND course_id = ?',
-              [userId, courseId]
-            );
-            console.log(`✅ [ENROLLMENT] ${lessonProgressDeleted.affectedRows} enregistrement(s) de progression de leçon supprimé(s)`);
-            
-            // Supprimer complètement l'enrollment inactif
-            await connection.execute(
-              'DELETE FROM enrollments WHERE id = ?',
-              [existingEnrollment.id]
-            );
-            console.log(`✅ [ENROLLMENT] Enrollment inactif supprimé, création d'un nouveau`);
-          } catch (cleanupError) {
-            console.error('❌ [ENROLLMENT] Erreur lors du nettoyage de l\'enrollment inactif:', cleanupError);
-            // Continuer pour créer un nouvel enrollment
+        return res.status(200).json({
+          success: true,
+          message: 'Réinscription réussie',
+          data: {
+            course_id: courseId,
+            enrolled_at: new Date(),
+            reactivated: true
           }
-          // Continuer pour créer un nouvel enrollment (pas de return ici)
-        } else {
-          // Si l'inscription est active, on refuse
-          await connection.rollback();
-          return res.status(400).json({
-            success: false,
-            message: 'Vous êtes déjà inscrit à ce cours'
-          });
-        }
-      }
-
-      // Créer l'inscription avec status 'enrolled' et payment_id si applicable
-      try {
-        const enrollmentQuery = `
-          INSERT INTO enrollments (user_id, course_id, status, enrolled_at, payment_id)
-          VALUES (?, ?, 'enrolled', NOW(), ?)
-        `;
-        await connection.execute(enrollmentQuery, [userId, courseId, course.price > 0 ? paymentId : null]);
-      } catch (insertError) {
-        // Si erreur UNIQUE constraint (un autre thread a créé l'enrollment entre temps)
-        if (insertError.code === 'ER_DUP_ENTRY' || insertError.errno === 1062) {
-          console.log('[ENROLLMENT] ⚠️ Enrollment already exists (race condition)');
-          await connection.rollback();
-          return res.status(400).json({
-            success: false,
-            message: 'Vous êtes déjà inscrit à ce cours'
-          });
-        } else {
-          throw insertError; // Re-lancer l'erreur si ce n'est pas une erreur UNIQUE
-        }
+        });
       }
       
-      await connection.commit();
-    } catch (error) {
-      if (connection) {
-        await connection.rollback();
-      }
-      throw error;
-    } finally {
-      if (connection) {
-        connection.release();
-      }
+      // Si l'inscription est active, on refuse
+      return res.status(400).json({
+        success: false,
+        message: 'Vous êtes déjà inscrit à ce cours'
+      });
     }
+
+    // Créer l'inscription avec status 'enrolled' et payment_id si applicable
+    const enrollmentQuery = `
+      INSERT INTO enrollments (user_id, course_id, status, enrolled_at, payment_id)
+      VALUES (?, ?, 'enrolled', NOW(), ?)
+    `;
+    await pool.execute(enrollmentQuery, [userId, courseId, course.price > 0 ? paymentId : null]);
 
     // Récupérer le titre du cours pour la notification
     const [courseTitleResult] = await pool.execute(
@@ -583,18 +599,14 @@ const unenrollFromCourse = async (req, res) => {
 
     console.log('✅ [UNENROLL] Paramètres validés - courseId:', courseId, 'userId:', userId);
 
-    // Vérifier que l'utilisateur est inscrit au cours (tous statuts, tant que l'inscription est active)
+    // Vérifier que l'utilisateur est inscrit au cours
     const enrollmentQuery = `
-      SELECT id, status FROM enrollments 
-      WHERE user_id = ? AND course_id = ? 
-      AND is_active = TRUE
+      SELECT id FROM enrollments 
+      WHERE user_id = ? AND course_id = ? AND is_active = TRUE
     `;
     const [enrollments] = await pool.execute(enrollmentQuery, [userId, courseId]);
 
-    console.log('🔍 [UNENROLL] Résultat de la requête d\'inscription:', enrollments.length > 0 ? `Inscription trouvée: ${enrollments[0].id}, statut: ${enrollments[0].status}` : 'Aucune inscription active trouvée');
-
     if (enrollments.length === 0) {
-      console.log('❌ [UNENROLL] Aucune inscription active trouvée pour cet utilisateur et ce cours');
       return res.status(404).json({
         success: false,
         message: 'Vous n\'êtes pas inscrit à ce cours'
@@ -660,12 +672,12 @@ const unenrollFromCourse = async (req, res) => {
         console.log(`ℹ️ [UNENROLL] Pas d'activités utilisateur à supprimer: ${activityError.message}`);
       }
 
-      // 5. SUPPRIMER complètement l'inscription (en dernier pour garder la référence pendant les suppressions)
+      // 5. Désactiver l'inscription (en dernier pour garder la référence pendant les suppressions)
       await connection.execute(
-        'DELETE FROM enrollments WHERE id = ?',
+        'UPDATE enrollments SET is_active = FALSE WHERE id = ?',
         [enrollmentId]
       );
-      console.log(`✅ [UNENROLL] Inscription supprimée complètement`);
+      console.log(`✅ [UNENROLL] Inscription désactivée`);
 
       // Commit de la transaction
       await connection.commit();

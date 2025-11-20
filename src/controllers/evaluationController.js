@@ -30,6 +30,49 @@ const formatCourseStatus = (row) => {
   return row.course_is_published === 1 ? 'published' : 'draft';
 };
 
+const fetchUserFinalEvaluation = async (evaluationId, userId) => {
+  const finalEvaluationQuery = `
+    SELECT ce.*, e.id as enrollment_id, e.course_id
+    FROM course_evaluations ce
+    INNER JOIN courses c ON ce.course_id = c.id
+    INNER JOIN enrollments e ON c.id = e.course_id AND e.user_id = ? AND e.is_active = TRUE
+    WHERE ce.id = ? AND ce.is_published = TRUE
+  `;
+  const [rows] = await pool.execute(finalEvaluationQuery, [userId, evaluationId]);
+  return rows[0] || null;
+};
+
+const getActiveAttemptForEvaluation = async (enrollmentId, evaluationId) => {
+  const [attempts] = await pool.execute(
+    `SELECT id, started_at
+     FROM quiz_attempts 
+     WHERE enrollment_id = ? AND course_evaluation_id = ? AND completed_at IS NULL
+     ORDER BY started_at DESC
+     LIMIT 1`,
+    [enrollmentId, evaluationId]
+  );
+  return attempts[0] || null;
+};
+
+const getAttemptsForEvaluation = async (enrollmentId, evaluationId) => {
+  const [attempts] = await pool.execute(
+    `SELECT 
+      id,
+      score,
+      total_points,
+      percentage,
+      is_passed,
+      started_at,
+      completed_at
+     FROM quiz_attempts
+     WHERE enrollment_id = ? AND course_evaluation_id = ?
+     ORDER BY started_at DESC`,
+    [enrollmentId, evaluationId]
+  );
+
+  return attempts;
+};
+
 // Récupérer les évaluations d'un utilisateur
 const getUserEvaluations = async (req, res) => {
   try {
@@ -349,49 +392,29 @@ const checkEvaluationAttempt = async (req, res) => {
     const evaluationId = req.params.id;
     const userId = req.user.userId;
 
-    // Vérifier si c'est une évaluation finale
-    const finalEvaluationQuery = `
-      SELECT ce.*, e.id as enrollment_id, e.course_id
-      FROM course_evaluations ce
-      INNER JOIN courses c ON ce.course_id = c.id
-      INNER JOIN enrollments e ON c.id = e.course_id AND e.user_id = ? AND e.is_active = TRUE
-      WHERE ce.id = ? AND ce.is_published = TRUE
-    `;
-    const [finalEvaluations] = await pool.execute(finalEvaluationQuery, [userId, evaluationId]);
+    const evaluation = await fetchUserFinalEvaluation(evaluationId, userId);
 
-    if (finalEvaluations.length === 0) {
+    if (!evaluation) {
       return res.status(404).json({
         success: false,
         message: 'Évaluation non trouvée'
       });
     }
 
-    const evaluation = finalEvaluations[0];
-    const enrollmentId = evaluation.enrollment_id;
+    const activeAttempt = await getActiveAttemptForEvaluation(evaluation.enrollment_id, evaluationId);
 
-    // Vérifier les tentatives existantes (non complétées) - SANS EN CRÉER UNE NOUVELLE
-    const [existingAttempts] = await pool.execute(
-      `SELECT id, started_at FROM quiz_attempts 
-       WHERE enrollment_id = ? AND course_evaluation_id = ? AND completed_at IS NULL
-       ORDER BY started_at DESC
-       LIMIT 1`,
-      [enrollmentId, evaluationId]
-    );
-
-    if (existingAttempts.length > 0) {
-      // Retourner la tentative existante
+    if (activeAttempt) {
       return res.json({
         success: true,
         data: {
-          attemptId: existingAttempts[0].id,
-          startedAt: existingAttempts[0].started_at,
+          attemptId: activeAttempt.id,
+          startedAt: activeAttempt.started_at,
           durationMinutes: evaluation.duration_minutes,
           exists: true
         }
       });
     }
 
-    // Pas de tentative existante
     return res.json({
       success: true,
       data: {
@@ -409,69 +432,103 @@ const checkEvaluationAttempt = async (req, res) => {
   }
 };
 
-// Démarrer une tentative d'évaluation finale
-const startEvaluationAttempt = async (req, res) => {
+// Récupérer les tentatives d'une évaluation finale
+const getEvaluationAttempts = async (req, res) => {
   try {
     const evaluationId = req.params.id;
     const userId = req.user.userId;
 
-    // Vérifier si c'est une évaluation finale
-    const finalEvaluationQuery = `
-      SELECT ce.*, e.id as enrollment_id, e.course_id
-      FROM course_evaluations ce
-      INNER JOIN courses c ON ce.course_id = c.id
-      INNER JOIN enrollments e ON c.id = e.course_id AND e.user_id = ? AND e.is_active = TRUE
-      WHERE ce.id = ? AND ce.is_published = TRUE
-    `;
-    const [finalEvaluations] = await pool.execute(finalEvaluationQuery, [userId, evaluationId]);
+    const evaluation = await fetchUserFinalEvaluation(evaluationId, userId);
 
-    if (finalEvaluations.length === 0) {
+    if (!evaluation) {
       return res.status(404).json({
         success: false,
         message: 'Évaluation non trouvée'
       });
     }
 
-    const evaluation = finalEvaluations[0];
+    const attempts = await getAttemptsForEvaluation(evaluation.enrollment_id, evaluationId);
+    const maxAttempts = Number(evaluation.max_attempts || 1);
+    const activeAttempt = attempts.find((attempt) => !attempt.completed_at);
+
+    res.json({
+      success: true,
+      data: {
+        evaluation_id: evaluation.id,
+        evaluation_title: evaluation.title,
+        enrollment_id: evaluation.enrollment_id,
+        course_id: evaluation.course_id,
+        max_attempts: maxAttempts,
+        attempts: attempts.map((attempt) => ({
+          id: attempt.id,
+          score: attempt.score,
+          total_points: attempt.total_points,
+          percentage: attempt.percentage,
+          is_passed: Boolean(attempt.is_passed),
+          started_at: attempt.started_at,
+          completed_at: attempt.completed_at
+        })),
+        can_attempt: attempts.length < maxAttempts,
+        attempts_count: attempts.length,
+        active_attempt: activeAttempt
+          ? {
+              id: activeAttempt.id,
+              started_at: activeAttempt.started_at,
+              duration_minutes: evaluation.duration_minutes
+            }
+          : null,
+        duration_minutes: evaluation.duration_minutes
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la récupération des tentatives:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des tentatives'
+    });
+  }
+};
+
+// Démarrer une tentative d'évaluation finale
+const startEvaluationAttempt = async (req, res) => {
+  try {
+    const evaluationId = req.params.id;
+    const userId = req.user.userId;
+
+    const evaluation = await fetchUserFinalEvaluation(evaluationId, userId);
+
+    if (!evaluation) {
+      return res.status(404).json({
+        success: false,
+        message: 'Évaluation non trouvée'
+      });
+    }
+
     const enrollmentId = evaluation.enrollment_id;
     const courseId = evaluation.course_id;
+    const attempts = await getAttemptsForEvaluation(enrollmentId, evaluationId);
+    const activeAttempt = attempts.find((attempt) => !attempt.completed_at);
+    const maxAttempts = Number(evaluation.max_attempts || 1);
 
-    // Vérifier les tentatives existantes (non complétées)
-    const [existingAttempts] = await pool.execute(
-      `SELECT id, started_at FROM quiz_attempts 
-       WHERE enrollment_id = ? AND course_evaluation_id = ? AND completed_at IS NULL
-       ORDER BY started_at DESC
-       LIMIT 1`,
-      [enrollmentId, evaluationId]
-    );
-
-    if (existingAttempts.length > 0) {
-      // Retourner la tentative existante
+    if (activeAttempt) {
       return res.json({
         success: true,
         data: {
-          attemptId: existingAttempts[0].id,
-          startedAt: existingAttempts[0].started_at,
+          attemptId: activeAttempt.id,
+          startedAt: activeAttempt.started_at,
           durationMinutes: evaluation.duration_minutes
         }
       });
     }
 
-    // Vérifier le nombre total de tentatives
-    const [attemptsResult] = await pool.execute(
-      `SELECT COUNT(*) as count FROM quiz_attempts 
-       WHERE enrollment_id = ? AND course_evaluation_id = ?`,
-      [enrollmentId, evaluationId]
-    );
-
-    if (attemptsResult[0].count >= evaluation.max_attempts) {
+    if (attempts.length >= maxAttempts) {
       return res.status(400).json({
         success: false,
         message: 'Nombre maximum de tentatives atteint'
       });
     }
 
-    // Créer une nouvelle tentative
     const [attemptResult] = await pool.execute(
       `INSERT INTO quiz_attempts (
         user_id, quiz_id, course_id, course_evaluation_id, enrollment_id, started_at
@@ -678,7 +735,7 @@ const submitEvaluation = async (req, res) => {
   try {
     const evaluationId = req.params.id;
     const userId = req.user.userId;
-    const { answers } = req.body;
+    const { answers, score, enrollmentId } = req.body;
 
     // D'abord, vérifier si c'est une évaluation finale (course_evaluations)
     const finalEvaluationQuery = `
@@ -693,8 +750,46 @@ const submitEvaluation = async (req, res) => {
     if (finalEvaluations.length > 0) {
       // C'est une évaluation finale, utiliser la logique de submitEvaluationAttempt
       const evaluation = finalEvaluations[0];
-      const enrollmentId = evaluation.enrollment_id;
+      let actualEnrollmentId = enrollmentId || evaluation.enrollment_id;
       const courseId = evaluation.course_id;
+
+      // Si enrollmentId n'est pas fourni, le récupérer automatiquement
+      if (!actualEnrollmentId) {
+        const [enrollments] = await pool.execute(
+          'SELECT id FROM enrollments WHERE course_id = ? AND user_id = ? AND is_active = TRUE',
+          [courseId, userId]
+        );
+
+        if (enrollments.length === 0) {
+          return res.status(404).json({
+            success: false,
+            message: 'Vous n\'êtes pas inscrit à ce cours'
+          });
+        }
+
+        actualEnrollmentId = enrollments[0].id;
+      } else {
+        // Vérifier l'inscription si fournie
+        const [enrollments] = await pool.execute(
+          'SELECT course_id FROM enrollments WHERE id = ? AND user_id = ? AND is_active = TRUE',
+          [actualEnrollmentId, userId]
+        );
+
+        if (enrollments.length === 0) {
+          return res.status(404).json({
+            success: false,
+            message: 'Inscription non trouvée'
+          });
+        }
+
+        // Vérifier que l'évaluation appartient bien au cours
+        if (enrollments[0].course_id !== courseId) {
+          return res.status(403).json({
+            success: false,
+            message: 'Cette évaluation n\'appartient pas à votre cours'
+          });
+        }
+      }
 
       // Vérifier s'il y a une tentative incomplète existante
       const [existingAttempts] = await pool.execute(
@@ -702,7 +797,7 @@ const submitEvaluation = async (req, res) => {
          WHERE enrollment_id = ? AND course_evaluation_id = ? AND completed_at IS NULL
          ORDER BY started_at DESC
          LIMIT 1`,
-        [enrollmentId, evaluationId]
+        [actualEnrollmentId, evaluationId]
       );
 
       let attemptId;
@@ -717,7 +812,7 @@ const submitEvaluation = async (req, res) => {
         const [attemptsResult] = await pool.execute(
           `SELECT COUNT(*) as count FROM quiz_attempts 
            WHERE enrollment_id = ? AND course_evaluation_id = ? AND completed_at IS NOT NULL`,
-          [enrollmentId, evaluationId]
+          [actualEnrollmentId, evaluationId]
         );
 
         if (attemptsResult[0].count >= evaluation.max_attempts) {
@@ -732,7 +827,7 @@ const submitEvaluation = async (req, res) => {
           `INSERT INTO quiz_attempts (
             user_id, quiz_id, course_id, course_evaluation_id, enrollment_id, started_at
           ) VALUES (?, NULL, ?, ?, ?, NOW())`,
-          [userId, courseId, evaluationId, enrollmentId]
+          [userId, courseId, evaluationId, actualEnrollmentId]
         );
 
         attemptId = attemptResult.insertId;
@@ -740,7 +835,7 @@ const submitEvaluation = async (req, res) => {
       }
 
       // Récupérer toutes les questions de l'évaluation
-      const [questions] = await pool.execute(
+      const [allQuestions] = await pool.execute(
         `SELECT id, points, question_type FROM quiz_questions 
          WHERE course_evaluation_id = ? AND is_active = TRUE`,
         [evaluationId]
@@ -749,69 +844,114 @@ const submitEvaluation = async (req, res) => {
       // Calculer le score
       let totalPoints = 0;
       let earnedPoints = 0;
+      let correctAnswers = 0;
+      let totalQuestions = 0;
 
-      // Convertir answers en format attendu si nécessaire
-      const answersArray = Array.isArray(answers) ? answers : Object.entries(answers).map(([questionId, answerValue]) => {
-        // Trouver la question pour déterminer le type
-        const question = questions.find((q) => String(q.id) === String(questionId));
-        
-        if (question && question.question_type === 'multiple_choice') {
-          // Pour multiple_choice, answerValue devrait être le texte de la réponse
-          // Il faut trouver l'ID de la réponse correspondante
-          return { question_id: questionId, answer_text: answerValue };
-        } else if (question && question.question_type === 'true_false') {
-          return { question_id: questionId, answer_text: answerValue };
-        } else if (question && question.question_type === 'short_answer') {
-          return { question_id: questionId, answer_text: answerValue };
-        }
-        return { question_id: questionId, answer_text: answerValue };
-      });
+      // Convertir answers en format standard si c'est un objet
+      let answersArray = [];
+      if (Array.isArray(answers)) {
+        answersArray = answers;
+      } else if (typeof answers === 'object' && answers !== null) {
+        answersArray = Object.entries(answers).map(([question_id, answer_value]) => ({
+          question_id: String(question_id),
+          answer_id: typeof answer_value === 'object' && answer_value !== null ? answer_value.id : answer_value,
+          answer_text: typeof answer_value === 'object' && answer_value !== null ? answer_value.text : String(answer_value || '')
+        }));
+      }
 
-      // Traiter les réponses
-      for (const answerEntry of answersArray) {
-        const questionId = answerEntry.question_id || answerEntry.questionId;
-        const answerText = answerEntry.answer_text || answerEntry.answerText || answerEntry.value;
-        
-        const question = questions.find((q) => String(q.id) === String(questionId));
-        
-        if (question) {
-          totalPoints += Number(question.points || 1);
-          
-          // Vérifier si la réponse est correcte
-          if (question.question_type === 'multiple_choice' || question.question_type === 'true_false') {
-            // Récupérer la bonne réponse
-            const [correctAnswers] = await pool.execute(
-              `SELECT answer_text FROM quiz_answers 
-               WHERE question_id = ? AND is_correct = 1`,
-              [questionId]
-            );
+      // Traiter chaque question
+      for (const question of allQuestions) {
+        const questionPoints = Number(question.points) || 0;
+        totalPoints += questionPoints;
+        totalQuestions++;
+
+        const answer = answersArray.find(a => String(a.question_id) === String(question.id));
+        if (!answer) continue;
+
+        const { answer_id, answer_text } = answer;
+
+        if (answer_id) {
+          const [correctAnswersList] = await pool.execute(
+            'SELECT is_correct FROM quiz_answers WHERE id = ? AND question_id = ?',
+            [answer_id, question.id]
+          );
+
+          if (correctAnswersList.length > 0 && correctAnswersList[0].is_correct) {
+            earnedPoints += questionPoints;
+            correctAnswers++;
+          }
+        } else if (answer_text) {
+          const [correctAnswersList] = await pool.execute(
+            'SELECT answer_text FROM quiz_answers WHERE question_id = ? AND is_correct = TRUE',
+            [question.id]
+          );
+
+          if (correctAnswersList.length > 0) {
+            const correctText = correctAnswersList[0].answer_text?.toLowerCase().trim();
+            const userText = answer_text.toLowerCase().trim();
             
-            if (correctAnswers.length > 0) {
-              const correctAnswer = correctAnswers[0].answer_text;
-              if (String(answerText).trim() === String(correctAnswer).trim()) {
-                earnedPoints += Number(question.points || 1);
-              }
+            // Comparaison exacte d'abord
+            let isCorrect = correctText === userText;
+            
+            // Si pas de correspondance exacte, faire une comparaison flexible
+            if (!isCorrect && correctText && userText) {
+              // Normaliser les textes : supprimer les accents, ponctuation, espaces multiples
+              const normalize = (text) => {
+                return text
+                  .normalize('NFD')
+                  .replace(/[\u0300-\u036f]/g, '') // Supprimer les accents
+                  .replace(/[^\w\s]/g, ' ') // Remplacer la ponctuation par des espaces
+                  .replace(/\s+/g, ' ') // Remplacer les espaces multiples par un seul
+                  .trim();
+              };
+              
+              const normalizedCorrect = normalize(correctText);
+              const normalizedUser = normalize(userText);
+              
+              // Vérifier si les mots-clés importants sont présents
+              const correctWords = normalizedCorrect.split(' ').filter(w => w.length > 3); // Mots de plus de 3 caractères
+              const userWords = normalizedUser.split(' ');
+              
+              // Compter les mots-clés présents
+              const matchingKeywords = correctWords.filter(word => 
+                userWords.some(uw => uw.includes(word) || word.includes(uw))
+              );
+              
+              // Si au moins 70% des mots-clés sont présents, considérer comme correct
+              const keywordMatchRatio = correctWords.length > 0 
+                ? matchingKeywords.length / correctWords.length 
+                : 0;
+              
+              // Ou si la similarité de Levenshtein est élevée (simplifié : longueur similaire et beaucoup de mots en commun)
+              const wordOverlap = matchingKeywords.length / Math.max(correctWords.length, userWords.length);
+              
+              // Accepter si au moins 70% des mots-clés correspondent OU si 80% de similarité de mots
+              isCorrect = keywordMatchRatio >= 0.7 || wordOverlap >= 0.8;
+              
+              console.log(`[Evaluation] Comparaison flexible pour question ${question.id}:`, {
+                correctText: correctText.substring(0, 100),
+                userText: userText.substring(0, 100),
+                normalizedCorrect: normalizedCorrect.substring(0, 100),
+                normalizedUser: normalizedUser.substring(0, 100),
+                correctWords: correctWords,
+                matchingKeywords: matchingKeywords,
+                keywordMatchRatio: keywordMatchRatio,
+                wordOverlap: wordOverlap,
+                isCorrect: isCorrect
+              });
             }
-          } else if (question.question_type === 'short_answer') {
-            // Pour les réponses courtes, vérifier si la réponse correspond (insensible à la casse)
-            const [correctAnswers] = await pool.execute(
-              `SELECT answer_text FROM quiz_answers 
-               WHERE question_id = ? AND is_correct = 1`,
-              [questionId]
-            );
             
-            if (correctAnswers.length > 0) {
-              const correctAnswer = correctAnswers[0].answer_text;
-              if (String(answerText).trim().toLowerCase() === String(correctAnswer).trim().toLowerCase()) {
-                earnedPoints += Number(question.points || 1);
-              }
+            if (isCorrect) {
+              earnedPoints += questionPoints;
+              correctAnswers++;
             }
           }
         }
       }
 
       const percentage = totalPoints > 0 ? (earnedPoints / totalPoints) * 100 : 0;
-      const isPassed = percentage >= evaluation.passing_score;
+      const passingScore = Number(evaluation.passing_score) || 70;
+      const isPassed = percentage >= passingScore;
 
       // Mettre à jour la tentative
       await pool.execute(
@@ -832,8 +972,8 @@ const submitEvaluation = async (req, res) => {
       // Recalculer la progression du cours après la complétion de l'évaluation finale
       try {
         const ProgressService = require('../services/progressService');
-        await ProgressService.updateCourseProgress(enrollmentId);
-        console.log(`✅ [Evaluation] Progression recalculée pour l'enrollment ${enrollmentId} après soumission de l'évaluation finale`);
+        await ProgressService.updateCourseProgress(actualEnrollmentId);
+        console.log(`✅ [Evaluation] Progression recalculée pour l'enrollment ${actualEnrollmentId} après soumission de l'évaluation finale`);
       } catch (progressError) {
         console.error('❌ [Evaluation] Erreur lors du recalcul de la progression:', progressError);
         // Ne pas bloquer la réponse si le recalcul échoue
@@ -845,7 +985,7 @@ const submitEvaluation = async (req, res) => {
         : `❌ Évaluation finale échouée : ${evaluation.title}`;
       const notificationMessage = isPassed
         ? `Félicitations ! Vous avez réussi l'évaluation finale "${evaluation.title}" avec un score de ${Math.round(percentage)}%.`
-        : `Vous avez obtenu ${Math.round(percentage)}% à l'évaluation finale "${evaluation.title}". Le score minimum requis est ${evaluation.passing_score}%.`;
+        : `Vous avez obtenu ${Math.round(percentage)}% à l'évaluation finale "${evaluation.title}". Le score minimum requis est ${passingScore}%.`;
 
       try {
         await pool.execute(
@@ -873,22 +1013,25 @@ const submitEvaluation = async (req, res) => {
         success: true,
         message: isPassed ? 'Évaluation réussie !' : 'Évaluation soumise',
         data: {
+          attempt_id: attemptId,
           score: earnedPoints,
-          totalPoints: totalPoints,
-          percentage: Math.round(percentage),
-          isPassed: isPassed,
-          attemptId: attemptId,
-          enrollmentId: enrollmentId
+          total_points: totalPoints,
+          percentage: Math.round(percentage * 100) / 100,
+          passed: isPassed,
+          is_passed: isPassed,
+          correct_answers: correctAnswers,
+          total_questions: totalQuestions,
+          enrollmentId: actualEnrollmentId
         }
       });
     }
 
-    // Sinon, c'est une évaluation classique (table evaluations)
-    const evaluationQuery = `
+    // Si ce n'est pas une évaluation finale, chercher dans l'ancienne table
+    let evaluationQuery = `
       SELECT * FROM evaluations 
       WHERE id = ? AND is_published = TRUE
     `;
-    const [evaluations] = await pool.execute(evaluationQuery, [evaluationId]);
+    [evaluations] = await pool.execute(evaluationQuery, [evaluationId]);
 
     if (evaluations.length === 0) {
       return res.status(404).json({
@@ -1924,7 +2067,7 @@ const getEnrollmentEvaluation = async (req, res) => {
 
     const evaluation = evaluations[0];
 
-    // Récupérer les questions de l'évaluation finale
+    // Récupérer les questions liées à l'évaluation finale
     const [questions] = await pool.execute(
       `SELECT 
         qq.id,
@@ -1939,14 +2082,13 @@ const getEnrollmentEvaluation = async (req, res) => {
       [evaluation.id]
     );
 
-    // Récupérer les réponses pour chaque question
-    const questionsWithAnswers = await Promise.all(
+    // Récupérer les réponses pour chaque question (sans révéler les bonnes réponses pour l'étudiant)
+    const questionsWithOptions = await Promise.all(
       questions.map(async (question) => {
         const [answers] = await pool.execute(
           `SELECT 
             id,
             answer_text,
-            is_correct,
             order_index
            FROM quiz_answers
            WHERE question_id = ?
@@ -1954,20 +2096,30 @@ const getEnrollmentEvaluation = async (req, res) => {
           [question.id]
         );
 
+        // Pour les questions à choix multiples, retourner les options
+        // Pour les questions vrai/faux, utiliser les réponses de la base de données
+        // Pour les questions à réponse courte, ne pas retourner de réponses
+        let options = [];
+        if (question.question_type === 'multiple_choice') {
+          options = answers.map(a => ({
+            id: a.id,
+            text: a.answer_text
+          }));
+        } else if (question.question_type === 'true_false') {
+          // Utiliser les réponses stockées dans la base (Vrai/Faux avec leurs IDs)
+          options = answers.map(a => ({
+            id: a.id,
+            text: a.answer_text
+          }));
+        }
+
         return {
-          id: String(question.id),
+          id: question.id.toString(),
           question_text: question.question_text,
           question_type: question.question_type,
-          points: Number(question.points) || 0, // S'assurer que points est un nombre
+          points: Number(question.points) || 0,
           order_index: Number(question.order_index) || 0,
-          options: answers.map(a => a.answer_text),
-          correct_answer: answers.find(a => a.is_correct)?.answer_text || '',
-          answers: answers.map(a => ({
-            id: String(a.id),
-            answer_text: a.answer_text,
-            is_correct: a.is_correct,
-            orderIndex: a.order_index
-          }))
+          options: options
         };
       })
     );
@@ -1996,7 +2148,7 @@ const getEnrollmentEvaluation = async (req, res) => {
       data: {
         evaluation: {
           ...evaluation,
-          questions: questionsWithAnswers
+          questions: questionsWithOptions
         },
         previous_attempts: attempts,
         can_attempt: attempts.length < evaluation.max_attempts
@@ -2232,6 +2384,7 @@ module.exports = {
   getEvaluation,
   checkEvaluationAttempt,
   startEvaluationAttempt,
+  getEvaluationAttempts,
   submitEvaluation,
   getUserEvaluationStats,
   createEvaluation,

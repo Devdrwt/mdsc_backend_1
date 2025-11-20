@@ -122,8 +122,8 @@ const getAllCourses = async (req, res) => {
         u.email as instructor_email,
         u.organization as instructor_organization,
         COALESCE(
-          u.profile_picture,
-          CONCAT('/uploads/profiles/', uf.file_name)
+          CONCAT('/uploads/profiles/', uf.file_name),
+          u.profile_picture
         ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(DISTINCT cr.id) as review_count,
@@ -260,8 +260,8 @@ const getCourseById = async (req, res) => {
         u.email as instructor_email,
         u.organization as instructor_organization,
         COALESCE(
-          u.profile_picture,
-          CONCAT('/uploads/profiles/', uf.file_name)
+          CONCAT('/uploads/profiles/', uf.file_name),
+          u.profile_picture
         ) as instructor_profile_picture,
         stats.average_rating,
         stats.review_count,
@@ -755,8 +755,8 @@ const getCoursesByCategory = async (req, res) => {
         u.email as instructor_email,
         u.organization as instructor_organization,
         COALESCE(
-          u.profile_picture,
-          CONCAT('/uploads/profiles/', uf.file_name)
+          CONCAT('/uploads/profiles/', uf.file_name),
+          u.profile_picture
         ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(DISTINCT cr.id) as review_count,
@@ -838,8 +838,8 @@ const searchCourses = async (req, res) => {
         u.email as instructor_email,
         u.organization as instructor_organization,
         COALESCE(
-          u.profile_picture,
-          CONCAT('/uploads/profiles/', uf.file_name)
+          CONCAT('/uploads/profiles/', uf.file_name),
+          u.profile_picture
         ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(DISTINCT cr.id) as review_count,
@@ -913,8 +913,8 @@ const getFeaturedCourses = async (req, res) => {
         u.email as instructor_email,
         u.organization as instructor_organization,
         COALESCE(
-          u.profile_picture,
-          CONCAT('/uploads/profiles/', uf.file_name)
+          CONCAT('/uploads/profiles/', uf.file_name),
+          u.profile_picture
         ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(DISTINCT cr.id) as review_count,
@@ -1298,8 +1298,8 @@ const getMyCourses = async (req, res) => {
         u.email as instructor_email,
         u.organization as instructor_organization,
         COALESCE(
-          u.profile_picture,
-          CONCAT('/uploads/profiles/', uf.file_name)
+          CONCAT('/uploads/profiles/', uf.file_name),
+          u.profile_picture
         ) as instructor_profile_picture,
         stats.average_rating,
         stats.review_count,
@@ -1622,8 +1622,8 @@ const getPopularCourses = async (req, res) => {
         u.email as instructor_email,
         u.organization as instructor_organization,
         COALESCE(
-          u.profile_picture,
-          CONCAT('/uploads/profiles/', uf.file_name)
+          CONCAT('/uploads/profiles/', uf.file_name),
+          u.profile_picture
         ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(DISTINCT cr.id) as review_count,
@@ -1697,8 +1697,8 @@ const getRecommendedCourses = async (req, res) => {
         u.email as instructor_email,
         u.organization as instructor_organization,
         COALESCE(
-          u.profile_picture,
-          CONCAT('/uploads/profiles/', uf.file_name)
+          CONCAT('/uploads/profiles/', uf.file_name),
+          u.profile_picture
         ) as instructor_profile_picture,
         AVG(cr.rating) as average_rating,
         COUNT(cr.id) as review_count,
@@ -1768,8 +1768,8 @@ const getCourseBySlug = async (req, res) => {
         u.email as instructor_email,
         u.organization as instructor_organization,
         COALESCE(
-          u.profile_picture,
-          CONCAT('/uploads/profiles/', uf.file_name)
+          CONCAT('/uploads/profiles/', uf.file_name),
+          u.profile_picture
         ) as instructor_profile_picture,
         stats.average_rating,
         stats.review_count,
@@ -1830,6 +1830,35 @@ const getCourseBySlug = async (req, res) => {
     }
 
     const course = formatCourseRow(courses[0]);
+
+    // Vérifier si l'utilisateur connecté est inscrit à ce cours
+    let isEnrolled = false;
+    let enrollment = null;
+    const userId = req.user?.id ?? req.user?.userId;
+    
+    if (userId) {
+      const [enrollments] = await pool.execute(
+        `SELECT 
+          e.*,
+          c.title as course_title
+        FROM enrollments e
+        JOIN courses c ON e.course_id = c.id
+        WHERE e.user_id = ? AND e.course_id = ? AND e.is_active = TRUE
+        LIMIT 1`,
+        [userId, course.id]
+      );
+      
+      if (enrollments.length > 0) {
+        isEnrolled = true;
+        enrollment = {
+          id: enrollments[0].id,
+          status: enrollments[0].status,
+          enrolled_at: enrollments[0].enrolled_at,
+          progress_percentage: enrollments[0].progress_percentage,
+          completed_at: enrollments[0].completed_at
+        };
+      }
+    }
 
     // Récupérer les modules du cours avec leurs quiz
     const modulesQuery = `
@@ -1894,7 +1923,11 @@ const getCourseBySlug = async (req, res) => {
     res.json({
       success: true,
       data: {
-        course,
+        course: {
+          ...course,
+          is_enrolled: isEnrolled,
+          enrollment: enrollment
+        },
         modules: modulesWithLessons
       }
     });

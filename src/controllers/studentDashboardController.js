@@ -250,6 +250,7 @@ const getCourseProgress = async (req, res) => {
       return;
     }
 
+    // Récupérer les leçons avec progression (vérifier les deux tables progress et lesson_progress)
     const [lessons] = await pool.execute(
       `
       SELECT
@@ -259,19 +260,28 @@ const getCourseProgress = async (req, res) => {
         l.duration_minutes,
         l.content_type,
         l.is_required,
-        lp.is_completed,
-        lp.completed_at,
-        lp.time_spent_minutes,
+        COALESCE(
+          lp.is_completed,
+          CASE WHEN p.status = 'completed' THEN TRUE ELSE FALSE END,
+          FALSE
+        ) as is_completed,
+        COALESCE(lp.completed_at, p.completed_at) as completed_at,
+        COALESCE(lp.time_spent_minutes, FLOOR(p.time_spent / 60), 0) as time_spent_minutes,
         lp.last_position_seconds
       FROM lessons l
       LEFT JOIN lesson_progress lp
         ON lp.lesson_id = l.id
        AND lp.user_id = ?
+       AND lp.course_id = ?
+      LEFT JOIN enrollments e ON e.user_id = ? AND e.course_id = ? AND e.is_active = TRUE
+      LEFT JOIN progress p
+        ON p.lesson_id = l.id
+       AND p.enrollment_id = e.id
       WHERE l.course_id = ?
         AND l.is_published = TRUE
       ORDER BY l.order_index ASC
     `,
-      [studentId, courseId]
+      [studentId, courseId, studentId, courseId, courseId]
     );
 
     const [quizzes] = await pool.execute(
@@ -979,61 +989,6 @@ const updateSettingsPolicies = async (req, res) => {
   });
 };
 
-// Récupérer le planning d'un cours pour l'étudiant
-const getCourseSchedule = async (req, res) => {
-  const studentId = ensureStudent(req, res);
-  if (!studentId) {
-    return;
-  }
-
-  const courseId = parseInt(req.params.courseId, 10);
-  if (Number.isNaN(courseId)) {
-    res.status(400).json({
-      success: false,
-      message: 'Identifiant de cours invalide'
-    });
-    return;
-  }
-
-  try {
-    // Vérifier que l'étudiant est inscrit au cours
-    const [[enrollment]] = await pool.execute(
-      'SELECT id FROM enrollments WHERE user_id = ? AND course_id = ? AND is_active = TRUE',
-      [studentId, courseId]
-    );
-
-    if (!enrollment) {
-      res.status(404).json({
-        success: false,
-        message: 'Vous n\'êtes pas inscrit à ce cours'
-      });
-      return;
-    }
-
-    // Récupérer le planning
-    const CalendarSyncService = require('../services/calendarSyncService');
-    const schedule = await CalendarSyncService.getStudentSchedule(enrollment.id);
-
-    // Marquer les items en retard
-    await CalendarSyncService.markOverdueItems(enrollment.id);
-
-    res.json({
-      success: true,
-      data: {
-        enrollment_id: enrollment.id,
-        course_id: courseId,
-        schedule: schedule
-      }
-    });
-  } catch (error) {
-    console.error('Erreur récupération planning:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Impossible de récupérer le planning'
-    });
-  }
-};
-
 module.exports = {
   getCourses,
   getCourseProgress,
@@ -1045,8 +1000,7 @@ module.exports = {
   getCatalogCategories,
   getSettings,
   updateSettings,
-  updateSettingsPolicies,
-  getCourseSchedule
+  updateSettingsPolicies
 };
 
                                                                                                                                                                                       

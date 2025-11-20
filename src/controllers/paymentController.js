@@ -163,10 +163,12 @@ const initiatePayment = async (req, res) => {
       });
     }
 
+    const isKkiapay = paymentMethod === 'kkiapay' || paymentProvider === 'kkiapay';
+
     // Pour Kkiapay, on ne crée PAS de paiement "en cours"
     // Le paiement sera créé uniquement dans le webhook après succès/échec
     // Le SDK gère les succès/échecs côté client
-    if (paymentMethod === 'kkiapay') {
+    if (isKkiapay) {
       console.log('[Payment][Kkiapay] 🚀 Starting Kkiapay flow (no payment record yet)');
       
       const finalCustomerFullname =
@@ -216,7 +218,20 @@ const initiatePayment = async (req, res) => {
       });
     }
 
-    // Pour les autres providers (GobiPay, Mobile Money, etc.), on crée le paiement
+    // Pour les autres providers (GobiPay, Mobile Money, Stripe, etc.)
+    const supportedMethods = ['gobipay', 'card', 'mobile_money'];
+    if (!supportedMethods.includes(paymentMethod)) {
+      console.warn('[Payment] ❗ Unsupported payment method (prevented before record creation)', {
+        paymentMethod,
+        paymentProvider,
+      });
+      return res.status(400).json({
+        success: false,
+        message: 'Méthode de paiement non supportée',
+      });
+    }
+
+    // On crée le paiement uniquement pour les méthodes supportées ci-dessus
     // Vérifier qu'un paiement n'est pas déjà en cours
     console.log('[Payment] 🔄 Checking existing payments', { userId, courseId });
     const [existingPayments] = await pool.execute(

@@ -7,105 +7,79 @@ const GobiPayService = require('../services/paymentProviders/gobipayService');
 const KkiapayService = require('../services/paymentProviders/kkiapayService');
 
 const ensureEnrollmentForPayment = async (paymentId) => {
-  let connection = null;
-  
   try {
-    // Obtenir une connexion dédiée pour la transaction
-    connection = await pool.getConnection();
-    await connection.beginTransaction();
-    
-    const [payments] = await connection.execute(
+    const [payments] = await pool.execute(
       'SELECT user_id, course_id FROM payments WHERE id = ? LIMIT 1',
       [paymentId]
     );
 
     if (!payments.length) {
-      console.log('[ensureEnrollmentForPayment] ⚠️ Payment not found', { paymentId });
-      await connection.rollback();
+      console.error('[Payment] ❌ Payment not found for enrollment creation', { paymentId });
       return;
     }
 
     const { user_id, course_id } = payments[0];
 
-    // Utiliser SELECT FOR UPDATE pour verrouiller la ligne et éviter les race conditions
-    const [existing] = await connection.execute(
-      'SELECT id, payment_id, is_active, status FROM enrollments WHERE user_id = ? AND course_id = ? LIMIT 1 FOR UPDATE',
+    // Vérifier si une inscription existe déjà (active ou inactive)
+    const [existingActive] = await pool.execute(
+      'SELECT id, is_active FROM enrollments WHERE user_id = ? AND course_id = ? LIMIT 1',
       [user_id, course_id]
     );
 
-    if (existing.length > 0) {
-      const existingEnrollment = existing[0];
+    if (existingActive.length > 0) {
+      const enrollment = existingActive[0];
       
-      // Si l'enrollment existe mais est inactif OU a le statut 'in_progress', le supprimer complètement pour repartir à zéro
-      const isInactive = existingEnrollment.is_active === false || existingEnrollment.is_active === 0;
-      const isInProgress = existingEnrollment.status === 'in_progress';
-      
-      if (isInactive || isInProgress) {
-        console.log('[ensureEnrollmentForPayment] 🗑️ Removing enrollment to start fresh', {
-          enrollmentId: existingEnrollment.id,
-          reason: isInactive ? 'inactive' : 'in_progress',
-          status: existingEnrollment.status,
-        });
-        await connection.execute(
-          'DELETE FROM enrollments WHERE id = ?',
-          [existingEnrollment.id]
+      // Si l'inscription existe mais est inactive, la réactiver
+      if (!enrollment.is_active) {
+        await pool.execute(
+          `UPDATE enrollments 
+           SET is_active = TRUE, 
+               status = 'enrolled',
+               enrolled_at = NOW(),
+               payment_id = ?,
+               progress_percentage = 0.00,
+               completed_at = NULL
+           WHERE id = ?`,
+          [paymentId, enrollment.id]
         );
-        // Continuer pour créer un nouvel enrollment
+        console.log('[Payment] ✅ Enrollment reactivated', {
+          enrollmentId: enrollment.id,
+          paymentId,
+          user_id,
+          course_id
+        });
       } else {
-        // Enrollment actif existe, mettre à jour le payment_id si nécessaire
-        const existingPaymentId = existingEnrollment.payment_id;
-        if (!existingPaymentId || existingPaymentId !== paymentId) {
-          console.log('[ensureEnrollmentForPayment] 🔄 Updating enrollment payment_id', {
-            enrollmentId: existingEnrollment.id,
-            oldPaymentId: existingPaymentId,
-            newPaymentId: paymentId,
-          });
-          await connection.execute(
-            'UPDATE enrollments SET payment_id = ? WHERE id = ?',
-            [paymentId, existingEnrollment.id]
-          );
-        }
-        console.log('[ensureEnrollmentForPayment] ✅ Enrollment already exists', { enrollmentId: existingEnrollment.id });
-        await connection.commit();
-        return;
+        // Si l'inscription est déjà active, mettre à jour le payment_id si nécessaire
+        await pool.execute(
+          'UPDATE enrollments SET payment_id = ? WHERE id = ? AND (payment_id IS NULL OR payment_id != ?)',
+          [paymentId, enrollment.id, paymentId]
+        );
+        console.log('[Payment] ℹ️ Active enrollment already exists', {
+          enrollmentId: enrollment.id,
+          paymentId,
+          user_id,
+          course_id
+        });
       }
+      return;
     }
 
-    // Créer le nouvel enrollment avec gestion d'erreur UNIQUE constraint
-    console.log('[ensureEnrollmentForPayment] 📝 Creating new enrollment', { user_id, course_id, paymentId });
-    try {
-      await connection.execute(
-        `INSERT INTO enrollments (user_id, course_id, status, enrolled_at, payment_id)
-         VALUES (?, ?, 'enrolled', NOW(), ?)` ,
-        [user_id, course_id, paymentId]
-      );
-      console.log('[ensureEnrollmentForPayment] ✅ Enrollment created');
-    } catch (insertError) {
-      // Si erreur UNIQUE constraint (un autre thread a créé l'enrollment entre temps)
-      if (insertError.code === 'ER_DUP_ENTRY' || insertError.errno === 1062) {
-        console.log('[ensureEnrollmentForPayment] ⚠️ Enrollment already exists (race condition), updating payment_id');
-        // Mettre à jour le payment_id de l'enrollment existant
-        await connection.execute(
-          'UPDATE enrollments SET payment_id = ? WHERE user_id = ? AND course_id = ?',
-          [paymentId, user_id, course_id]
-        );
-        console.log('[ensureEnrollmentForPayment] ✅ Enrollment payment_id updated after race condition');
-      } else {
-        throw insertError; // Re-lancer l'erreur si ce n'est pas une erreur UNIQUE
-      }
-    }
-    
-    await connection.commit();
+    // Créer une nouvelle inscription
+    const [enrollmentResult] = await pool.execute(
+      `INSERT INTO enrollments (user_id, course_id, status, enrolled_at, payment_id, is_active, progress_percentage)
+       VALUES (?, ?, 'enrolled', NOW(), ?, TRUE, 0.00)` ,
+      [user_id, course_id, paymentId]
+    );
+
+    console.log('[Payment] ✅ New enrollment created', {
+      enrollmentId: enrollmentResult.insertId,
+      paymentId,
+      user_id,
+      course_id
+    });
   } catch (error) {
-    if (connection) {
-      await connection.rollback();
-    }
-    console.error('[ensureEnrollmentForPayment] ❌ Error:', error);
-    throw error;
-  } finally {
-    if (connection) {
-      connection.release();
-    }
+    console.error('[Payment] ❌ Error ensuring enrollment for payment:', error);
+    throw error; // Re-throw pour que l'appelant puisse gérer l'erreur
   }
 };
 
@@ -165,11 +139,11 @@ const initiatePayment = async (req, res) => {
 
     const isKkiapay = paymentMethod === 'kkiapay' || paymentProvider === 'kkiapay';
 
-    // Pour Kkiapay, on ne crée PAS de paiement "en cours"
-    // Le paiement sera créé uniquement dans le webhook après succès/échec
-    // Le SDK gère les succès/échecs côté client
+    // Pour Kkiapay, on ne crée PAS de paiement avec statut "pending"
+    // Le paiement sera créé uniquement via les events Kkiapay (success/error) dans le webhook
+    // Pas de vérification de paiement en cours, pas d'enregistrement "pending"
     if (isKkiapay) {
-      console.log('[Payment][Kkiapay] 🚀 Starting Kkiapay flow (no payment record yet)');
+      console.log('[Payment][Kkiapay] 🚀 Starting Kkiapay flow (no payment record, will be created in webhook only)');
       
       const finalCustomerFullname =
         customerFullname ||
@@ -179,7 +153,7 @@ const initiatePayment = async (req, res) => {
       const finalCustomerEmail = req.user?.email || customerEmail || 'student@mdsc.local';
       const finalCustomerPhone = customerPhone || req.user?.phone;
 
-      // Générer un temp_payment_id pour les métadonnées
+      // Générer un temp_payment_id pour les métadonnées (ne sera pas enregistré en DB)
       const tempPaymentId = `temp_${userId}_${courseId}_${Date.now()}`;
 
       // Préparer les données pour le widget Kkiapay
@@ -204,6 +178,7 @@ const initiatePayment = async (req, res) => {
       });
 
       // Retourner les données du widget sans créer de paiement
+      // Le paiement sera créé uniquement dans le webhook Kkiapay avec statut "completed" ou "failed"
       return res.status(201).json({
         success: true,
         message: 'Données du widget Kkiapay préparées',
@@ -219,9 +194,11 @@ const initiatePayment = async (req, res) => {
     }
 
     // Pour les autres providers (GobiPay, Mobile Money, Stripe, etc.)
+    // On ne crée PAS de paiement avec statut "pending"
+    // Le paiement sera créé uniquement dans le webhook après succès/échec
     const supportedMethods = ['gobipay', 'card', 'mobile_money'];
     if (!supportedMethods.includes(paymentMethod)) {
-      console.warn('[Payment] ❗ Unsupported payment method (prevented before record creation)', {
+      console.warn('[Payment] ❗ Unsupported payment method', {
         paymentMethod,
         paymentProvider,
       });
@@ -231,55 +208,18 @@ const initiatePayment = async (req, res) => {
       });
     }
 
-    // On crée le paiement uniquement pour les méthodes supportées ci-dessus
-    // Vérifier qu'un paiement n'est pas déjà en cours
-    console.log('[Payment] 🔄 Checking existing payments', { userId, courseId });
-    const [existingPayments] = await pool.execute(
-      'SELECT id FROM payments WHERE user_id = ? AND course_id = ? AND status IN ("pending", "processing")',
-      [userId, courseId]
-    );
+    const normalizedPaymentMethod = paymentMethod === 'gobipay' ? 'other' : paymentMethod;
+    const normalizedPaymentProvider = paymentMethod === 'gobipay' ? 'gobipay' : paymentProvider;
 
-    if (existingPayments.length > 0) {
-      console.warn('[Payment] ❗ Payment already in progress', { paymentId: existingPayments[0].id });
-      return res.status(400).json({
-        success: false,
-        message: 'Un paiement est déjà en cours pour ce cours'
-      });
-    }
+    // Générer un temp_payment_id pour les métadonnées (ne sera pas enregistré en DB)
+    const tempPaymentId = `temp_${userId}_${courseId}_${Date.now()}`;
 
-    // Normaliser les méthodes de paiement pour la base de données
-    let normalizedPaymentMethod = paymentMethod;
-    let normalizedPaymentProvider = paymentProvider;
-    
-    // GobiPay est mappé vers 'other' car il n'est plus utilisé
-    if (paymentMethod === 'gobipay') {
-      normalizedPaymentMethod = 'other';
-      normalizedPaymentProvider = 'gobipay';
-    }
-
-    console.log('[Payment] 📝 Creating payment record', {
+    console.log('[Payment] 📝 Preparing payment (will be created in webhook)', {
+      tempPaymentId,
       normalizedPaymentMethod,
       normalizedPaymentProvider,
       amount: course.price,
     });
-
-    const [paymentResult] = await pool.execute(
-      `INSERT INTO payments (
-        user_id, course_id, amount, currency,
-        payment_method, payment_provider, status
-      ) VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
-      [
-        userId,
-        courseId,
-        course.price,
-        course.currency || 'XOF',
-        normalizedPaymentMethod,
-        normalizedPaymentProvider || null
-      ]
-    );
-
-    const paymentId = paymentResult.insertId;
-    console.log('[Payment] ✅ Payment record created', { paymentId });
 
     // Initier le paiement selon le provider
     let paymentData = null;
@@ -633,240 +573,260 @@ const getMyPayments = async (req, res) => {
 };
 
 /**
- * Finaliser un paiement Kkiapay (appelé par le frontend après succès)
- * En mode local, Kkiapay ne peut pas envoyer de webhook, donc le frontend appelle cette route
+ * Finaliser un paiement Kkiapay (appelé par le callback frontend après succès)
  */
 const finalizeKkiapayPayment = async (req, res) => {
   try {
-    console.log('[Payment][Kkiapay] 🎯 Finalizing payment - Full request body:', JSON.stringify(req.body, null, 2));
-    console.log('[Payment][Kkiapay] 🎯 User from token:', req.user);
-    
-    const { transaction_id, transactionId, id, amount, currency, metadata } = req.body;
-    const userId = req.user.userId;
-
-    // Extraire transaction_id de plusieurs emplacements possibles
-    const finalTransactionId = transaction_id || transactionId || id || `kkiapay_${Date.now()}`;
-
-    console.log('[Payment][Kkiapay] 🎯 Finalizing payment', {
-      userId,
-      transaction_id: finalTransactionId,
+    const {
+      transaction_id,
+      status,
       amount,
       currency,
-      metadata,
-      hasMetadata: !!metadata,
-      metadataKeys: metadata ? Object.keys(metadata) : [],
+      metadata
+    } = req.body;
+
+    console.log('[Payment][Kkiapay] 📥 finalizeKkiapayPayment called', {
+      transaction_id,
+      status,
+      amount,
+      currency,
+      metadata
     });
 
-    if (!metadata || !metadata.temp_payment_id || !metadata.user_id || !metadata.course_id) {
-      console.error('[Payment][Kkiapay] ❌ Métadonnées incomplètes', {
-        metadata,
-        hasTempPaymentId: !!metadata?.temp_payment_id,
-        hasUserId: !!metadata?.user_id,
-        hasCourseId: !!metadata?.course_id,
-      });
+    // Vérifier que les métadonnées sont présentes
+    if (!metadata || !metadata.user_id || !metadata.course_id) {
+      console.error('[Payment][Kkiapay] ❌ Missing metadata', { metadata });
       return res.status(400).json({
         success: false,
-        message: 'Métadonnées incomplètes',
-        details: {
-          hasMetadata: !!metadata,
-          hasTempPaymentId: !!metadata?.temp_payment_id,
-          hasUserId: !!metadata?.user_id,
-          hasCourseId: !!metadata?.course_id,
-        },
+        message: 'Les métadonnées du paiement sont manquantes'
       });
     }
 
-    const courseId = parseInt(metadata.course_id, 10);
-    const metadataUserId = parseInt(metadata.user_id, 10);
+    const { user_id, course_id } = metadata;
 
-    // Vérifier que l'utilisateur correspond
-    if (userId !== metadataUserId) {
-      return res.status(403).json({
+    // Vérifier que le statut est SUCCESS
+    if (status !== 'SUCCESS') {
+      console.warn('[Payment][Kkiapay] ⚠️ Unexpected status in finalize', { status });
+      return res.status(400).json({
         success: false,
-        message: 'Utilisateur non autorisé',
+        message: 'Statut de paiement invalide'
       });
     }
 
-    // Utiliser une transaction pour éviter les conflits de concurrence
-    let connection = null;
-    let paymentId;
-    
-    try {
-      connection = await pool.getConnection();
-      await connection.beginTransaction();
-      
-      // Vérifier si un paiement existe déjà pour cette transaction (avec verrou)
-      let [existingPayments] = await connection.execute(
-        'SELECT id FROM payments WHERE provider_transaction_id = ? AND payment_provider = "kkiapay" LIMIT 1 FOR UPDATE',
-        [finalTransactionId]
-      );
-
-      if (existingPayments.length > 0) {
-        // Paiement existe déjà, mettre à jour
-        paymentId = existingPayments[0].id;
-        console.log('[Payment][Kkiapay] 🔄 Updating existing payment', { paymentId });
-        
-        await connection.execute(
-          'UPDATE payments SET status = "completed", completed_at = NOW() WHERE id = ?',
-          [paymentId]
-        );
-      } else {
-        // Créer le paiement
-        console.log('[Payment][Kkiapay] 📝 Creating payment record', {
-          userId,
-          courseId,
-          amount,
-          transaction_id: finalTransactionId,
-        });
-
-        // Récupérer les informations du cours
-        const [courses] = await connection.execute(
-          'SELECT id, title, price, currency FROM courses WHERE id = ?',
-          [courseId]
-        );
-
-        if (courses.length === 0) {
-          await connection.rollback();
-          return res.status(404).json({
-            success: false,
-            message: 'Cours non trouvé',
-          });
-        }
-
-        const course = courses[0];
-        const finalAmount = amount || course.price;
-        const finalCurrency = currency || course.currency || 'XOF';
-
-        try {
-          const [paymentResult] = await connection.execute(
-            `INSERT INTO payments (
-              user_id, course_id, amount, currency,
-              payment_method, payment_provider, status,
-              provider_transaction_id, payment_data, completed_at
-            ) VALUES (?, ?, ?, ?, 'kkiapay', 'kkiapay', 'completed', ?, ?, NOW())`,
-            [
-              userId,
-              courseId,
-              finalAmount,
-              finalCurrency,
-              finalTransactionId,
-              JSON.stringify(req.body),
-            ]
-          );
-
-          paymentId = paymentResult.insertId;
-          console.log('[Payment][Kkiapay] ✅ Payment record created', { paymentId });
-        } catch (insertError) {
-          // Si erreur UNIQUE constraint (un autre thread a créé le paiement entre temps)
-          if (insertError.code === 'ER_DUP_ENTRY' || insertError.errno === 1062) {
-            console.log('[Payment][Kkiapay] ⚠️ Payment already exists (race condition), fetching existing');
-            // Récupérer le paiement existant
-            const [existing] = await connection.execute(
-              'SELECT id FROM payments WHERE provider_transaction_id = ? AND payment_provider = "kkiapay" LIMIT 1',
-              [finalTransactionId]
-            );
-            if (existing.length > 0) {
-              paymentId = existing[0].id;
-              await connection.execute(
-                'UPDATE payments SET status = "completed", completed_at = NOW() WHERE id = ?',
-                [paymentId]
-              );
-            } else {
-              throw insertError; // Re-lancer si vraiment pas trouvé
-            }
-          } else {
-            throw insertError; // Re-lancer l'erreur si ce n'est pas une erreur UNIQUE
-          }
-        }
-      }
-      
-      await connection.commit();
-    } catch (error) {
-      if (connection) {
-        await connection.rollback();
-      }
-      throw error;
-    } finally {
-      if (connection) {
-        connection.release();
-      }
-    }
-
-    // CRÉER L'INSCRIPTION - Utiliser la fonction simple qui existe déjà
-    console.log('[Payment][Kkiapay] 📝 Ensuring enrollment for payment (NOUVELLE VERSION)', { paymentId });
-    await ensureEnrollmentForPayment(paymentId);
-    console.log('[Payment][Kkiapay] ✅ Enrollment ensured for payment (NOUVELLE VERSION)', { paymentId });
-
-    // Récupérer le titre du cours pour l'activité
+    // Vérifier que le cours existe
     const [courses] = await pool.execute(
-      'SELECT title FROM courses WHERE id = ?',
-      [courseId]
+      'SELECT id, title, price FROM courses WHERE id = ?',
+      [course_id]
     );
-    const courseTitle = courses.length > 0 ? courses[0].title : 'Formation';
-    
-    // Enregistrer l'activité de paiement réussi
-    try {
-      const { recordActivity } = require('./gamificationController');
-      await recordActivity(
-        userId,
-        'payment_completed',
-        0,
-        `Paiement effectué pour la formation "${courseTitle}"`,
-        {
-          course_id: courseId,
-          course_title: courseTitle,
-          payment_id: paymentId,
-          amount: amount,
-          currency: currency || 'XOF',
-          payment_method: 'kkiapay',
-          transaction_id: finalTransactionId,
-        }
-      );
-      console.log('[Payment][Kkiapay] ✅ Activity recorded for payment');
-    } catch (activityError) {
-      console.error('[Payment][Kkiapay] ❌ Error recording activity:', activityError);
-      // Ne pas bloquer le processus si l'activité échoue
+
+    if (courses.length === 0) {
+      console.error('[Payment][Kkiapay] ❌ Course not found', { course_id });
+      return res.status(404).json({
+        success: false,
+        message: 'Cours non trouvé'
+      });
     }
 
-    // Récupérer l'enrollment final pour la réponse
-    const [finalEnrollment] = await pool.execute(
-      'SELECT id FROM enrollments WHERE user_id = ? AND course_id = ?',
-      [userId, courseId]
+    const course = courses[0];
+
+    // Vérifier qu'un paiement réussi n'existe pas déjà pour cette transaction
+    const [existingPayments] = await pool.execute(
+      'SELECT id FROM payments WHERE provider_transaction_id = ? AND status = "completed"',
+      [transaction_id]
     );
+
+    if (existingPayments.length > 0) {
+      console.log('[Payment][Kkiapay] ℹ️ Payment already finalized', {
+        paymentId: existingPayments[0].id,
+        transaction_id
+      });
+      
+      // Vérifier et créer l'inscription si nécessaire
+      await ensureEnrollmentForPayment(existingPayments[0].id);
+      
+      return res.json({
+        success: true,
+        message: 'Paiement déjà finalisé',
+        data: {
+          payment_id: existingPayments[0].id
+        }
+      });
+    }
+
+    // Créer le paiement avec statut "completed" (pas "pending")
+    const [paymentResult] = await pool.execute(
+      `INSERT INTO payments (
+        user_id, course_id, amount, currency,
+        payment_method, payment_provider, status,
+        provider_transaction_id, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, NOW())`,
+      [
+        user_id,
+        course_id,
+        amount || course.price,
+        currency || 'XOF',
+        'kkiapay',
+        'kkiapay',
+        transaction_id
+      ]
+    );
+
+    const paymentId = paymentResult.insertId;
+    console.log('[Payment][Kkiapay] ✅ Payment created with completed status', {
+      paymentId,
+      transaction_id,
+      user_id,
+      course_id
+    });
+
+    // Créer l'inscription automatiquement
+    await ensureEnrollmentForPayment(paymentId);
+
+    console.log('[Payment][Kkiapay] ✅ Enrollment ensured for payment', { paymentId });
 
     res.json({
       success: true,
       message: 'Paiement finalisé avec succès',
       data: {
         payment_id: paymentId,
-        enrollment_id: finalEnrollment.length > 0 ? finalEnrollment[0].id : null,
-        enrollment_exists: finalEnrollment.length > 0,
-        user_id: userId,
-        course_id: courseId,
-      },
+        transaction_id
+      }
     });
 
   } catch (error) {
     console.error('[Payment][Kkiapay] ❌ Error finalizing payment:', error);
-    console.error('[Payment][Kkiapay] ❌ Error stack:', error.stack);
-    console.error('[Payment][Kkiapay] ❌ Error details:', {
-      message: error.message,
-      code: error.code,
-      sqlState: error.sqlState,
-      sqlMessage: error.sqlMessage,
-      name: error.name,
-    });
-    
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la finalisation du paiement',
-      error: error.message,
-      details: process.env.NODE_ENV === 'development' ? {
-        code: error.code,
-        sqlState: error.sqlState,
-        sqlMessage: error.sqlMessage,
-        stack: error.stack,
-      } : undefined,
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Webhook Kkiapay pour les échecs (appelé par le callback frontend après échec)
+ */
+const handleKkiapayWebhook = async (req, res) => {
+  try {
+    const {
+      transaction_id,
+      status,
+      amount,
+      currency,
+      error_message,
+      metadata
+    } = req.body;
+
+    console.log('[Payment][Kkiapay] 📥 Webhook called', {
+      transaction_id,
+      status,
+      amount,
+      currency,
+      error_message,
+      metadata
+    });
+
+    // Vérifier que les métadonnées sont présentes
+    if (!metadata || !metadata.user_id || !metadata.course_id) {
+      console.error('[Payment][Kkiapay] ❌ Missing metadata in webhook', { metadata });
+      return res.status(400).json({
+        success: false,
+        message: 'Les métadonnées du paiement sont manquantes'
+      });
+    }
+
+    const { user_id, course_id } = metadata;
+
+    // Gérer les statuts SUCCESS et FAILED
+    if (status !== 'SUCCESS' && status !== 'FAILED') {
+      console.warn('[Payment][Kkiapay] ⚠️ Unexpected status in webhook', { status });
+      return res.status(400).json({
+        success: false,
+        message: 'Statut de paiement invalide'
+      });
+    }
+
+    // Vérifier qu'un paiement n'existe pas déjà pour cette transaction
+    const [existingPayments] = await pool.execute(
+      'SELECT id, status FROM payments WHERE provider_transaction_id = ?',
+      [transaction_id]
+    );
+
+    if (existingPayments.length > 0) {
+      console.log('[Payment][Kkiapay] ℹ️ Payment already recorded', {
+        paymentId: existingPayments[0].id,
+        existingStatus: existingPayments[0].status
+      });
+      
+      // Si le paiement existant est "completed" et qu'on reçoit un webhook de succès,
+      // s'assurer que l'inscription existe
+      if (status === 'SUCCESS' && existingPayments[0].status === 'completed') {
+        await ensureEnrollmentForPayment(existingPayments[0].id);
+      }
+      
+      return res.json({
+        success: true,
+        message: 'Paiement déjà enregistré'
+      });
+    }
+
+    // Créer le paiement avec statut approprié (pas "pending")
+    const [courses] = await pool.execute(
+      'SELECT id, title, price FROM courses WHERE id = ?',
+      [course_id]
+    );
+
+    const coursePrice = courses.length > 0 ? courses[0].price : amount;
+    const paymentStatus = status === 'SUCCESS' ? 'completed' : 'failed';
+
+    const [paymentResult] = await pool.execute(
+      `INSERT INTO payments (
+        user_id, course_id, amount, currency,
+        payment_method, payment_provider, status,
+        provider_transaction_id, error_message, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        user_id,
+        course_id,
+        amount || coursePrice,
+        currency || 'XOF',
+        'kkiapay',
+        'kkiapay',
+        paymentStatus,
+        transaction_id || null,
+        paymentStatus === 'failed' ? (error_message || 'Paiement échoué') : null,
+        paymentStatus === 'completed' ? new Date() : null
+      ]
+    );
+
+    const paymentId = paymentResult.insertId;
+    console.log(`[Payment][Kkiapay] ✅ Payment created with ${paymentStatus} status`, {
+      paymentId,
+      transaction_id,
+      user_id,
+      course_id
+    });
+
+    // Si le paiement est réussi, créer l'inscription automatiquement
+    if (paymentStatus === 'completed') {
+      await ensureEnrollmentForPayment(paymentId);
+      console.log('[Payment][Kkiapay] ✅ Enrollment ensured for payment', { paymentId });
+    }
+
+    res.json({
+      success: true,
+      message: 'Échec de paiement enregistré',
+      data: {
+        payment_id: paymentId
+      }
+    });
+
+  } catch (error) {
+    console.error('[Payment][Kkiapay] ❌ Error handling webhook:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors du traitement du webhook',
+      error: error.message
     });
   }
 };
@@ -875,6 +835,7 @@ module.exports = {
   initiatePayment,
   getPaymentStatus,
   getMyPayments,
-  finalizeKkiapayPayment
+  finalizeKkiapayPayment,
+  handleKkiapayWebhook
 };
 

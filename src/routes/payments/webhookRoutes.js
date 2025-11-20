@@ -13,23 +13,5 @@ router.post('/mobile-money/:provider',
   webhookController.handleMobileMoneyWebhook
 );
 
-// Webhook Kkiapay
-router.post('/kkiapay',
-  express.json(),
-  (req, res, next) => {
-    console.log('[Webhook][Kkiapay] 📨 Route called', {
-      method: req.method,
-      url: req.url,
-      body: req.body,
-      headers: {
-        'content-type': req.headers['content-type'],
-        'authorization': req.headers['authorization'] ? 'present' : 'missing',
-      },
-    });
-    next();
-  },
-  webhookController.handleKkiapayWebhook
-);
-
 module.exports = router;
 

@@ -172,46 +172,6 @@ const sendMessage = async (req, res) => {
       console.error('⚠️ Erreur lors de la création de la notification:', notificationError);
     }
 
-    // 🔹 Enregistrer l'activité pour l'expéditeur (message envoyé)
-    try {
-      const { recordActivity } = require('./gamificationController');
-      await recordActivity(
-        senderId,
-        'message_sent',
-        0, // Pas de points pour l'envoi de message
-        `Message envoyé à ${recipientName}${subject ? ` : "${subject}"` : ''}`,
-        {
-          message_id: messageId,
-          recipient_id: recipientId,
-          recipient_name: recipientName,
-          recipient_email: recipientEmail,
-          subject: subject
-        }
-      );
-    } catch (activityError) {
-      console.error('⚠️ Erreur lors de l\'enregistrement de l\'activité (message envoyé):', activityError);
-    }
-
-    // 🔹 Enregistrer l'activité pour le destinataire (message reçu)
-    try {
-      const { recordActivity } = require('./gamificationController');
-      await recordActivity(
-        recipientId,
-        'message_received',
-        0, // Pas de points pour la réception de message
-        `Message reçu de ${senderName}${subject ? ` : "${subject}"` : ''}`,
-        {
-          message_id: messageId,
-          sender_id: senderId,
-          sender_name: senderName,
-          sender_email: sender.email,
-          subject: subject
-        }
-      );
-    } catch (activityError) {
-      console.error('⚠️ Erreur lors de l\'enregistrement de l\'activité (message reçu):', activityError);
-    }
-
     // 🔹 Réponse enrichie (sender + recipient)
     res.status(201).json({
       success: true,

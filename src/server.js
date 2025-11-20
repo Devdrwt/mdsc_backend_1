@@ -13,49 +13,25 @@ const session = require('express-session');
 try {
   const envPath = path.resolve(process.cwd(), '.env');
   if (fs.existsSync(envPath)) {
-    let content;
-    try {
-      content = fs.readFileSync(envPath, 'utf8');
-    } catch (readError) {
-      // Si UTF-8 échoue, essayer latin1 puis nettoyer
-      try {
-        content = fs.readFileSync(envPath, 'latin1');
-        // Nettoyer les caractères espacés (problème d'encodage)
-        content = content.replace(/\u00A0/g, ' ').replace(/[\u2000-\u200B]/g, '');
-      } catch (e2) {
-        console.warn('⚠️ Impossible de lire .env:', e2.message);
-        content = '';
-      }
-    }
-    
+    const content = fs.readFileSync(envPath, 'utf8');
     const whitelist = new Set([
       'GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','API_URL','FRONTEND_URL','FRONTEND_URLS',
       'EMAIL_ENABLED','EMAIL_HOST','EMAIL_PORT','EMAIL_SECURE','EMAIL_USER','EMAIL_PASSWORD','EMAIL_FROM',
-      'VERIFY_EMAIL_URL','RESET_PASSWORD_URL','EMAIL_VERIFICATION_EXPIRE','PASSWORD_RESET_EXPIRE',
-      'JWT_SECRET','JWT_EXPIRE','JWT_REFRESH_SECRET','JWT_REFRESH_EXPIRE',
-      'KKIAPAY_PUBLIC_KEY','KKIAPAY_SECRET_KEY','KKIAPAY_BASE_URL','KKIAPAY_SANDBOX','KKIAPAY_CURRENCY'
+      'VERIFY_EMAIL_URL','RESET_PASSWORD_URL','EMAIL_VERIFICATION_EXPIRE','PASSWORD_RESET_EXPIRE'
     ]);
-    
-    let loadedCount = 0;
     content.split(/\r?\n/).forEach(line => {
-      // Nettoyer la ligne des caractères invisibles
-      line = line.replace(/[\u2000-\u200B\u00A0]/g, ' ').trim();
-      if (!line || line.startsWith('#')) return;
+      if (!line || line.trim().startsWith('#')) return;
       const idx = line.indexOf('=');
       if (idx === -1) return;
       const key = line.slice(0, idx).trim();
-      const val = line.slice(idx + 1).trim().replace(/^["']|["']$/g, ''); // Retirer les guillemets
-      if (whitelist.has(key) && val) {
+      const val = line.slice(idx + 1).trim();
+      if (whitelist.has(key)) {
         process.env[key] = val; // forcer l'affectation
-        loadedCount++;
       }
     });
-    if (loadedCount > 0) {
-      console.log(`✅ Fallback loader: ${loadedCount} variable(s) chargée(s) depuis .env`);
-    }
   }
 } catch (e) {
-  console.warn('⚠️ Erreur dans le fallback loader:', e.message);
+  // ignore fallback errors
 }
 
 const { testConnection } = require('./config/database');
@@ -429,24 +405,7 @@ const startServer = async () => {
     const hasGoogle = !!(gid && gsec);
     const emailUserRaw = (process.env.EMAIL_USER || '').trim();
     const maskedEmailUser = emailUserRaw ? emailUserRaw.replace(/.(?=.{2})/g, '*') : '';
-    const jwtSecret = (process.env.JWT_SECRET || '').trim();
-    const hasJWT = !!jwtSecret;
-    const kkiapayPublicKey = (process.env.KKIAPAY_PUBLIC_KEY || '').trim();
-    const kkiapaySecretKey = (process.env.KKIAPAY_SECRET_KEY || '').trim();
-    const hasKkiapay = !!(kkiapayPublicKey && kkiapaySecretKey);
-    console.log(`Config check → Google:${hasGoogle ? 'OK' : 'KO'}(idLen=${gid.length},secLen=${gsec.length}) EmailUser:${maskedEmailUser || 'NONE'}(len=${emailUserRaw.length}) JWT:${hasJWT ? 'OK' : 'KO'}(len=${jwtSecret.length}) Kkiapay:${hasKkiapay ? 'OK' : 'KO'}(pubLen=${kkiapayPublicKey.length},secLen=${kkiapaySecretKey.length})`);
-    if (!hasJWT) {
-      console.error('❌ CRITIQUE: JWT_SECRET n\'est pas défini ! L\'authentification ne fonctionnera pas.');
-    }
-    if (!hasKkiapay) {
-      console.warn('⚠️ Kkiapay non configuré - KKIAPAY_PUBLIC_KEY et KKIAPAY_SECRET_KEY requis pour les paiements.');
-    } else {
-      // Vérifier si c'est une Private API Key
-      if (kkiapayPublicKey.startsWith('tpk_') || kkiapayPublicKey.startsWith('pk_')) {
-        console.warn('⚠️ Kkiapay: La clé publique semble être une Private API Key (commence par tpk_/pk_)');
-        console.warn('⚠️ Kkiapay: Le widget nécessite la Public API Key (sans préfixe)');
-      }
-    }
+    console.log(`Config check → Google:${hasGoogle ? 'OK' : 'KO'}(idLen=${gid.length},secLen=${gsec.length}) EmailUser:${maskedEmailUser || 'NONE'}(len=${emailUserRaw.length})`);
 
     // Vérifier la configuration email (optionnel)
     await verifyEmailConfig().catch(err => {

@@ -831,6 +831,9 @@ class ProgressService {
       progressPercentage = progressFromLessons;
       console.log(`[ProgressService] 📊 Progression normale (pas d'évaluation finale): ${progressPercentage}% pour enrollment ${enrollmentId}`);
     }
+    
+    // Arrondir la progression finale
+    progressPercentage = Math.round(progressPercentage);
 
     // Déterminer le statut
     let status = 'in_progress';
@@ -876,15 +879,6 @@ class ProgressService {
       completedAt,
       enrollmentId
     ]);
-
-    console.log(`[ProgressService] ✅ Progression mise à jour pour enrollment ${enrollmentId}:`, {
-      progress_percentage: progressPercentage,
-      status,
-      completed_lessons: completedLessons,
-      total_lessons: totalLessons,
-      hasFinalEvaluation,
-      finalEvaluationCompleted
-    });
 
     return {
       progress_percentage: progressPercentage,

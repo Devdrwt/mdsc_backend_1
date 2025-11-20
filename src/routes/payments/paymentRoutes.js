@@ -21,10 +21,16 @@ router.get('/my-payments',
   paymentController.getMyPayments
 );
 
-// Finaliser un paiement Kkiapay (appelé par le frontend après succès)
+// Finaliser un paiement Kkiapay (callback après succès)
+// Note: L'authentification est optionnelle car le callback peut venir du widget Kkiapay
 router.post('/finalize-kkiapay',
-  authenticateToken,
+  authenticateToken, // Garder l'authentification pour sécurité, mais gérer le cas sans token
   paymentController.finalizeKkiapayPayment
+);
+
+// Webhook Kkiapay (callback après échec)
+router.post('/webhook/kkiapay',
+  paymentController.handleKkiapayWebhook
 );
 
 module.exports = router;

@@ -4,16 +4,36 @@ class FedapayService {
   constructor(config = null) {
     // Si une configuration est fournie, l'utiliser (depuis la DB)
     if (config) {
-      let baseUrl = config.base_url || this.getDefaultBaseUrl(config.is_sandbox);
-      // S'assurer qu'on n'utilise pas l'URL du CDN par erreur
-      if (baseUrl.includes('cdn.fedapay.com')) {
-        baseUrl = this.getDefaultBaseUrl(config.is_sandbox);
-      }
-      this.baseUrl = baseUrl.replace(/\/$/, '');
       this.publicKey = config.public_key ? String(config.public_key).trim() : null;
       this.secretKey = config.secret_key ? String(config.secret_key).trim() : null;
       this.privateKey = config.private_key ? String(config.private_key).trim() : null;
-      this.sandbox = config.is_sandbox !== undefined ? config.is_sandbox : true;
+      
+      // Détecter automatiquement l'environnement basé sur le préfixe de la clé secrète (même logique que loadConfig)
+      let detectedSandbox = config.is_sandbox !== undefined ? config.is_sandbox : true;
+      
+      if (this.secretKey) {
+        // Les clés production commencent par 'sk_live_'
+        // Les clés sandbox commencent par 'sk_test_' ou 'sk_sandbox_'
+        if (this.secretKey.startsWith('sk_live_')) {
+          detectedSandbox = false;
+          console.log('[Fedapay] 🔴 Clé production détectée dans le constructeur (sk_live_), passage en mode production');
+        } else if (this.secretKey.startsWith('sk_test_') || this.secretKey.startsWith('sk_sandbox_')) {
+          detectedSandbox = true;
+          console.log('[Fedapay] 🟡 Clé sandbox détectée dans le constructeur, utilisation de l\'environnement sandbox');
+        } else {
+          // Si aucune détection automatique, utiliser le flag de la DB
+          console.log('[Fedapay] ℹ️ Aucune détection automatique dans le constructeur, utilisation du flag is_sandbox de la DB:', detectedSandbox);
+        }
+      }
+      
+      this.sandbox = detectedSandbox;
+      
+      // Utiliser l'URL fournie dans la DB si présente, sinon utiliser l'URL par défaut selon l'environnement détecté
+      let baseUrl = config.base_url;
+      if (!baseUrl || baseUrl.includes('cdn.fedapay.com')) {
+        baseUrl = this.getDefaultBaseUrl(this.sandbox);
+      }
+      this.baseUrl = baseUrl.replace(/\/$/, '');
     } else {
       // Fallback sur les variables d'environnement
       const isSandbox = process.env.FEDAPAY_SANDBOX === 'true' || process.env.NODE_ENV !== 'production';
@@ -67,8 +87,9 @@ class FedapayService {
           });
         }
         
-        // Détecter automatiquement l'environnement basé sur le préfixe de la clé secrète
+        // Détecter automatiquement l'environnement basé sur le préfixe de la clé secrète (même logique que le constructeur)
         let detectedSandbox = config.is_sandbox !== undefined ? config.is_sandbox : true;
+        
         if (this.secretKey) {
           // Les clés production commencent par 'sk_live_'
           // Les clés sandbox commencent par 'sk_test_' ou 'sk_sandbox_'
@@ -78,6 +99,9 @@ class FedapayService {
           } else if (this.secretKey.startsWith('sk_test_') || this.secretKey.startsWith('sk_sandbox_')) {
             detectedSandbox = true;
             console.log('[Fedapay] 🟡 Clé sandbox détectée, utilisation de l\'environnement sandbox');
+          } else {
+            // Si aucune détection automatique, utiliser le flag de la DB
+            console.log('[Fedapay] ℹ️ Aucune détection automatique, utilisation du flag is_sandbox de la DB:', detectedSandbox);
           }
         }
         
@@ -93,6 +117,9 @@ class FedapayService {
         console.log('[Fedapay] ✅ Configuration chargée depuis la base de données', {
           isSandbox: this.sandbox,
           baseUrl: this.baseUrl,
+          publicKeyPrefix: this.publicKey ? `${this.publicKey.substring(0, 20)}...` : 'missing',
+          publicKeySuffix: this.publicKey ? `...${this.publicKey.substring(this.publicKey.length - 10)}` : 'missing',
+          publicKeyLength: this.publicKey ? this.publicKey.length : 0,
           secretKeyLength: this.secretKey ? this.secretKey.length : 0,
           secretKeyPrefix: this.secretKey ? `${this.secretKey.substring(0, 15)}...` : 'missing',
           secretKeySuffix: this.secretKey ? `...${this.secretKey.substring(this.secretKey.length - 15)}` : 'missing',
@@ -164,7 +191,10 @@ class FedapayService {
   }
 
   /**
-   * Créer une transaction Fedapay
+   * Préparer les données pour le widget Fedapay (côté client)
+   * Fedapay utilise le SDK JavaScript Checkout.js côté client
+   * Cette méthode retourne les informations nécessaires pour initialiser le widget
+   * PAS d'appel API - le widget gère tout côté client
    */
   async createTransaction(transactionPayload = {}) {
     // Essayer de charger la config depuis la DB si pas déjà configuré
@@ -182,115 +212,45 @@ class FedapayService {
       throw new Error('Montant de transaction Fedapay invalide');
     }
 
-    console.log('[Fedapay] 🧾 Création de transaction', {
+    console.log('[Fedapay] 🧾 Préparation des données pour le widget', {
       amount: amount,
       currency: (transactionPayload.currency || this.defaultCurrency).toUpperCase(),
       description: transactionPayload.description || 'Paiement formation MdSC',
     });
 
-    // Utiliser l'URL fournie dans la configuration (DB ou env)
-    // S'assurer seulement qu'on n'utilise pas l'URL du CDN par erreur
-    let finalBaseUrl = this.baseUrl;
-    if (!finalBaseUrl || finalBaseUrl.includes('cdn.fedapay.com')) {
-      // Si pas d'URL ou URL CDN, utiliser l'URL par défaut selon l'environnement
-      finalBaseUrl = this.getDefaultBaseUrl(this.sandbox);
+    // Pour Fedapay, on retourne simplement les infos nécessaires pour le widget
+    // Le widget sera créé côté client via le SDK JavaScript Checkout.js
+    // IMPORTANT: public_key doit être la clé publique Fedapay
+    if (!this.publicKey) {
+      throw new Error('Clé publique Fedapay manquante. Vérifiez la configuration dans l\'interface admin.');
     }
     
-    console.log('[Fedapay] 🔧 Configuration API', {
-      baseUrl: this.baseUrl,
-      finalBaseUrl,
-      isSandbox: this.sandbox,
-      publicKey: this.publicKey ? `${this.publicKey.substring(0, 10)}...` : 'missing',
-      secretKey: this.secretKey ? `${this.secretKey.substring(0, 10)}...` : 'missing',
-      secretKeyLength: this.secretKey ? this.secretKey.length : 0,
+    // S'assurer que sandbox est un booléen explicite
+    const sandboxValue = Boolean(this.sandbox);
+    const environmentValue = sandboxValue ? 'sandbox' : 'live';
+    
+    console.log('[Fedapay] 📤 Envoi de la clé publique au frontend', {
+      keyPrefix: this.publicKey ? this.publicKey.substring(0, 20) + '...' : 'null',
+      keySuffix: this.publicKey ? '...' + this.publicKey.substring(this.publicKey.length - 10) : 'null',
+      keyLength: this.publicKey ? this.publicKey.length : 0,
+      sandbox: sandboxValue,
+      environment: environmentValue,
+      environmentType: typeof environmentValue,
     });
-
-    try {
-      const payload = {
-        description: transactionPayload.description || 'Paiement formation MdSC',
+    
+    return {
+      raw: {
+        public_key: this.publicKey,
+        environment: environmentValue, // 'sandbox' ou 'live' en string
+        sandbox: sandboxValue, // Booléen pour compatibilité
         amount: amount,
-        currency: {
-          iso: (transactionPayload.currency || this.defaultCurrency).toUpperCase()
-        },
-        callback_url: transactionPayload.success_url || this.getRedirectUrl('success'),
-        cancel_url: transactionPayload.fail_url || this.getRedirectUrl('failed'),
-        customer: {
-          firstname: (transactionPayload.customer_fullname || '').split(' ')[0] || 'Étudiant',
-          lastname: (transactionPayload.customer_fullname || '').split(' ').slice(1).join(' ') || 'MdSC',
-          email: transactionPayload.customer_email || transactionPayload.customerEmail || 'student@mdsc.local',
-          phone_number: transactionPayload.customer_phone || transactionPayload.customerPhone || null,
-        },
-        metadata: transactionPayload.metadata || {},
-      };
-
-      const apiUrl = `${finalBaseUrl}/v1/transactions`;
-      console.log('[Fedapay] 📡 Appel API', { 
-        url: apiUrl, 
-        method: 'POST',
-        hasSecretKey: !!this.secretKey,
-        secretKeyPrefix: this.secretKey ? `${this.secretKey.substring(0, 10)}...` : 'missing',
-      });
-
-      if (!this.secretKey) {
-        throw new Error('Clé secrète Fedapay manquante');
-      }
-
-      // Nettoyer la clé secrète (enlever les espaces avant/après)
-      const cleanSecretKey = this.secretKey.trim();
-      
-      if (!cleanSecretKey) {
-        throw new Error('Clé secrète Fedapay vide après nettoyage');
-      }
-
-      console.log('[Fedapay] 🔐 Authentification', {
-        secretKeyLength: cleanSecretKey.length,
-        secretKeyPrefix: `${cleanSecretKey.substring(0, 10)}...`,
-        secretKeySuffix: `...${cleanSecretKey.substring(cleanSecretKey.length - 10)}`,
-      });
-
-      // Fedapay utilise l'en-tête Authorization avec la clé secrète directement (pas Bearer)
-      // Format: Authorization: sk_live_xxx ou Authorization: sk_test_xxx
-      const response = await axios.post(
-        apiUrl,
-        payload,
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${cleanSecretKey}`, // Format Bearer selon la doc Fedapay
-            'FedaPay-Version': '1',
-          },
-          timeout: 15000,
-        }
-      );
-
-      const data = response.data?.data || response.data || {};
-      console.log('[Fedapay] ✅ Transaction créée', {
-        transactionId: data.id || data.transaction?.id,
-        status: data.status || data.transaction?.status,
-      });
-
-      return {
-        raw: response.data,
-        transaction_id: data.id || data.transaction?.id || null,
-        payment_url: data.token_url || data.transaction?.token_url || null,
-        status: data.status || data.transaction?.status || 'pending',
-      };
-    } catch (error) {
-      const errMsg =
-        error?.response?.data?.message ||
-        error?.response?.data?.error ||
-        error?.response?.data?.detail ||
-        error?.message ||
-        'Erreur inconnue lors de la création de transaction Fedapay';
-      
-      console.error('[Fedapay] ❌ createTransaction failed', {
-        message: errMsg,
-        status: error?.response?.status,
-        data: error?.response?.data,
-      });
-      
-      throw new Error(`Fedapay createTransaction: ${errMsg}`);
-    }
+        currency: (transactionPayload.currency || this.defaultCurrency).toUpperCase(),
+        description: transactionPayload.description || 'Paiement formation MdSC',
+      },
+      transaction_id: null, // Pas de transaction_id car le widget gère tout
+      payment_url: null, // Pas de payment_url car le widget gère tout
+      status: 'pending',
+    };
   }
 
   /**

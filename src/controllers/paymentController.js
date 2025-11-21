@@ -278,7 +278,7 @@ const initiatePayment = async (req, res) => {
       });
     }
 
-    // Pour Fedapay, créer la transaction
+    // Pour Fedapay, préparer les données pour le widget (comme Kkiapay)
     if (isFedapay) {
       console.log('[Payment][Fedapay] 🚀 Starting Fedapay flow');
       
@@ -311,7 +311,7 @@ const initiatePayment = async (req, res) => {
         fedapayInstance = FedapayService;
       }
 
-      // Créer la transaction Fedapay
+      // Préparer les données pour le widget Fedapay (PAS d'appel API, comme Kkiapay)
       const transactionResult = await fedapayInstance.createTransaction({
         amount: course.price,
         currency: course.currency || 'XOF',
@@ -326,19 +326,15 @@ const initiatePayment = async (req, res) => {
         },
       });
 
-      // Récupérer la clé publique depuis la configuration (depuis l'instance qui a été configurée)
-      const fedapayPublicKey = fedapayInstance.publicKey;
-      const isSandbox = fedapayInstance.sandbox !== undefined ? fedapayInstance.sandbox : true;
-
       console.log('[Payment][Fedapay] ✅ Transaction data prepared', {
         tempPaymentId,
-        transactionId: transactionResult.transaction_id,
-        hasPublicKey: !!fedapayPublicKey,
-        environment: isSandbox ? 'sandbox' : 'live',
+        hasPublicKey: !!transactionResult.raw?.public_key,
+        environment: transactionResult.raw?.environment,
+        sandbox: transactionResult.raw?.sandbox,
       });
 
-      // Retourner les données du widget Fedapay (similaire à Kkiapay)
-      // Le paiement sera créé dans le webhook Fedapay avec statut "completed" ou "failed"
+      // Retourner les données du widget sans créer de paiement
+      // Le paiement sera créé uniquement dans le webhook Fedapay avec statut "completed" ou "failed"
       return res.status(201).json({
         success: true,
         message: 'Données du widget Fedapay préparées',
@@ -346,12 +342,9 @@ const initiatePayment = async (req, res) => {
           temp_payment_id: tempPaymentId,
           payment_data: {
             raw: transactionResult.raw,
-            public_key: fedapayPublicKey,
-            environment: isSandbox ? 'sandbox' : 'live',
-            transaction_id: transactionResult.transaction_id,
           },
-          redirect_url: null, // Pas de redirection, on utilise le widget Checkout.js
-          provider_transaction_id: transactionResult.transaction_id,
+          redirect_url: null,
+          provider_transaction_id: null,
         }
       });
     }
@@ -1123,7 +1116,10 @@ const handleKkiapayWebhook = async (req, res) => {
  */
 const getActivePaymentProviders = async (req, res) => {
   try {
+    console.log('[Payment] 🔍 Récupération des providers actifs...');
+    
     const providers = await paymentConfigService.getAllProviders();
+    console.log('[Payment] ✅ Providers récupérés:', providers.length);
     
     // Filtrer seulement les actifs et retourner seulement les infos nécessaires (pas les clés)
     const activeProviders = providers
@@ -1131,16 +1127,30 @@ const getActivePaymentProviders = async (req, res) => {
       .map(p => ({
         id: p.id,
         provider_name: p.provider_name,
-        is_sandbox: p.is_sandbox,
+        is_sandbox: Boolean(p.is_sandbox), // S'assurer que c'est un booléen
         // Ne pas exposer les clés même masquées
       }));
+    
+    console.log('[Payment] ✅ Providers actifs filtrés:', activeProviders.length);
     
     res.json({
       success: true,
       data: activeProviders
     });
   } catch (error) {
-    console.error('Erreur lors de la récupération des providers actifs:', error);
+    console.error('[Payment] ❌ Erreur lors de la récupération des providers actifs:', error);
+    console.error('[Payment] ❌ Stack trace:', error.stack);
+    
+    // Vérifier si c'est une erreur de table manquante
+    if (error.code === 'ER_NO_SUCH_TABLE' || error.message?.includes('payment_providers')) {
+      console.error('[Payment] ❌ La table payment_providers n\'existe pas dans la base de données');
+      return res.status(500).json({
+        success: false,
+        message: 'Table payment_providers non trouvée. Veuillez exécuter les migrations de la base de données.',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+    
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération des providers de paiement',

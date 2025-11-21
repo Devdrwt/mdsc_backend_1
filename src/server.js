@@ -73,6 +73,7 @@ const notificationRoutes = require('./routes/notificationRoutes');
 const calendarRoutes = require('./routes/calendarRoutes');
 const adminNotificationRoutes = require('./routes/adminNotificationRoutes');
 const adminEventRoutes = require('./routes/adminEventRoutes');
+const adminPaymentConfigRoutes = require('./routes/adminPaymentConfigRoutes');
 
 const app = express();
 
@@ -328,6 +329,8 @@ app.use('/api/admin/auth', adminAuthRoutes);
 // Alias pour compatibilité frontend (sans /api)
 app.use('/admin/auth', adminAuthRoutes);
 app.use('/api/auth/admin', adminAuthRoutes);
+// Routes admin spécifiques AVANT les routes générales pour éviter les conflits
+app.use('/api/admin/payment-providers', adminPaymentConfigRoutes);
 app.use('/api/admin', adminDashboardRoutes);
 app.use('/api/admin', adminUserRoutes);
 app.use('/api', courseApprovalRoutes);

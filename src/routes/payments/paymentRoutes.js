@@ -3,6 +3,11 @@ const router = express.Router();
 const paymentController = require('../../controllers/paymentController');
 const { authenticateToken } = require('../../middleware/auth');
 
+// Récupérer les providers de paiement actifs (public - pas d'authentification requise)
+router.get('/providers',
+  paymentController.getActivePaymentProviders
+);
+
 // Initier un paiement
 router.post('/initiate',
   authenticateToken,
@@ -26,6 +31,12 @@ router.get('/my-payments',
 router.post('/finalize-kkiapay',
   authenticateToken, // Garder l'authentification pour sécurité, mais gérer le cas sans token
   paymentController.finalizeKkiapayPayment
+);
+
+// Finaliser un paiement Fedapay (callback après succès)
+router.post('/finalize-fedapay',
+  authenticateToken,
+  paymentController.finalizeFedapayPayment
 );
 
 // Webhook Kkiapay (callback après échec)

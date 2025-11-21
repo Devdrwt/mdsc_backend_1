@@ -4,7 +4,11 @@ const { buildMediaUrl } = require('../utils/media');
 const StripeService = require('../services/paymentProviders/stripeService');
 const MobileMoneyService = require('../services/paymentProviders/mobileMoneyService');
 const GobiPayService = require('../services/paymentProviders/gobipayService');
-const KkiapayService = require('../services/paymentProviders/kkiapayService');
+const KkiapayServiceClass = require('../services/paymentProviders/kkiapayService');
+const KkiapayService = KkiapayServiceClass.default || new KkiapayServiceClass();
+const FedapayServiceClass = require('../services/paymentProviders/fedapayService');
+const FedapayService = FedapayServiceClass.default || new FedapayServiceClass();
+const paymentConfigService = require('../services/paymentConfigService');
 
 const ensureEnrollmentForPayment = async (paymentId) => {
   try {
@@ -77,6 +81,33 @@ const ensureEnrollmentForPayment = async (paymentId) => {
       user_id,
       course_id
     });
+
+    // Créer une notification de paiement réussi
+    try {
+      // Récupérer les infos du cours pour la notification
+      const [courses] = await pool.execute(
+        'SELECT title FROM courses WHERE id = ?',
+        [course_id]
+      );
+      const courseTitle = courses.length > 0 ? courses[0].title : 'le cours';
+
+      await pool.execute(
+        `INSERT INTO notifications (user_id, title, message, type, action_url, metadata)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          user_id,
+          '✅ Paiement reçu',
+          `Votre paiement pour le cours "${courseTitle}" a été confirmé avec succès. Vous pouvez maintenant accéder au cours.`,
+          'success', // Type valide selon l'ENUM de la table notifications
+          `/dashboard/student/courses`,
+          JSON.stringify({ paymentId: paymentId, courseId: course_id, courseTitle: courseTitle })
+        ]
+      );
+      console.log('[Payment] ✅ Notification de paiement réussi créée', { user_id, paymentId });
+    } catch (notificationError) {
+      console.error('[Payment] ❌ Erreur lors de la création de la notification de paiement:', notificationError);
+      // Ne pas faire échouer le processus si la notification échoue
+    }
   } catch (error) {
     console.error('[Payment] ❌ Error ensuring enrollment for payment:', error);
     throw error; // Re-throw pour que l'appelant puisse gérer l'erreur
@@ -98,11 +129,23 @@ const initiatePayment = async (req, res) => {
       paymentProvider,
     });
 
-    if (!courseId || !paymentMethod) {
-      console.warn('[Payment] ❗ Missing courseId or paymentMethod', { courseId, paymentMethod });
+    if (!courseId) {
+      console.warn('[Payment] ❗ Missing courseId', { courseId });
       return res.status(400).json({
         success: false,
-        message: 'courseId et paymentMethod sont requis'
+        message: 'courseId est requis'
+      });
+    }
+
+    // Si paymentMethod n'est pas fourni, utiliser paymentProvider (ou vice versa)
+    const effectivePaymentMethod = paymentMethod || paymentProvider;
+    const effectivePaymentProvider = paymentProvider || paymentMethod;
+
+    if (!effectivePaymentMethod) {
+      console.warn('[Payment] ❗ Missing paymentMethod and paymentProvider', { courseId });
+      return res.status(400).json({
+        success: false,
+        message: 'paymentMethod ou paymentProvider est requis'
       });
     }
 
@@ -137,7 +180,31 @@ const initiatePayment = async (req, res) => {
       });
     }
 
-    const isKkiapay = paymentMethod === 'kkiapay' || paymentProvider === 'kkiapay';
+    const isKkiapay = effectivePaymentMethod === 'kkiapay' || effectivePaymentProvider === 'kkiapay';
+    const isFedapay = effectivePaymentMethod === 'fedapay' || effectivePaymentProvider === 'fedapay';
+
+    // Vérifier que le provider demandé est actif et configuré
+    if (isKkiapay) {
+      const isActive = await paymentConfigService.isProviderActive('kkiapay');
+      if (!isActive) {
+        console.warn('[Payment] ❗ Kkiapay is not active or configured', { courseId });
+        return res.status(400).json({
+          success: false,
+          message: 'Kkiapay n\'est pas activé ou configuré. Contactez un administrateur.'
+        });
+      }
+    }
+
+    if (isFedapay) {
+      const isActive = await paymentConfigService.isProviderActive('fedapay');
+      if (!isActive) {
+        console.warn('[Payment] ❗ Fedapay is not active or configured', { courseId });
+        return res.status(400).json({
+          success: false,
+          message: 'Fedapay n\'est pas activé ou configuré. Contactez un administrateur.'
+        });
+      }
+    }
 
     // Pour Kkiapay, on ne crée PAS de paiement avec statut "pending"
     // Le paiement sera créé uniquement via les events Kkiapay (success/error) dans le webhook
@@ -156,8 +223,26 @@ const initiatePayment = async (req, res) => {
       // Générer un temp_payment_id pour les métadonnées (ne sera pas enregistré en DB)
       const tempPaymentId = `temp_${userId}_${courseId}_${Date.now()}`;
 
+      // Charger la configuration depuis la DB ou utiliser les variables d'environnement
+      let kkiapayInstance = KkiapayService;
+      try {
+        const kkiapayConfig = await paymentConfigService.getProviderConfigByName('kkiapay');
+        if (kkiapayConfig && kkiapayConfig.public_key && kkiapayConfig.secret_key) {
+          kkiapayInstance = new KkiapayServiceClass(kkiapayConfig);
+          console.log('[Payment][Kkiapay] ✅ Configuration chargée depuis la base de données');
+        } else {
+          // Fallback vers les variables d'environnement
+          console.log('[Payment][Kkiapay] ℹ️ Utilisation des variables d\'environnement (config DB non disponible)');
+          kkiapayInstance = KkiapayService; // Utilise l'instance par défaut qui lit les variables d'environnement
+        }
+      } catch (configError) {
+        // En cas d'erreur, utiliser les variables d'environnement
+        console.warn('[Payment][Kkiapay] ⚠️ Erreur lors du chargement de la config DB, utilisation des variables d\'environnement:', configError.message);
+        kkiapayInstance = KkiapayService;
+      }
+
       // Préparer les données pour le widget Kkiapay
-      const transactionResult = await KkiapayService.createTransaction({
+      const transactionResult = await kkiapayInstance.createTransaction({
         amount: course.price,
         currency: course.currency || 'XOF',
         description: `Paiement formation - ${course.title}`,
@@ -193,14 +278,92 @@ const initiatePayment = async (req, res) => {
       });
     }
 
+    // Pour Fedapay, créer la transaction
+    if (isFedapay) {
+      console.log('[Payment][Fedapay] 🚀 Starting Fedapay flow');
+      
+      const finalCustomerFullname =
+        customerFullname ||
+        req.user?.fullName ||
+        `${req.user?.firstName || ''} ${req.user?.lastName || ''}`.trim() ||
+        'Étudiant MdSC';
+      const finalCustomerEmail = req.user?.email || customerEmail || 'student@mdsc.local';
+      const finalCustomerPhone = customerPhone || req.user?.phone;
+
+      // Générer un temp_payment_id pour les métadonnées
+      const tempPaymentId = `temp_${userId}_${courseId}_${Date.now()}`;
+
+      // Charger la configuration depuis la DB ou utiliser les variables d'environnement
+      let fedapayInstance = FedapayService;
+      try {
+        const fedapayConfig = await paymentConfigService.getProviderConfigByName('fedapay');
+        if (fedapayConfig && fedapayConfig.public_key && fedapayConfig.secret_key) {
+          fedapayInstance = new FedapayServiceClass(fedapayConfig);
+          console.log('[Payment][Fedapay] ✅ Configuration chargée depuis la base de données');
+        } else {
+          // Fallback vers les variables d'environnement
+          console.log('[Payment][Fedapay] ℹ️ Utilisation des variables d\'environnement (config DB non disponible)');
+          fedapayInstance = FedapayService; // Utilise l'instance par défaut qui lit les variables d'environnement
+        }
+      } catch (configError) {
+        // En cas d'erreur, utiliser les variables d'environnement
+        console.warn('[Payment][Fedapay] ⚠️ Erreur lors du chargement de la config DB, utilisation des variables d\'environnement:', configError.message);
+        fedapayInstance = FedapayService;
+      }
+
+      // Créer la transaction Fedapay
+      const transactionResult = await fedapayInstance.createTransaction({
+        amount: course.price,
+        currency: course.currency || 'XOF',
+        description: `Paiement formation - ${course.title}`,
+        customer_fullname: finalCustomerFullname,
+        customer_email: finalCustomerEmail,
+        customer_phone: finalCustomerPhone,
+        metadata: {
+          temp_payment_id: tempPaymentId,
+          user_id: userId,
+          course_id: courseId,
+        },
+      });
+
+      // Récupérer la clé publique depuis la configuration (depuis l'instance qui a été configurée)
+      const fedapayPublicKey = fedapayInstance.publicKey;
+      const isSandbox = fedapayInstance.sandbox !== undefined ? fedapayInstance.sandbox : true;
+
+      console.log('[Payment][Fedapay] ✅ Transaction data prepared', {
+        tempPaymentId,
+        transactionId: transactionResult.transaction_id,
+        hasPublicKey: !!fedapayPublicKey,
+        environment: isSandbox ? 'sandbox' : 'live',
+      });
+
+      // Retourner les données du widget Fedapay (similaire à Kkiapay)
+      // Le paiement sera créé dans le webhook Fedapay avec statut "completed" ou "failed"
+      return res.status(201).json({
+        success: true,
+        message: 'Données du widget Fedapay préparées',
+        data: {
+          temp_payment_id: tempPaymentId,
+          payment_data: {
+            raw: transactionResult.raw,
+            public_key: fedapayPublicKey,
+            environment: isSandbox ? 'sandbox' : 'live',
+            transaction_id: transactionResult.transaction_id,
+          },
+          redirect_url: null, // Pas de redirection, on utilise le widget Checkout.js
+          provider_transaction_id: transactionResult.transaction_id,
+        }
+      });
+    }
+
     // Pour les autres providers (GobiPay, Mobile Money, Stripe, etc.)
     // On ne crée PAS de paiement avec statut "pending"
     // Le paiement sera créé uniquement dans le webhook après succès/échec
     const supportedMethods = ['gobipay', 'card', 'mobile_money'];
-    if (!supportedMethods.includes(paymentMethod)) {
+    if (!supportedMethods.includes(effectivePaymentMethod) && !isKkiapay && !isFedapay) {
       console.warn('[Payment] ❗ Unsupported payment method', {
-        paymentMethod,
-        paymentProvider,
+        effectivePaymentMethod,
+        effectivePaymentProvider,
       });
       return res.status(400).json({
         success: false,
@@ -208,8 +371,8 @@ const initiatePayment = async (req, res) => {
       });
     }
 
-    const normalizedPaymentMethod = paymentMethod === 'gobipay' ? 'other' : paymentMethod;
-    const normalizedPaymentProvider = paymentMethod === 'gobipay' ? 'gobipay' : paymentProvider;
+    const normalizedPaymentMethod = effectivePaymentMethod === 'gobipay' ? 'other' : effectivePaymentMethod;
+    const normalizedPaymentProvider = effectivePaymentMethod === 'gobipay' ? 'gobipay' : effectivePaymentProvider;
 
     // Générer un temp_payment_id pour les métadonnées (ne sera pas enregistré en DB)
     const tempPaymentId = `temp_${userId}_${courseId}_${Date.now()}`;
@@ -227,8 +390,8 @@ const initiatePayment = async (req, res) => {
     let providerTransactionId = null;
 
     try {
-      if (paymentMethod === 'gobipay') {
-        console.log('[Payment][GobiPay] 🚀 Starting GobiPay flow', { paymentId });
+      if (effectivePaymentMethod === 'gobipay') {
+        console.log('[Payment][GobiPay] 🚀 Starting GobiPay flow');
         const platformMoney = process.env.GOBIPAY_PLATFORM_MONEY || 'MTN_BEN_XOF';
         const finalCustomerFullname =
           customerFullname ||
@@ -339,7 +502,7 @@ const initiatePayment = async (req, res) => {
           paymentId,
           providerTransactionId,
         });
-      } else if (paymentMethod === 'card' && paymentProvider === 'stripe') {
+      } else if (effectivePaymentMethod === 'card' && effectivePaymentProvider === 'stripe') {
         console.log('[Payment][Stripe] 🚀 Starting Stripe flow', { paymentId });
         paymentData = await StripeService.createPaymentIntent({
           amount: course.price,
@@ -364,8 +527,8 @@ const initiatePayment = async (req, res) => {
           clientSecret: paymentData.client_secret,
         });
 
-      } else if (paymentMethod === 'mobile_money') {
-        console.log('[Payment][MobileMoney] 🚀 Starting Mobile Money flow', { paymentId, provider: paymentProvider });
+      } else if (effectivePaymentMethod === 'mobile_money') {
+        console.log('[Payment][MobileMoney] 🚀 Starting Mobile Money flow', { paymentId, provider: effectivePaymentProvider });
         const { phoneNumber } = req.body;
 
         if (!phoneNumber) {
@@ -377,7 +540,7 @@ const initiatePayment = async (req, res) => {
         }
 
         paymentData = await MobileMoneyService.initiatePayment({
-          provider: paymentProvider,
+          provider: effectivePaymentProvider,
           amount: course.price,
           currency: course.currency || 'XOF',
           phoneNumber,
@@ -402,7 +565,7 @@ const initiatePayment = async (req, res) => {
           providerTransactionId,
         });
       } else {
-        console.warn('[Payment] ❗ Unsupported payment method', { paymentMethod, paymentProvider });
+        console.warn('[Payment] ❗ Unsupported payment method', { effectivePaymentMethod, effectivePaymentProvider });
         return res.status(400).json({
           success: false,
           message: 'Méthode de paiement non supportée'
@@ -411,8 +574,8 @@ const initiatePayment = async (req, res) => {
     } catch (paymentError) {
       console.error('[Payment] ❌ Error during provider flow', {
         paymentId,
-        paymentMethod,
-        provider: paymentProvider,
+        effectivePaymentMethod,
+        provider: effectivePaymentProvider,
         message: paymentError.message,
         stack: paymentError.stack,
       });
@@ -704,6 +867,130 @@ const finalizeKkiapayPayment = async (req, res) => {
 };
 
 /**
+ * Finaliser un paiement Fedapay (appelé par le callback frontend après succès)
+ */
+const finalizeFedapayPayment = async (req, res) => {
+  try {
+    const {
+      transaction_id,
+      status,
+      amount,
+      currency,
+      metadata
+    } = req.body;
+
+    console.log('[Payment][Fedapay] 📥 Finalizing payment', {
+      transaction_id,
+      status,
+      amount,
+      currency,
+      metadata
+    });
+
+    // Vérifier que les métadonnées sont présentes
+    if (!metadata || !metadata.user_id || !metadata.course_id) {
+      console.error('[Payment][Fedapay] ❌ Missing metadata', { metadata });
+      return res.status(400).json({
+        success: false,
+        message: 'Les métadonnées du paiement sont manquantes'
+      });
+    }
+
+    const { user_id, course_id } = metadata;
+
+    // Récupérer les infos du cours pour le montant
+    const [courses] = await pool.execute(
+      'SELECT id, title, price, currency FROM courses WHERE id = ?',
+      [course_id]
+    );
+
+    if (courses.length === 0) {
+      console.error('[Payment][Fedapay] ❌ Course not found', { course_id });
+      return res.status(404).json({
+        success: false,
+        message: 'Cours non trouvé'
+      });
+    }
+
+    const course = courses[0];
+    const finalAmount = amount || course.price;
+    const finalCurrency = currency || course.currency || 'XOF';
+
+    // Vérifier si un paiement avec cette transaction existe déjà
+    const [existingPayments] = await pool.execute(
+      'SELECT id FROM payments WHERE provider_transaction_id = ? LIMIT 1',
+      [transaction_id]
+    );
+
+    if (existingPayments.length > 0) {
+      console.log('[Payment][Fedapay] ℹ️ Payment already finalized', {
+        paymentId: existingPayments[0].id,
+        transaction_id
+      });
+      
+      // Vérifier et créer l'inscription si nécessaire
+      await ensureEnrollmentForPayment(existingPayments[0].id);
+      
+      return res.json({
+        success: true,
+        message: 'Paiement déjà finalisé',
+        data: {
+          payment_id: existingPayments[0].id
+        }
+      });
+    }
+
+    // Créer le paiement avec statut "completed"
+    const [paymentResult] = await pool.execute(
+      `INSERT INTO payments (
+        user_id, course_id, amount, currency,
+        payment_method, payment_provider, status,
+        provider_transaction_id, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, NOW())`,
+      [
+        user_id,
+        course_id,
+        finalAmount,
+        finalCurrency,
+        'fedapay',
+        'fedapay',
+        transaction_id
+      ]
+    );
+
+    const paymentId = paymentResult.insertId;
+    console.log('[Payment][Fedapay] ✅ Payment created with completed status', {
+      paymentId,
+      transaction_id,
+      user_id,
+      course_id
+    });
+
+    // Créer l'inscription automatiquement
+    await ensureEnrollmentForPayment(paymentId);
+
+    console.log('[Payment][Fedapay] ✅ Enrollment ensured for payment', { paymentId });
+
+    res.json({
+      success: true,
+      message: 'Paiement finalisé avec succès',
+      data: {
+        payment_id: paymentId,
+        transaction_id
+      }
+    });
+
+  } catch (error) {
+    console.error('[Payment][Fedapay] ❌ Error finalizing payment:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la finalisation du paiement',
+      error: error.message
+    });
+  }
+};
+
+/**
  * Webhook Kkiapay pour les échecs (appelé par le callback frontend après échec)
  */
 const handleKkiapayWebhook = async (req, res) => {
@@ -831,11 +1118,44 @@ const handleKkiapayWebhook = async (req, res) => {
   }
 };
 
+/**
+ * Récupérer les providers de paiement actifs (endpoint public)
+ */
+const getActivePaymentProviders = async (req, res) => {
+  try {
+    const providers = await paymentConfigService.getAllProviders();
+    
+    // Filtrer seulement les actifs et retourner seulement les infos nécessaires (pas les clés)
+    const activeProviders = providers
+      .filter(p => p.is_active)
+      .map(p => ({
+        id: p.id,
+        provider_name: p.provider_name,
+        is_sandbox: p.is_sandbox,
+        // Ne pas exposer les clés même masquées
+      }));
+    
+    res.json({
+      success: true,
+      data: activeProviders
+    });
+  } catch (error) {
+    console.error('Erreur lors de la récupération des providers actifs:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des providers de paiement',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
 module.exports = {
   initiatePayment,
   getPaymentStatus,
   getMyPayments,
   finalizeKkiapayPayment,
-  handleKkiapayWebhook
+  finalizeFedapayPayment,
+  handleKkiapayWebhook,
+  getActivePaymentProviders
 };
 

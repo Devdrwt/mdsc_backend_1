@@ -849,7 +849,7 @@ const unenrollFromCourse = async (req, res) => {
             userId,
             '📤 Désinscription effectuée',
             `Vous avez été désinscrit du cours "${courseTitle}". Toutes vos données de progression, tentatives de quiz et activités ont été supprimées.`,
-            'course_unenrolled',
+            'course', // Type valide selon l'ENUM de la table notifications
             `/dashboard/student/courses`,
             JSON.stringify({ courseId: courseId, courseTitle: courseTitle })
           ]

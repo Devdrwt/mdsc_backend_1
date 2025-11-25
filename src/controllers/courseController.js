@@ -1,5 +1,5 @@
 const { pool } = require('../config/database');
-const { sanitizeValue } = require('../utils/sanitize');
+const { sanitizeValue, convertToMySQLDateTime } = require('../utils/sanitize');
 const { buildMediaUrl, formatInstructorMetadata } = require('../utils/media');
 const { v4: uuidv4 } = require('uuid');
 const ModuleService = require('../services/moduleService');
@@ -440,6 +440,21 @@ const createCourse = async (req, res) => {
 
     const instructor_id = req.user?.id ?? req.user?.userId;
 
+    // Vérifier que la catégorie existe si category_id est fourni
+    if (category_id !== null && category_id !== undefined && category_id !== '') {
+      const [categories] = await pool.execute(
+        'SELECT id FROM categories WHERE id = ?',
+        [category_id]
+      );
+
+      if (categories.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: `La catégorie avec l'ID ${category_id} n'existe pas. Catégories disponibles: 15, 16, 17, 18, 19`
+        });
+      }
+    }
+
     // Validation conditionnelle selon le type
     if (course_type === 'live') {
       if (!course_start_date || !course_end_date) {
@@ -487,9 +502,9 @@ const createCourse = async (req, res) => {
       sanitizeValue(price),
       sanitizeValue(currency),
       sanitizeValue(course_type === 'live' ? max_students : null),
-      sanitizeValue(enrollment_deadline),
-      sanitizeValue(course_type === 'live' ? course_start_date : null),
-      sanitizeValue(course_type === 'live' ? course_end_date : null),
+      convertToMySQLDateTime(enrollment_deadline),
+      convertToMySQLDateTime(course_type === 'live' ? course_start_date : null),
+      convertToMySQLDateTime(course_type === 'live' ? course_end_date : null),
       sanitizeValue(course_type),
       sanitizeValue(is_sequential)
     ]);
@@ -579,7 +594,12 @@ const updateCourse = async (req, res) => {
     allowedFields.forEach(field => {
       if (req.body[field] !== undefined) {
         updateFields.push(`${field} = ?`);
-        values.push(sanitizeValue(req.body[field]));
+        // Convertir les dates au format MySQL
+        if (field === 'enrollment_deadline' || field === 'course_start_date' || field === 'course_end_date') {
+          values.push(convertToMySQLDateTime(req.body[field]));
+        } else {
+          values.push(sanitizeValue(req.body[field]));
+        }
       }
     });
 

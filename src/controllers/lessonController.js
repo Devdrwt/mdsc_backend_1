@@ -35,11 +35,21 @@ const createLesson = async (req, res) => {
       duration_minutes || 0, order_index || 0, is_required, is_published || false
     ]);
 
+    const newLessonId = result.insertId;
+
+    // Si un media_file_id a été assigné, mettre à jour automatiquement le lesson_id du fichier média
+    if (media_file_id) {
+      await pool.execute(
+        'UPDATE media_files SET lesson_id = ? WHERE id = ? AND course_id = ?',
+        [newLessonId, media_file_id, courseId]
+      );
+    }
+
     res.status(201).json({
       success: true,
       message: 'Leçon créée avec succès',
       data: {
-        id: result.insertId,
+        id: newLessonId,
         course_id: courseId,
         title,
         order_index
@@ -229,6 +239,14 @@ const updateLesson = async (req, res) => {
     `;
 
     await pool.execute(updateQuery, params);
+
+    // Si un media_file_id a été assigné, mettre à jour automatiquement le lesson_id du fichier média
+    if (media_file_id) {
+      await pool.execute(
+        'UPDATE media_files SET lesson_id = ? WHERE id = ? AND course_id = ?',
+        [lessonId, media_file_id, courseId]
+      );
+    }
 
     res.json({
       success: true,

@@ -212,7 +212,6 @@ async function createOrUpdateProvider(providerData) {
     const publicKey = providerData.public_key || null;
     const secretKey = providerData.secret_key || null;
     const privateKey = providerData.private_key || null;
-    
     const metadata = providerData.metadata ? JSON.stringify(providerData.metadata) : null;
     
     if (existing.length > 0) {

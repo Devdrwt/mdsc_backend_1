@@ -78,15 +78,6 @@ class FedapayService {
         this.secretKey = config.secret_key ? String(config.secret_key).trim() : null;
         this.privateKey = config.private_key ? String(config.private_key).trim() : null;
         
-        // Vérifier que la clé secrète est complète (une clé Fedapay complète fait généralement 100+ caractères)
-        if (this.secretKey && this.secretKey.length < 50) {
-          console.warn('[Fedapay] ⚠️ ATTENTION: La clé secrète semble tronquée ou incomplète!', {
-            length: this.secretKey.length,
-            prefix: this.secretKey.substring(0, 15),
-            suffix: this.secretKey.substring(this.secretKey.length - 15),
-          });
-        }
-        
         // Détecter automatiquement l'environnement basé sur le préfixe de la clé secrète (même logique que le constructeur)
         let detectedSandbox = config.is_sandbox !== undefined ? config.is_sandbox : true;
         
@@ -199,13 +190,29 @@ class FedapayService {
   async createTransaction(transactionPayload = {}) {
     // Essayer de charger la config depuis la DB si pas déjà configuré
     if (!this.publicKey || !this.secretKey) {
+      console.log('[Fedapay] ⚙️ Clés non configurées, chargement depuis la DB...');
       const loaded = await this.loadConfig();
       if (!loaded) {
+        console.error('[Fedapay] ❌ Échec du chargement de la config depuis la DB');
         this.ensureConfigured(); // Lancer l'erreur si toujours pas configuré
+      } else {
+        console.log('[Fedapay] ✅ Configuration chargée avec succès');
       }
     } else {
+      console.log('[Fedapay] ✅ Clés déjà configurées, validation...');
       this.ensureConfigured();
     }
+    
+    console.log('[Fedapay] 📋 Configuration actuelle:', {
+      hasPublicKey: !!this.publicKey,
+      publicKeyLength: this.publicKey?.length || 0,
+      publicKeyPrefix: this.publicKey ? this.publicKey.substring(0, 20) + '...' : 'null',
+      hasSecretKey: !!this.secretKey,
+      secretKeyLength: this.secretKey?.length || 0,
+      secretKeyPrefix: this.secretKey ? this.secretKey.substring(0, 20) + '...' : 'null',
+      isSandbox: this.sandbox,
+      baseUrl: this.baseUrl,
+    });
 
     const amount = this.normaliseAmount(transactionPayload.amount);
     if (amount <= 0) {

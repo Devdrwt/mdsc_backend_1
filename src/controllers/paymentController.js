@@ -299,7 +299,10 @@ const initiatePayment = async (req, res) => {
         const fedapayConfig = await paymentConfigService.getProviderConfigByName('fedapay');
         if (fedapayConfig && fedapayConfig.public_key && fedapayConfig.secret_key) {
           fedapayInstance = new FedapayServiceClass(fedapayConfig);
-          console.log('[Payment][Fedapay] ✅ Configuration chargée depuis la base de données');
+          console.log('[Payment][Fedapay] ✅ Configuration chargée depuis la base de données', {
+            isActive: fedapayConfig.is_active,
+            isSandbox: fedapayConfig.is_sandbox,
+          });
         } else {
           // Fallback vers les variables d'environnement
           console.log('[Payment][Fedapay] ℹ️ Utilisation des variables d\'environnement (config DB non disponible)');

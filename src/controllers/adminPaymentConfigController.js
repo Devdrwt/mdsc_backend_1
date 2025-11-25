@@ -77,6 +77,9 @@ const createOrUpdateProvider = async (req, res) => {
       metadata
     } = req.body;
     
+    // Log pour diagnostiquer
+    console.log('[AdminPaymentConfig] 📥 Données reçues pour provider:', provider_name);
+    
     // Validation
     if (!provider_name) {
       return res.status(400).json({
@@ -101,6 +104,14 @@ const createOrUpdateProvider = async (req, res) => {
       });
     }
     
+    // Vérifier la longueur des clés avant traitement
+    if (public_key.length < 30 || secret_key.length < 30) {
+      console.warn('[AdminPaymentConfig] ⚠️ Clés reçues très courtes:', {
+        public_key_length: public_key.length,
+        secret_key_length: secret_key.length,
+      });
+    }
+    
     // Générer automatiquement l'URL selon le provider et l'environnement
     let autoBaseUrl = null;
     const isSandbox = is_sandbox !== undefined ? Boolean(is_sandbox) : true;
@@ -114,12 +125,17 @@ const createOrUpdateProvider = async (req, res) => {
       autoBaseUrl = fedapayService.getDefaultBaseUrl(isSandbox);
     }
     
+    // Nettoyer les clés (trim) mais garder le contenu exact
+    const cleanedPublicKey = public_key.trim();
+    const cleanedSecretKey = secret_key.trim();
+    const cleanedPrivateKey = private_key ? private_key.trim() : null;
+    
     // Créer ou mettre à jour (URL générée automatiquement, pas celle du body)
     const providerId = await paymentConfigService.createOrUpdateProvider({
       provider_name,
-      public_key: public_key.trim(), // Nettoyer les espaces mais garder le contenu exact
-      secret_key: secret_key.trim(), // Nettoyer les espaces mais garder le contenu exact
-      private_key: private_key ? private_key.trim() : null,
+      public_key: cleanedPublicKey,
+      secret_key: cleanedSecretKey,
+      private_key: cleanedPrivateKey,
       is_active: is_active !== undefined ? Boolean(is_active) : true,
       is_sandbox: isSandbox,
       base_url: autoBaseUrl, // URL générée automatiquement

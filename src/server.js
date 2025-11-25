@@ -75,6 +75,7 @@ const adminNotificationRoutes = require('./routes/adminNotificationRoutes');
 const adminEventRoutes = require('./routes/adminEventRoutes');
 const ratingRoutes = require('./routes/ratingRoutes');
 const forumRoutes = require('./routes/forumRoutes');
+const liveSessionRoutes = require('./routes/liveSessionRoutes');
 
 const app = express();
 
@@ -371,6 +372,7 @@ app.use('/api', certificateRequestRoutes);
 app.use('/api/instructor', require('./routes/instructorRoutes'));
 app.use('/api', ratingRoutes);
 app.use('/api', forumRoutes);
+app.use('/api', liveSessionRoutes);
 
 // Gestion des erreurs 404
 app.use((req, res) => {

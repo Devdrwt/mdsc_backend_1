@@ -101,37 +101,125 @@ const getEvents = async (req, res) => {
       params
     );
 
+    // Récupérer les sessions live pour le calendrier
+    const liveSessionWhere = [];
+    const liveSessionParams = [user.id, user.id];
+
+    liveSessionWhere.push(`EXISTS (
+      SELECT 1 FROM enrollments en 
+      WHERE en.course_id = ls.course_id AND en.user_id = ?
+    )`);
+
+    if (rangeStart) {
+      liveSessionWhere.push('ls.scheduled_start_at >= ?');
+      liveSessionParams.push(rangeStart);
+    }
+
+    if (rangeEnd) {
+      liveSessionWhere.push('ls.scheduled_end_at <= ?');
+      liveSessionParams.push(rangeEnd);
+    }
+
+    if (onlyUpcoming !== undefined) {
+      if (onlyUpcoming) {
+        liveSessionWhere.push('ls.scheduled_start_at >= NOW()');
+      } else {
+        liveSessionWhere.push('ls.scheduled_end_at < NOW()');
+      }
+    }
+
+    const liveSessionWhereClause = liveSessionWhere.length ? `WHERE ${liveSessionWhere.join(' AND ')}` : '';
+
+    const [liveSessions] = await pool.execute(
+      `
+      SELECT
+        ls.id,
+        ls.title,
+        ls.description,
+        ls.scheduled_start_at AS start_date,
+        ls.scheduled_end_at AS end_date,
+        ls.status,
+        ls.course_id,
+        c.title AS course_title,
+        c.slug AS course_slug,
+        u.first_name AS instructor_first_name,
+        u.last_name AS instructor_last_name,
+        u.email AS instructor_email
+      FROM live_sessions ls
+      JOIN courses c ON ls.course_id = c.id
+      JOIN users u ON ls.instructor_id = u.id
+      ${liveSessionWhereClause}
+      ORDER BY ls.scheduled_start_at ASC
+    `,
+      liveSessionParams
+    );
+
+    // Formater les événements
+    const formattedEvents = events.map((event) => ({
+      id: `event-${event.id}`,
+      title: event.title,
+      description: event.description,
+      event_type: event.event_type,
+      start_date: event.start_date,
+      end_date: event.end_date,
+      is_all_day: Boolean(event.is_all_day),
+      location: event.location,
+      is_public: Boolean(event.is_public),
+      type: 'event',
+      course: event.course_id
+        ? {
+            id: event.course_id,
+            title: event.course_title,
+            slug: event.course_slug
+          }
+        : null,
+      created_by: event.created_by
+        ? {
+            id: event.created_by,
+            first_name: event.creator_first_name,
+            last_name: event.creator_last_name,
+            email: event.creator_email,
+            role: event.creator_role
+          }
+        : null,
+      created_at: event.created_at,
+      updated_at: event.updated_at
+    }));
+
+    // Formater les sessions live
+    const formattedLiveSessions = liveSessions.map((session) => ({
+      id: `live-session-${session.id}`,
+      title: session.title,
+      description: session.description,
+      event_type: 'live_session',
+      start_date: session.start_date,
+      end_date: session.end_date,
+      is_all_day: false,
+      location: null,
+      is_public: false,
+      type: 'live_session',
+      status: session.status,
+      course: {
+        id: session.course_id,
+        title: session.course_title,
+        slug: session.course_slug
+      },
+      instructor: {
+        first_name: session.instructor_first_name,
+        last_name: session.instructor_last_name,
+        email: session.instructor_email
+      },
+      url: `/courses/${session.course_id}/live-sessions/${session.id}`
+    }));
+
+    // Fusionner et trier par date
+    const allEvents = [...formattedEvents, ...formattedLiveSessions].sort((a, b) => {
+      return new Date(a.start_date) - new Date(b.start_date);
+    });
+
     res.json({
       success: true,
-      data: events.map((event) => ({
-        id: event.id,
-        title: event.title,
-        description: event.description,
-        event_type: event.event_type,
-        start_date: event.start_date,
-        end_date: event.end_date,
-        is_all_day: Boolean(event.is_all_day),
-        location: event.location,
-        is_public: Boolean(event.is_public),
-        course: event.course_id
-          ? {
-              id: event.course_id,
-              title: event.course_title,
-              slug: event.course_slug
-            }
-          : null,
-        created_by: event.created_by
-          ? {
-              id: event.created_by,
-              first_name: event.creator_first_name,
-              last_name: event.creator_last_name,
-              email: event.creator_email,
-              role: event.creator_role
-            }
-          : null,
-        created_at: event.created_at,
-        updated_at: event.updated_at
-      }))
+      data: allEvents
     });
   } catch (error) {
     console.error('Erreur événements:', error);

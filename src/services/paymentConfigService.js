@@ -68,10 +68,27 @@ function maskKey(key) {
  * Valider qu'un provider name est valide
  */
 function validateProviderName(providerName) {
-  const validProviders = ['kkiapay', 'fedapay'];
+  const validProviders = ['kkiapay', 'fedapay', 'gobipay'];
   if (!validProviders.includes(providerName)) {
     throw new Error(`Provider invalide. Doit être l'un de: ${validProviders.join(', ')}`);
   }
+}
+
+function resolveBaseUrl(providerName, isSandbox, providedBaseUrl) {
+  const trimmedProvided = providedBaseUrl ? providedBaseUrl.trim().replace(/\/$/, '') : null;
+  if (providerName === 'kkiapay') {
+    return 'https://cdn.kkiapay.me';
+  }
+  if (providerName === 'fedapay') {
+    const FedapayService = require('./paymentProviders/fedapayService');
+    const fedapayService = new FedapayService();
+    return fedapayService.getDefaultBaseUrl(isSandbox);
+  }
+  if (providerName === 'gobipay') {
+    const fallbackUrl = process.env.GOBIPAY_BASE_URL || 'https://api-pay.gobiworld.com/api';
+    return (trimmedProvided || fallbackUrl).replace(/\/$/, '');
+  }
+  return trimmedProvided;
 }
 
 /**
@@ -204,34 +221,28 @@ async function createOrUpdateProvider(providerData) {
     
     // Vérifier si le provider existe déjà
     const [existing] = await pool.execute(
-      'SELECT id FROM payment_providers WHERE provider_name = ?',
+      'SELECT id, base_url, is_sandbox FROM payment_providers WHERE provider_name = ?',
       [providerData.provider_name]
     );
     
     // Stocker les clés exactement telles qu'elles sont fournies (déjà nettoyées par le contrôleur)
-    const publicKey = providerData.public_key || null;
-    const secretKey = providerData.secret_key || null;
-    const privateKey = providerData.private_key || null;
+    const publicKey = providerData.public_key ? providerData.public_key.trim() : null;
+    const secretKey = providerData.secret_key ? providerData.secret_key.trim() : null;
+    const privateKey = providerData.private_key ? providerData.private_key.trim() : null;
     const metadata = providerData.metadata ? JSON.stringify(providerData.metadata) : null;
+    const cleanedBaseUrl = providerData.base_url ? providerData.base_url.trim() : null;
     
     if (existing.length > 0) {
       // Mettre à jour
       const providerId = existing[0].id;
-      
-      // Générer automatiquement l'URL si elle n'est pas fournie ou si l'environnement change
-      let finalBaseUrl = providerData.base_url;
-      if (!finalBaseUrl || providerData.is_sandbox !== undefined) {
-        // Re-générer l'URL selon le nouvel environnement
-        const isSandbox = providerData.is_sandbox !== undefined ? providerData.is_sandbox : existing[0].is_sandbox;
-        if (providerData.provider_name === 'kkiapay') {
-          // Kkiapay utilise toujours https://cdn.kkiapay.me comme base URL
-          finalBaseUrl = 'https://cdn.kkiapay.me';
-        } else if (providerData.provider_name === 'fedapay') {
-          const FedapayService = require('./paymentProviders/fedapayService');
-          const fedapayService = new FedapayService();
-          finalBaseUrl = fedapayService.getDefaultBaseUrl(isSandbox);
-        }
-      }
+      const currentSandbox = existing[0].is_sandbox;
+      const currentBaseUrl = existing[0].base_url || null;
+      const targetSandbox = providerData.is_sandbox !== undefined ? providerData.is_sandbox : currentSandbox;
+      const finalBaseUrl = resolveBaseUrl(
+        providerData.provider_name,
+        targetSandbox,
+        cleanedBaseUrl || currentBaseUrl
+      );
       
       await pool.execute(
         `UPDATE payment_providers 
@@ -249,7 +260,7 @@ async function createOrUpdateProvider(providerData) {
           secretKey,
           privateKey,
           providerData.is_active !== undefined ? providerData.is_active : existing[0].is_active,
-          providerData.is_sandbox !== undefined ? providerData.is_sandbox : existing[0].is_sandbox,
+          targetSandbox,
           finalBaseUrl,
           metadata,
           providerId,
@@ -270,7 +281,11 @@ async function createOrUpdateProvider(providerData) {
           privateKey,
           providerData.is_active !== undefined ? providerData.is_active : true,
           providerData.is_sandbox !== undefined ? providerData.is_sandbox : true,
-          providerData.base_url || null,
+          resolveBaseUrl(
+            providerData.provider_name,
+            providerData.is_sandbox !== undefined ? providerData.is_sandbox : true,
+            cleanedBaseUrl
+          ),
           metadata,
         ]
       );

@@ -115,6 +115,22 @@ const createOrUpdateProvider = async (req, res) => {
     // Générer automatiquement l'URL selon le provider et l'environnement
     let autoBaseUrl = null;
     const isSandbox = is_sandbox !== undefined ? Boolean(is_sandbox) : true;
+    let metadataObject = null;
+    
+    if (metadata) {
+      if (typeof metadata === 'string') {
+        try {
+          metadataObject = JSON.parse(metadata);
+        } catch (parseError) {
+          return res.status(400).json({
+            success: false,
+            message: 'Le champ metadata doit être un JSON valide',
+          });
+        }
+      } else if (typeof metadata === 'object') {
+        metadataObject = metadata;
+      }
+    }
     
     if (provider_name === 'kkiapay') {
       // Kkiapay utilise toujours https://cdn.kkiapay.me comme base URL
@@ -123,6 +139,8 @@ const createOrUpdateProvider = async (req, res) => {
       const FedapayService = require('../services/paymentProviders/fedapayService');
       const fedapayService = new FedapayService();
       autoBaseUrl = fedapayService.getDefaultBaseUrl(isSandbox);
+    } else if (provider_name === 'gobipay') {
+      autoBaseUrl = (base_url?.trim() || process.env.GOBIPAY_BASE_URL || 'https://api-pay.gobiworld.com/api').replace(/\/$/, '');
     }
     
     // Nettoyer les clés (trim) mais garder le contenu exact
@@ -139,7 +157,7 @@ const createOrUpdateProvider = async (req, res) => {
       is_active: is_active !== undefined ? Boolean(is_active) : true,
       is_sandbox: isSandbox,
       base_url: autoBaseUrl, // URL générée automatiquement
-      metadata: metadata || null
+      metadata: metadataObject || null
     });
     
     // Récupérer le provider créé/mis à jour

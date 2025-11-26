@@ -1,10 +1,10 @@
 -- Migration : Table de configuration des providers de paiement
 -- Date : 2025-01-XX
--- Description : Permet aux admins de configurer dynamiquement Kkiapay et Fedapay
+-- Description : Permet aux admins de configurer dynamiquement Kkiapay, Fedapay et Gobipay
 
 CREATE TABLE IF NOT EXISTS payment_providers (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  provider_name ENUM('kkiapay', 'fedapay') NOT NULL,
+  provider_name ENUM('kkiapay', 'fedapay', 'gobipay') NOT NULL,
   public_key TEXT NOT NULL COMMENT 'Clé publique (chiffrée)',
   secret_key TEXT NOT NULL COMMENT 'Clé secrète (chiffrée)',
   private_key TEXT NULL COMMENT 'Clé privée (chiffrée, optionnelle)',

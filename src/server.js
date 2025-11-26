@@ -305,6 +305,13 @@ app.use('/uploads', express.static(uploadsPath, {
   }
 }));
 
+// Servir les fichiers statiques du dossier public (pour les pages de test)
+const publicPath = path.join(__dirname, '../public');
+if (fs.existsSync(publicPath)) {
+  app.use('/public', express.static(publicPath));
+  console.log('✅ Dossier public accessible:', publicPath);
+}
+
 // Log pour vérifier que le dossier uploads est accessible
 if (process.env.NODE_ENV === 'development') {
   if (fs.existsSync(uploadsPath)) {

@@ -16,8 +16,9 @@ const paymentConfigService = require('../services/paymentConfigService');
  * @param {number} paymentId - ID du paiement
  * @param {number} courseId - ID du cours
  * @param {string} status - Statut du paiement: 'success', 'failed', 'cancelled'
+ * @param {boolean} createActivity - Si true, crée aussi une activité dans user_activities (par défaut: true pour failed/cancelled, false pour success car l'inscription crée déjà une activité)
  */
-const createPaymentNotification = async (userId, paymentId, courseId, status = 'success') => {
+const createPaymentNotification = async (userId, paymentId, courseId, status = 'success', createActivity = null) => {
   try {
     // Récupérer les infos du cours
     const [courses] = await pool.execute(
@@ -26,36 +27,59 @@ const createPaymentNotification = async (userId, paymentId, courseId, status = '
     );
     const courseTitle = courses.length > 0 ? courses[0].title : 'le cours';
 
-    let title, message, notificationType;
+    let title, message, notificationType, activityType, activityDescription, activityPoints;
 
     switch (status) {
       case 'success':
         title = '✅ Paiement confirmé';
         message = `Votre paiement pour le cours "${courseTitle}" a été confirmé avec succès. Vous pouvez maintenant accéder au cours.`;
         notificationType = 'success';
+        // Pour success, l'activité course_enrolled est déjà créée, donc pas besoin de créer une activité de paiement
+        activityType = null;
+        activityDescription = null;
+        activityPoints = 0;
+        // Par défaut, ne pas créer d'activité pour success car l'inscription en crée déjà une
+        if (createActivity === null) createActivity = false;
         break;
       case 'failed':
         title = '❌ Paiement échoué';
         message = `Votre paiement pour le cours "${courseTitle}" a échoué. Veuillez réessayer ou contacter le support si le problème persiste.`;
         notificationType = 'error';
+        activityType = 'payment_failed';
+        activityDescription = `Paiement échoué pour le cours "${courseTitle}"`;
+        activityPoints = 0;
+        if (createActivity === null) createActivity = true;
         break;
       case 'cancelled':
         title = '⚠️ Paiement annulé';
         message = `Votre paiement pour le cours "${courseTitle}" a été annulé. Vous pouvez réessayer quand vous le souhaitez.`;
         notificationType = 'warning';
+        activityType = 'payment_cancelled';
+        activityDescription = `Paiement annulé pour le cours "${courseTitle}"`;
+        activityPoints = 0;
+        if (createActivity === null) createActivity = true;
         break;
       case 'pending':
       case 'processing':
         title = '⏳ Paiement en cours';
         message = `Votre paiement pour le cours "${courseTitle}" est en cours de traitement. Vous serez notifié dès que le paiement sera confirmé.`;
         notificationType = 'info';
+        activityType = 'payment_pending';
+        activityDescription = `Paiement en cours pour le cours "${courseTitle}"`;
+        activityPoints = 0;
+        if (createActivity === null) createActivity = false; // Ne pas créer d'activité pour pending
         break;
       default:
         title = 'ℹ️ Statut de paiement';
         message = `Le statut de votre paiement pour le cours "${courseTitle}" a été mis à jour.`;
         notificationType = 'info';
+        activityType = null;
+        activityDescription = null;
+        activityPoints = 0;
+        if (createActivity === null) createActivity = false;
     }
 
+    // Créer la notification
     await pool.execute(
       `INSERT INTO notifications (user_id, title, message, type, action_url, metadata)
        VALUES (?, ?, ?, ?, ?, ?)`,
@@ -81,6 +105,35 @@ const createPaymentNotification = async (userId, paymentId, courseId, status = '
       courseTitle,
       status 
     });
+
+    // Créer une activité si demandé et si le type d'activité est défini
+    if (createActivity && activityType) {
+      try {
+        const { recordActivity } = require('./gamificationController');
+        await recordActivity(
+          userId,
+          activityType,
+          activityPoints,
+          activityDescription,
+          { 
+            paymentId: paymentId, 
+            courseId: courseId, 
+            courseTitle: courseTitle,
+            paymentStatus: status
+          }
+        );
+        console.log(`[Payment] ✅ Activity recorded for payment ${status}`, {
+          userId,
+          paymentId,
+          courseId,
+          courseTitle,
+          activityType
+        });
+      } catch (activityError) {
+        console.error(`[Payment] ❌ Error recording payment activity (${status}):`, activityError);
+        // Ne pas bloquer si l'activité échoue
+      }
+    }
   } catch (notificationError) {
     console.error(`[Payment] ❌ Erreur lors de la création de la notification de paiement (${status}):`, notificationError);
     // Ne pas faire échouer le processus si la notification échoue

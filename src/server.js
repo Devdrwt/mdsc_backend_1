@@ -76,6 +76,8 @@ const adminEventRoutes = require('./routes/adminEventRoutes');
 const ratingRoutes = require('./routes/ratingRoutes');
 const forumRoutes = require('./routes/forumRoutes');
 const liveSessionRoutes = require('./routes/liveSessionRoutes');
+const adminPaymentConfigRoutes = require('./routes/adminPaymentConfigRoutes');
+const reminderRoutes = require('./routes/reminderRoutes');
 
 const app = express();
 
@@ -306,6 +308,13 @@ app.use('/uploads', express.static(uploadsPath, {
   }
 }));
 
+// Servir les fichiers statiques du dossier public (pour les pages de test)
+const publicPath = path.join(__dirname, '../public');
+if (fs.existsSync(publicPath)) {
+  app.use('/public', express.static(publicPath));
+  console.log('✅ Dossier public accessible:', publicPath);
+}
+
 // Log pour vérifier que le dossier uploads est accessible
 if (process.env.NODE_ENV === 'development') {
   if (fs.existsSync(uploadsPath)) {
@@ -331,8 +340,11 @@ app.use('/api/admin/auth', adminAuthRoutes);
 // Alias pour compatibilité frontend (sans /api)
 app.use('/admin/auth', adminAuthRoutes);
 app.use('/api/auth/admin', adminAuthRoutes);
+// Routes admin spécifiques AVANT les routes générales pour éviter les conflits
+app.use('/api/admin/payment-providers', adminPaymentConfigRoutes);
 app.use('/api/admin', adminDashboardRoutes);
 app.use('/api/admin', adminUserRoutes);
+app.use('/api/admin/reminders', reminderRoutes);
 app.use('/api', courseApprovalRoutes);
 app.use('/api/courses', courseRoutes);
 app.use('/api/quizzes', quizRoutes);
@@ -428,6 +440,15 @@ const startServer = async () => {
       console.log(`🗄️ Base de données: ${process.env.DB_NAME || 'mdsc_auth'}`);
       console.log(`🔗 Frontend: ${process.env.FRONTEND_URL || 'http://localhost:3000'}`);
       console.log('='.repeat(60) + '\n');
+
+      // Démarrer le scheduler automatique des rappels
+      try {
+        const ReminderScheduler = require('./services/reminderScheduler');
+        ReminderScheduler.start();
+        console.log('✅ Scheduler des rappels de cours initialisé');
+      } catch (error) {
+        console.warn('⚠️ Impossible d\'initialiser le scheduler des rappels:', error.message);
+      }
     });
 
   } catch (error) {
@@ -441,11 +462,23 @@ startServer();
 // Gestion de l'arrêt propre
 process.on('SIGTERM', () => {
   console.log('👋 SIGTERM reçu. Arrêt du serveur...');
+  try {
+    const ReminderScheduler = require('./services/reminderScheduler');
+    ReminderScheduler.stop();
+  } catch (e) {
+    // Ignorer si le module n'est pas chargé
+  }
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
   console.log('\n👋 SIGINT reçu. Arrêt du serveur...');
+  try {
+    const ReminderScheduler = require('./services/reminderScheduler');
+    ReminderScheduler.stop();
+  } catch (e) {
+    // Ignorer si le module n'est pas chargé
+  }
   process.exit(0);
 });
 

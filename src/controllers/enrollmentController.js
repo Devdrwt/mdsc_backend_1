@@ -434,15 +434,21 @@ const getCourseProgress = async (req, res) => {
       });
     }
 
-    // Récupérer les leçons du cours
+    // Récupérer les leçons du cours avec progression (vérifier les deux tables)
+    const enrollmentId = enrollments[0].id;
     const lessonsQuery = `
-      SELECT l.*, lp.is_completed, lp.completed_at, lp.time_spent_minutes
+      SELECT 
+        l.*, 
+        COALESCE(lp.is_completed, CASE WHEN p.status = 'completed' THEN TRUE ELSE FALSE END, FALSE) as is_completed,
+        COALESCE(lp.completed_at, p.completed_at) as completed_at,
+        COALESCE(lp.time_spent_minutes, FLOOR(p.time_spent / 60), 0) as time_spent_minutes
       FROM lessons l
-      LEFT JOIN lesson_progress lp ON l.id = lp.lesson_id AND lp.user_id = ?
+      LEFT JOIN lesson_progress lp ON l.id = lp.lesson_id AND lp.user_id = ? AND lp.course_id = ?
+      LEFT JOIN progress p ON l.id = p.lesson_id AND p.enrollment_id = ?
       WHERE l.course_id = ? AND l.is_published = TRUE
       ORDER BY l.order_index ASC
     `;
-    const [lessons] = await pool.execute(lessonsQuery, [userId, courseId]);
+    const [lessons] = await pool.execute(lessonsQuery, [userId, courseId, enrollmentId, courseId]);
 
     // Récupérer les quiz du cours
     const quizzesQuery = `
@@ -489,7 +495,7 @@ const updateLessonProgress = async (req, res) => {
   try {
     const { courseId, lessonId } = req.params;
     const userId = req.user?.id ?? req.user?.userId;
-    const { is_completed, time_spent_minutes, last_position_seconds } = req.body;
+    const { is_completed, time_spent_minutes, last_position_seconds, completion_percentage } = req.body;
 
     // Vérifier que l'utilisateur est inscrit au cours
     const enrollmentQuery = `
@@ -516,29 +522,147 @@ const updateLessonProgress = async (req, res) => {
       });
     }
 
-    // Mettre à jour ou créer la progression
-    const upsertQuery = `
-      INSERT INTO lesson_progress (
-        user_id, lesson_id, course_id, is_completed, 
-        completed_at, time_spent_minutes, last_position_seconds
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON DUPLICATE KEY UPDATE
-        is_completed = VALUES(is_completed),
-        completed_at = CASE 
-          WHEN VALUES(is_completed) = TRUE AND completed_at IS NULL THEN NOW()
-          WHEN VALUES(is_completed) = FALSE THEN NULL
-          ELSE completed_at
-        END,
-        time_spent_minutes = VALUES(time_spent_minutes),
-        last_position_seconds = VALUES(last_position_seconds),
-        updated_at = NOW()
-    `;
+    const enrollmentId = enrollments[0].id;
+    const enrollment = enrollments[0];
 
-    const completedAt = is_completed ? new Date() : null;
-    await pool.execute(upsertQuery, [
-      userId, lessonId, courseId, is_completed, 
-      completedAt, time_spent_minutes, last_position_seconds
-    ]);
+    // Utiliser une transaction pour garantir la cohérence des deux tables
+    const connection = await pool.getConnection();
+    
+    try {
+      await connection.beginTransaction();
+      console.log(`🔄 [Enrollment] Transaction démarrée pour mise à jour progression lesson ${lessonId}, enrollment ${enrollmentId}`);
+
+      // Mettre à jour ou créer la progression dans lesson_progress
+      const upsertQuery = `
+        INSERT INTO lesson_progress (
+          user_id, lesson_id, course_id, is_completed, 
+          completed_at, time_spent_minutes, last_position_seconds
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          is_completed = VALUES(is_completed),
+          completed_at = CASE 
+            WHEN VALUES(is_completed) = TRUE AND completed_at IS NULL THEN NOW()
+            WHEN VALUES(is_completed) = FALSE THEN NULL
+            ELSE completed_at
+          END,
+          time_spent_minutes = VALUES(time_spent_minutes),
+          last_position_seconds = VALUES(last_position_seconds),
+          updated_at = NOW()
+      `;
+
+      const completedAt = is_completed ? new Date() : null;
+      const [lessonProgressResult] = await connection.execute(upsertQuery, [
+        userId, lessonId, courseId, is_completed, 
+        completedAt, time_spent_minutes, last_position_seconds
+      ]);
+      console.log(`✅ [Enrollment] lesson_progress mis à jour pour user ${userId}, lesson ${lessonId}`);
+
+      // IMPORTANT: Synchroniser aussi avec la table progress pour cohérence
+      if (is_completed) {
+        // Vérifier si un enregistrement existe dans progress
+        const [existingProgress] = await connection.execute(
+          'SELECT id FROM progress WHERE enrollment_id = ? AND lesson_id = ?',
+          [enrollmentId, lessonId]
+        );
+
+        if (existingProgress.length > 0) {
+          // Mettre à jour
+          await connection.execute(
+            `UPDATE progress 
+             SET status = 'completed',
+                 completion_percentage = 100,
+                 time_spent = time_spent + ?,
+                 completed_at = NOW(),
+                 updated_at = NOW()
+             WHERE enrollment_id = ? AND lesson_id = ?`,
+            [(time_spent_minutes || 0) * 60, enrollmentId, lessonId]
+          );
+          console.log(`✅ [Enrollment] progress mis à jour (UPDATE) pour enrollment ${enrollmentId}, lesson ${lessonId}`);
+        } else {
+          // Créer
+          await connection.execute(
+            `INSERT INTO progress (
+              enrollment_id, lesson_id, status, completion_percentage, 
+              time_spent, completed_at
+            ) VALUES (?, ?, 'completed', 100, ?, NOW())`,
+            [enrollmentId, lessonId, (time_spent_minutes || 0) * 60]
+          );
+          console.log(`✅ [Enrollment] progress créé (INSERT) pour enrollment ${enrollmentId}, lesson ${lessonId}`);
+        }
+
+        // Vérifier que les données sont bien sauvegardées
+        const [verifyProgress] = await connection.execute(
+          'SELECT id, status, completion_percentage FROM progress WHERE enrollment_id = ? AND lesson_id = ?',
+          [enrollmentId, lessonId]
+        );
+        const [verifyLessonProgress] = await connection.execute(
+          'SELECT id, is_completed FROM lesson_progress WHERE user_id = ? AND lesson_id = ?',
+          [userId, lessonId]
+        );
+        
+        if (verifyProgress.length === 0 || verifyProgress[0].status !== 'completed') {
+          throw new Error(`La progression n'a pas été correctement sauvegardée dans progress: status=${verifyProgress[0]?.status}`);
+        }
+        if (verifyLessonProgress.length === 0 || !verifyLessonProgress[0].is_completed) {
+          throw new Error(`La progression n'a pas été correctement sauvegardée dans lesson_progress: is_completed=${verifyLessonProgress[0]?.is_completed}`);
+        }
+        
+        console.log(`✅ [Enrollment] Vérification réussie: progression sauvegardée dans les deux tables`);
+      } else {
+        // Si la leçon n'est pas complétée, mettre à jour le pourcentage dans progress
+        const completionPercentage = last_position_seconds && last_position_seconds > 0 ? 50 : 0;
+        const [existingProgress] = await connection.execute(
+          'SELECT id FROM progress WHERE enrollment_id = ? AND lesson_id = ?',
+          [enrollmentId, lessonId]
+        );
+
+        if (existingProgress.length > 0) {
+          await connection.execute(
+            `UPDATE progress 
+             SET completion_percentage = ?,
+                 status = CASE 
+                   WHEN ? >= 100 THEN 'completed'
+                   WHEN ? > 0 THEN 'in_progress'
+                   ELSE 'not_started'
+                 END,
+                 updated_at = NOW()
+             WHERE enrollment_id = ? AND lesson_id = ?`,
+            [completionPercentage, completionPercentage, completionPercentage, enrollmentId, lessonId]
+          );
+        } else {
+          await connection.execute(
+            `INSERT INTO progress (
+              enrollment_id, lesson_id, status, completion_percentage, 
+              time_spent
+            ) VALUES (?, ?, ?, ?, ?)`,
+            [
+              enrollmentId, 
+              lessonId, 
+              completionPercentage >= 100 ? 'completed' : (completionPercentage > 0 ? 'in_progress' : 'not_started'),
+              completionPercentage,
+              (time_spent_minutes || 0) * 60
+            ]
+          );
+        }
+      }
+
+      await connection.commit();
+      console.log(`✅ [Enrollment] Transaction commitée avec succès pour lesson ${lessonId}, enrollment ${enrollmentId}`);
+
+      // Recalculer la progression globale du cours après la transaction
+      if (is_completed) {
+        const ProgressService = require('../services/progressService');
+        await ProgressService.updateCourseProgress(enrollmentId);
+        console.log(`✅ [Enrollment] Progression globale recalculée pour enrollment ${enrollmentId} après complétion de la leçon ${lessonId}`);
+      }
+      
+    } catch (error) {
+      await connection.rollback();
+      console.error(`❌ [Enrollment] Erreur lors de la sauvegarde de progression, rollback effectué:`, error);
+      throw error;
+    } finally {
+      connection.release();
+    }
 
     if (is_completed) {
       eventEmitter.emit(EVENTS.LESSON_COMPLETED, {
@@ -599,10 +723,12 @@ const unenrollFromCourse = async (req, res) => {
 
     console.log('✅ [UNENROLL] Paramètres validés - courseId:', courseId, 'userId:', userId);
 
-    // Vérifier que l'utilisateur est inscrit au cours
+    // Vérifier que l'utilisateur est inscrit au cours (tous statuts, y compris completed)
+    // Permettre la désinscription même si le cours est complété à 100%
     const enrollmentQuery = `
-      SELECT id FROM enrollments 
-      WHERE user_id = ? AND course_id = ? AND is_active = TRUE
+      SELECT id, status, progress_percentage FROM enrollments 
+      WHERE user_id = ? AND course_id = ? 
+      AND is_active = TRUE
     `;
     const [enrollments] = await pool.execute(enrollmentQuery, [userId, courseId]);
 
@@ -723,7 +849,7 @@ const unenrollFromCourse = async (req, res) => {
             userId,
             '📤 Désinscription effectuée',
             `Vous avez été désinscrit du cours "${courseTitle}". Toutes vos données de progression, tentatives de quiz et activités ont été supprimées.`,
-            'course_unenrolled',
+            'course', // Type valide selon l'ENUM de la table notifications
             `/dashboard/student/courses`,
             JSON.stringify({ courseId: courseId, courseTitle: courseTitle })
           ]

@@ -1,5 +1,4 @@
 const { pool } = require('../config/database');
-const { v4: uuidv4 } = require('uuid');
 
 class CertificateService {
   static async generateCertificate(userId, courseId) {
@@ -9,7 +8,9 @@ class CertificateService {
     );
     if (existing.length) return existing[0];
 
-    const certificateCode = uuidv4();
+    // Générer un code au format MDSC-########-BJ (8 chiffres aléatoires)
+    const random = Math.floor(10000000 + Math.random() * 90000000);
+    const certificateCode = `MDSC-${random}-BJ`;
     const pdfUrl = null; // Stub: à implémenter via générateur PDF
     const qrUrl = null;  // Stub: à implémenter via QR code
 

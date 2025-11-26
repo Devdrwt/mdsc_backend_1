@@ -250,6 +250,7 @@ const getCourseProgress = async (req, res) => {
       return;
     }
 
+    // Récupérer les leçons avec progression (vérifier les deux tables progress et lesson_progress)
     const [lessons] = await pool.execute(
       `
       SELECT
@@ -259,19 +260,28 @@ const getCourseProgress = async (req, res) => {
         l.duration_minutes,
         l.content_type,
         l.is_required,
-        lp.is_completed,
-        lp.completed_at,
-        lp.time_spent_minutes,
+        COALESCE(
+          lp.is_completed,
+          CASE WHEN p.status = 'completed' THEN TRUE ELSE FALSE END,
+          FALSE
+        ) as is_completed,
+        COALESCE(lp.completed_at, p.completed_at) as completed_at,
+        COALESCE(lp.time_spent_minutes, FLOOR(p.time_spent / 60), 0) as time_spent_minutes,
         lp.last_position_seconds
       FROM lessons l
       LEFT JOIN lesson_progress lp
         ON lp.lesson_id = l.id
        AND lp.user_id = ?
+       AND lp.course_id = ?
+      LEFT JOIN enrollments e ON e.user_id = ? AND e.course_id = ? AND e.is_active = TRUE
+      LEFT JOIN progress p
+        ON p.lesson_id = l.id
+       AND p.enrollment_id = e.id
       WHERE l.course_id = ?
         AND l.is_published = TRUE
       ORDER BY l.order_index ASC
     `,
-      [studentId, courseId]
+      [studentId, courseId, studentId, courseId, courseId]
     );
 
     const [quizzes] = await pool.execute(

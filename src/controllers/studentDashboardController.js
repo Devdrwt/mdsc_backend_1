@@ -586,6 +586,7 @@ const getCertificates = async (req, res) => {
         c.id,
         c.course_id,
         c.certificate_code,
+        c.certificate_number,
         c.issued_at,
         c.pdf_url,
         c.verified,

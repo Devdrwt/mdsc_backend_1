@@ -267,7 +267,9 @@ const approveCertificateRequest = async (req, res) => {
 
     // Générer un code unique pour le certificat
     const certificateCode = uuidv4();
-    const certificateNumber = `MDSC-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+    // Générer un numéro de certificat unique pour affichage (format MDSC-XXXXXXXX-BJ)
+    const random = Math.floor(10000000 + Math.random() * 90000000); // 8 chiffres aléatoires
+    const certificateNumber = `MDSC-${random}-BJ`;
 
     // Créer le certificat dans la base de données
     const [certificateResult] = await pool.execute(

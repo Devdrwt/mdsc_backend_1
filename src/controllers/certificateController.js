@@ -103,9 +103,12 @@ const getCertificateById = async (req, res) => {
 };
 
 // Vérifier un certificat par code (pour QR code)
+// Utilise certificate_number (format MDSC-XXXXXX-BJ) pour la vérification
 const verifyCertificate = async (req, res) => {
   try {
     const { code } = req.params;
+    // Convertir en majuscules pour la cohérence
+    const normalizedCode = code.toUpperCase();
 
     const query = `
       SELECT 
@@ -124,10 +127,10 @@ const verifyCertificate = async (req, res) => {
       FROM certificates c
       JOIN courses co ON c.course_id = co.id
       JOIN users u ON c.user_id = u.id
-      WHERE c.certificate_code = ?
+      WHERE c.certificate_number = ?
     `;
 
-    const [certificates] = await pool.execute(query, [code]);
+    const [certificates] = await pool.execute(query, [normalizedCode]);
 
     if (certificates.length === 0) {
       return res.status(404).json({
@@ -468,8 +471,9 @@ const generateCertificateForCourse = async (userId, courseId) => {
     // Générer un code unique pour le certificat (pour QR code)
     const certificateCode = uuidv4();
     
-    // Générer un numéro de certificat unique pour affichage
-    const certificateNumber = `MDSC-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+    // Générer un numéro de certificat unique pour affichage (format MDSC-XXXXXXXX-BJ)
+    const random = Math.floor(10000000 + Math.random() * 90000000); // 8 chiffres aléatoires
+    const certificateNumber = `MDSC-${random}-BJ`;
 
     // Générer le QR code
     const qrCodeDir = path.join(__dirname, '../../certificates/qrcodes');
@@ -478,7 +482,8 @@ const generateCertificateForCourse = async (userId, courseId) => {
     }
     
     const qrCodePath = path.join(qrCodeDir, `${certificateCode}.png`);
-    const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/verify-certificate/${certificateCode}`;
+    // Utiliser certificate_number (format MDSC-XXXXXX-BJ) pour la vérification dans le QR code
+    const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/verify-certificate/${certificateNumber}`;
     
     await QRCode.toFile(qrCodePath, verificationUrl, {
       errorCorrectionLevel: 'H',

@@ -404,7 +404,7 @@ async function generateCertificatePDF(request) {
       // Design du certificat
       doc.fontSize(48)
          .font('Helvetica-Bold')
-         .text('CERTIFICAT DE COMPLÉTION', { align: 'center' })
+         .text('ATTESTATION DE COMPLÉTION', { align: 'center' })
          .moveDown(2);
 
       doc.fontSize(24)
@@ -450,7 +450,7 @@ async function generateCertificatePDF(request) {
 
       doc.fontSize(12)
          .font('Helvetica')
-         .text(`Certificat ID: ${request.id}`, { align: 'center' })
+         .text(`Attestation ID: ${request.id}`, { align: 'center' })
          .text(`Date d'émission: ${new Date().toLocaleDateString('fr-FR')}`, { align: 'center' });
 
       doc.end();

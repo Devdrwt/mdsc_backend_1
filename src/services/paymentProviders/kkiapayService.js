@@ -1,17 +1,44 @@
 const axios = require('axios');
 
 class KkiapayService {
-  constructor() {
-    // URL de base pour Kkiapay (sandbox et production)
-    const isSandbox = process.env.KKIAPAY_SANDBOX === 'true' || process.env.NODE_ENV !== 'production';
-    const fallbackUrl = isSandbox 
-      ? 'https://api-sandbox.kkiapay.me' 
-      : 'https://api.kkiapay.me';
-    
-    this.baseUrl = (process.env.KKIAPAY_BASE_URL || fallbackUrl).replace(/\/$/, '');
-    this.publicKey = process.env.KKIAPAY_PUBLIC_KEY;
-    this.secretKey = process.env.KKIAPAY_SECRET_KEY;
-    this.sandbox = isSandbox;
+  constructor(config = null) {
+    // Si une configuration est fournie, l'utiliser (depuis la DB)
+    if (config) {
+      this.publicKey = String(config.public_key || '').trim();
+      this.secretKey = String(config.secret_key || '').trim();
+      
+      // Détecter automatiquement l'environnement basé sur les clés (même logique que loadConfig)
+      let detectedSandbox = config.is_sandbox !== undefined ? config.is_sandbox : true;
+      
+      const publicKeyLower = this.publicKey.toLowerCase();
+      const secretKeyLower = this.secretKey.toLowerCase();
+      
+      if (publicKeyLower.includes('test') || secretKeyLower.includes('test') || 
+          publicKeyLower.includes('sandbox') || secretKeyLower.includes('sandbox')) {
+        detectedSandbox = true;
+        console.log('[Kkiapay] 🟡 Clé sandbox détectée dans le constructeur, utilisation de l\'environnement sandbox');
+      } else if (publicKeyLower.includes('live') || secretKeyLower.includes('live') ||
+                 publicKeyLower.includes('prod') || secretKeyLower.includes('prod')) {
+        detectedSandbox = false;
+        console.log('[Kkiapay] 🔴 Clé production détectée dans le constructeur, passage en mode production');
+      } else {
+        // Si aucune détection automatique, utiliser le flag de la DB
+        console.log('[Kkiapay] ℹ️ Aucune détection automatique, utilisation du flag is_sandbox de la DB:', detectedSandbox);
+      }
+      
+      this.sandbox = detectedSandbox;
+      this.baseUrl = (config.base_url || this.getDefaultBaseUrl(this.sandbox)).replace(/\/$/, '');
+    } else {
+      // Fallback sur les variables d'environnement
+      const isSandbox = process.env.KKIAPAY_SANDBOX === 'true' || process.env.NODE_ENV !== 'production';
+      // Kkiapay utilise https://cdn.kkiapay.me comme base URL pour tout
+      const fallbackUrl = 'https://cdn.kkiapay.me';
+      
+      this.baseUrl = (process.env.KKIAPAY_BASE_URL || fallbackUrl).replace(/\/$/, '');
+      this.publicKey = process.env.KKIAPAY_PUBLIC_KEY;
+      this.secretKey = process.env.KKIAPAY_SECRET_KEY;
+      this.sandbox = isSandbox;
+    }
     
     // Vérifier que la clé publique n'est pas une Private Api Key
     if (this.publicKey && (this.publicKey.startsWith('tpk_') || this.publicKey.startsWith('pk_'))) {
@@ -23,10 +50,68 @@ class KkiapayService {
     this.defaultCurrency = (process.env.KKIAPAY_CURRENCY || 'XOF').toUpperCase();
   }
 
+  /**
+   * Obtenir l'URL de base par défaut selon l'environnement
+   */
+  getDefaultBaseUrl(isSandbox) {
+    // Kkiapay utilise https://cdn.kkiapay.me comme base URL pour tout
+    return 'https://cdn.kkiapay.me';
+  }
+
+  /**
+   * Charger la configuration depuis la base de données
+   */
+  async loadConfig() {
+    try {
+      const paymentConfigService = require('../paymentConfigService');
+      const config = await paymentConfigService.getProviderConfigByName('kkiapay');
+      
+      if (config && config.public_key && config.secret_key) {
+        this.publicKey = String(config.public_key).trim();
+        this.secretKey = String(config.secret_key).trim();
+        
+        // Détecter automatiquement l'environnement basé sur les clés (même logique que le constructeur)
+        let detectedSandbox = config.is_sandbox !== undefined ? config.is_sandbox : true;
+        
+        const publicKeyLower = this.publicKey.toLowerCase();
+        const secretKeyLower = this.secretKey.toLowerCase();
+        
+        if (publicKeyLower.includes('test') || secretKeyLower.includes('test') || 
+            publicKeyLower.includes('sandbox') || secretKeyLower.includes('sandbox')) {
+          detectedSandbox = true;
+          console.log('[Kkiapay] 🟡 Clé sandbox détectée, utilisation de l\'environnement sandbox');
+        } else if (publicKeyLower.includes('live') || secretKeyLower.includes('live') ||
+                   publicKeyLower.includes('prod') || secretKeyLower.includes('prod')) {
+          detectedSandbox = false;
+          console.log('[Kkiapay] 🔴 Clé production détectée, passage en mode production');
+        }
+        
+        this.sandbox = detectedSandbox;
+        this.baseUrl = (config.base_url || this.getDefaultBaseUrl(this.sandbox)).replace(/\/$/, '');
+        
+        console.log('[Kkiapay] ✅ Configuration chargée depuis la base de données', {
+          isSandbox: this.sandbox,
+          baseUrl: this.baseUrl,
+          publicKeyLength: this.publicKey ? this.publicKey.length : 0,
+          secretKeyLength: this.secretKey ? this.secretKey.length : 0,
+          publicKeyPrefix: this.publicKey ? `${this.publicKey.substring(0, 20)}...` : 'missing',
+          publicKeySuffix: this.publicKey ? `...${this.publicKey.substring(this.publicKey.length - 10)}` : 'missing',
+          environment: this.sandbox ? 'SANDBOX' : 'PRODUCTION',
+        });
+        return true;
+      }
+      
+      return false;
+    } catch (error) {
+      console.error('[Kkiapay] Erreur lors du chargement de la config depuis la DB:', error);
+      return false;
+    }
+  }
+
   ensureConfigured() {
     if (!this.publicKey || !this.secretKey) {
       throw new Error(
-        'Clés Kkiapay manquantes. Vérifiez KKIAPAY_PUBLIC_KEY et KKIAPAY_SECRET_KEY.'
+        'Clés Kkiapay manquantes. Vérifiez la configuration dans l\'interface admin ou les variables d\'environnement KKIAPAY_PUBLIC_KEY et KKIAPAY_SECRET_KEY.'
       );
     }
   }
@@ -47,7 +132,15 @@ class KkiapayService {
    * Cette méthode retourne les informations nécessaires pour initialiser le widget
    */
   async createTransaction(transactionPayload = {}) {
-    this.ensureConfigured();
+    // Essayer de charger la config depuis la DB si pas déjà configuré
+    if (!this.publicKey || !this.secretKey) {
+      const loaded = await this.loadConfig();
+      if (!loaded) {
+        this.ensureConfigured(); // Lancer l'erreur si toujours pas configuré
+      }
+    } else {
+      this.ensureConfigured();
+    }
 
     const amount = this.normaliseAmount(transactionPayload.amount);
     if (amount <= 0) {
@@ -71,16 +164,23 @@ class KkiapayService {
       throw new Error('Configuration incorrecte: Private Api Key détectée dans KKIAPAY_PUBLIC_KEY. Utilisez la Public Api Key (sans préfixe tpk_/pk_).');
     }
     
+    // S'assurer que sandbox est un booléen explicite
+    const sandboxValue = Boolean(this.sandbox);
+    
     console.log('[Kkiapay] 📤 Envoi de la clé publique au frontend', {
-      keyPrefix: this.publicKey ? this.publicKey.substring(0, 15) + '...' : 'null',
+      keyPrefix: this.publicKey ? this.publicKey.substring(0, 20) + '...' : 'null',
+      keySuffix: this.publicKey ? '...' + this.publicKey.substring(this.publicKey.length - 10) : 'null',
       keyLength: this.publicKey ? this.publicKey.length : 0,
-      sandbox: this.sandbox
+      sandbox: sandboxValue,
+      sandboxType: typeof sandboxValue,
+      environment: sandboxValue ? 'SANDBOX' : 'PRODUCTION',
+      baseUrl: this.baseUrl,
     });
     
     return {
       raw: {
         public_key: this.publicKey,
-        sandbox: this.sandbox,
+        sandbox: sandboxValue, // Booléen explicite
         amount: amount,
         currency: (transactionPayload.currency || this.defaultCurrency).toUpperCase(),
         description: transactionPayload.description || 'Paiement formation MdSC',
@@ -104,7 +204,15 @@ class KkiapayService {
    * Vérifier le statut d'une transaction
    */
   async getTransactionStatus(transactionId) {
-    this.ensureConfigured();
+    // Essayer de charger la config depuis la DB si pas déjà configuré
+    if (!this.publicKey || !this.secretKey) {
+      const loaded = await this.loadConfig();
+      if (!loaded) {
+        this.ensureConfigured(); // Lancer l'erreur si toujours pas configuré
+      }
+    } else {
+      this.ensureConfigured();
+    }
 
     if (!transactionId) {
       throw new Error('Identifiant de transaction Kkiapay manquant');
@@ -171,7 +279,15 @@ class KkiapayService {
    * Annuler une transaction
    */
   async cancelTransaction(transactionId) {
-    this.ensureConfigured();
+    // Essayer de charger la config depuis la DB si pas déjà configuré
+    if (!this.publicKey || !this.secretKey) {
+      const loaded = await this.loadConfig();
+      if (!loaded) {
+        this.ensureConfigured(); // Lancer l'erreur si toujours pas configuré
+      }
+    } else {
+      this.ensureConfigured();
+    }
 
     if (!transactionId) {
       throw new Error('Identifiant de transaction Kkiapay manquant');
@@ -258,5 +374,8 @@ class KkiapayService {
   }
 }
 
-module.exports = new KkiapayService();
+// Exporter la classe pour permettre la création d'instances avec config
+module.exports = KkiapayService;
+// Exporter aussi une instance par défaut pour compatibilité
+module.exports.default = new KkiapayService();
 

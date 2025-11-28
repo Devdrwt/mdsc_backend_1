@@ -255,12 +255,102 @@ const webDevelopmentCourse = {
       order_index: 1,
       is_unlocked: true,
       lessons: [
-        { title: 'Introduction au HTML5', description: 'Structure et sémantique HTML5', duration_minutes: 60, order_index: 1 },
-        { title: 'CSS3 et Responsive Design', description: 'Styles modernes et design adaptatif', duration_minutes: 90, order_index: 2 },
-        { title: 'JavaScript ES6+', description: 'Variables, fonctions, objets et classes', duration_minutes: 90, order_index: 3 },
-        { title: 'DOM et Manipulation', description: 'Interagir avec le DOM', duration_minutes: 75, order_index: 4 },
-        { title: 'Asynchrone et Promises', description: 'Async/await et gestion asynchrone', duration_minutes: 90, order_index: 5 },
-        { title: 'Projet pratique : Site web', description: 'Création d\'un site web complet', duration_minutes: 90, order_index: 6 }
+        {
+          title: 'Introduction au HTML5',
+          description: 'Structure et sémantique HTML5',
+          duration_minutes: 60,
+          order_index: 1,
+          content: `
+            <p>Dans cette première immersion, nous revisitons entièrement l'histoire du HTML en expliquant pourquoi HTML5 a marqué une rupture avec l'époque des documents purement descriptifs. Nous détaillons la relation entre structure logique et accessibilité, et nous montrons comment les balises sémantiques facilitent l'ancrage SEO et le travail des lecteurs d'écran.</p>
+            <p>Chaque concept est illustré par des exemples complets incluant l'utilisation des balises <code>&lt;header&gt;</code>, <code>&lt;main&gt;</code>, <code>&lt;article&gt;</code>, ainsi que l'intégration de micro-données pour enrichir vos pages. Vous apprendrez aussi à préparer des squelettes de pages robustes pour les futures intégrations CSS et JavaScript.</p>
+            <ul>
+              <li>Analyse approfondie d'une page HTML5 réelle avec annotations ligne par ligne</li>
+              <li>Bonnes pratiques d'organisation des sections et des ressources média</li>
+              <li>Mini-exercice guidé : transformer une page HTML4 en structure HTML5 moderne</li>
+            </ul>
+            <p>La leçon se conclut par un atelier où vous bâtissez un document complet en intégrant formulaires, tableaux accessibles et éléments interactifs natifs.</p>
+          `
+        },
+        {
+          title: 'CSS3 et Responsive Design',
+          description: 'Styles modernes et design adaptatif',
+          duration_minutes: 90,
+          order_index: 2,
+          content: `
+            <p>Nous décortiquons les fondations du cascadeur CSS, en mettant l'accent sur la spécificité, l'héritage et l'ordre des déclarations. À travers une série d'exemples détaillés, vous apprendrez à structurer vos feuilles de style en modules réutilisables et à tirer parti des variables CSS personnalisées.</p>
+            <p>La seconde partie se concentre sur le responsive design : points de rupture, grilles fluides, unités relatives et systèmes typographiques adaptatifs. Nous construisons ensemble une page qui passe progressivement d'une colonne à un layout complexe en plusieurs panneaux.</p>
+            <ul>
+              <li>Création d'une grille CSS moderne avec <code>display: grid</code> et <code>flexbox</code></li>
+              <li>Atelier media queries : concevoir pour mobile-first avec des exemples concrets</li>
+              <li>Étude de cas : refactorisation d'une page figée vers une interface totalement responsive</li>
+            </ul>
+            <p>Chaque section contient des captures de code détaillées et des check-lists pour tester votre design sur différents appareils.</p>
+          `
+        },
+        {
+          title: 'JavaScript ES6+',
+          description: 'Variables, fonctions, objets et classes',
+          duration_minutes: 90,
+          order_index: 3,
+          content: `
+            <p>Nous passons en revue les nouveautés majeures introduites à partir d'ES6 : let/const, templates, destructuration, opérateurs rest/spread et modules. Les exemples sont contextualisés dans des scénarios réalistes (gestion d'état, manipulation de collections, composition de fonctions).</p>
+            <p>Une large section est dédiée aux classes, à l'héritage prototypal et à la façon de concevoir des API JavaScript maintenables. Vous découvrirez comment structurer vos fichiers en modules import/export et comment utiliser les fonctionnalités de bundlers modernes.</p>
+            <ul>
+              <li>Mini-lab : transformer une librairie héritée en syntaxe ES6+</li>
+              <li>Tableaux comparatifs var/let/const avec cas limites expliqués</li>
+              <li>Recettes pour créer des utilitaires réutilisables avec des fonctions fléchées</li>
+            </ul>
+            <p>La leçon se termine par des exercices guidés où vous implémentez un gestionnaire de formulaires et un module de notifications entièrement modulaires.</p>
+          `
+        },
+        {
+          title: 'DOM et Manipulation',
+          description: 'Interagir avec le DOM',
+          duration_minutes: 75,
+          order_index: 4,
+          content: `
+            <p>Nous explorons en profondeur l'API DOM moderne : sélection, création, clonage et insertion d'éléments, ainsi que la gestion des attributs et des datasets. Les exemples couvrent également l'API MutationObserver pour réagir aux changements structuraux.</p>
+            <p>Une partie importante est consacrée à la délégation d'événements, à la prévention des fuites mémoire et à la configuration des interactions clavier/souris accessibles. Nous mettons en place une liste dynamique, un carrousel et un module d'onglets pour illustrer les patterns.</p>
+            <ul>
+              <li>Comparaison détaillée entre <code>innerHTML</code>, <code>textContent</code> et les méthodes de template</li>
+              <li>Gestion fine des transitions CSS déclenchées en JavaScript</li>
+              <li>Exercice : création d'un gestionnaire de formulaires réactif avec validation en direct</li>
+            </ul>
+            <p>Vous repartirez avec un toolkit complet de snippets que vous pourrez réutiliser dans votre projet final.</p>
+          `
+        },
+        {
+          title: 'Asynchrone et Promises',
+          description: 'Async/await et gestion asynchrone',
+          duration_minutes: 90,
+          order_index: 5,
+          content: `
+            <p>Nous mettons en place une progression claire depuis les callbacks jusqu'aux promises et à <code>async/await</code>. Chaque concept est accompagné d'exemples détaillant la gestion des erreurs, des annulations et des timeouts.</p>
+            <p>La leçon introduit également les Web APIs modernes (Fetch, AbortController, Streams) et montre comment architecturer une couche d'accès réseau résiliente. Nous analysons les patterns de concurrence (Promise.all, allSettled, race) et les stratégies de retry.</p>
+            <ul>
+              <li>Étude d'un module de service qui centralise toutes les requêtes HTTP</li>
+              <li>Mise en place d'un indicateur de chargement global et d'une journalisation centralisée</li>
+              <li>Atelier pratique : création d'un mini-dashboard alimenté par plusieurs APIs publiques</li>
+            </ul>
+            <p>Les annexes incluent un guide de debugging des opérations asynchrones dans Chrome DevTools.</p>
+          `
+        },
+        {
+          title: 'Projet pratique : Site web',
+          description: 'Création d\'un site web complet',
+          duration_minutes: 90,
+          order_index: 6,
+          content: `
+            <p>Ce projet récapitulatif vous fait passer du cahier des charges à un site complet comprenant plusieurs pages, un design responsive et des interactions dynamiques. Nous détaillons chaque étape : wireframes, maquettes, découpage, intégration puis optimisation.</p>
+            <p>Vous apprendrez à structurer votre code, à créer une arborescence de composants réutilisables et à configurer un outil de build léger (Vite ou Parcel). L'accent est mis sur la documentation et la livraison d'un livrable professionnel.</p>
+            <ul>
+              <li>Checklist de qualité couvrant accessibilité, performance et SEO</li>
+              <li>Intégration d'un formulaire avec validation côté client et message de confirmation animé</li>
+              <li>Guide pour publier le site sur un hébergement gratuit puis sur un domaine personnalisé</li>
+            </ul>
+            <p>En bonus, vous ajoutez une section blog générée dynamiquement à partir d'un fichier JSON local afin de manipuler la logique JavaScript dans un contexte réaliste.</p>
+          `
+        }
       ],
       quiz: {
         title: 'Quiz Module 1 : Fondamentaux du Web',
@@ -312,11 +402,86 @@ const webDevelopmentCourse = {
       order_index: 2,
       is_unlocked: false,
       lessons: [
-        { title: 'Introduction à Node.js', description: 'Environnement Node.js et npm', duration_minutes: 90, order_index: 1 },
-        { title: 'Express.js et Routes', description: 'Framework Express et gestion des routes', duration_minutes: 120, order_index: 2 },
-        { title: 'Middleware et Authentification', description: 'Création de middleware et JWT', duration_minutes: 120, order_index: 3 },
-        { title: 'API RESTful', description: 'Conception et implémentation d\'APIs REST', duration_minutes: 120, order_index: 4 },
-        { title: 'Gestion des erreurs et validation', description: 'Gestion robuste des erreurs', duration_minutes: 90, order_index: 5 }
+        {
+          title: 'Introduction à Node.js',
+          description: 'Environnement Node.js et npm',
+          duration_minutes: 90,
+          order_index: 1,
+          content: `
+            <p>Nous commençons par décortiquer l'architecture de Node.js : boucle d'événements, thread pool, moteur V8 et système de modules. Vous comprendrez comment Node gère l'I/O non bloquante et pourquoi il excelle dans les applications réseau.</p>
+            <p>Nous installons ensuite un environnement de travail professionnel : nvm, npm, scripts, variables d'environnement et outils de debugging. Vous apprendrez à structurer un projet dès les premières lignes pour faciliter la montée en charge.</p>
+            <ul>
+              <li>Analyse d'un package.json complet avec scripts de build, lint et test</li>
+              <li>Création d'un CLI minimaliste qui interagit avec le système de fichiers</li>
+              <li>Guide de résolution des erreurs Node courantes (ports occupés, modules manquants, etc.)</li>
+            </ul>
+            <p>La leçon inclut des sections "pour aller plus loin" présentant TypeScript, pnpm et les modules ES dans Node.</p>
+          `
+        },
+        {
+          title: 'Express.js et Routes',
+          description: 'Framework Express et gestion des routes',
+          duration_minutes: 120,
+          order_index: 2,
+          content: `
+            <p>Nous construisons une API Express étape par étape : définition des routes, paramétrage des middlewares, gestion des réponses JSON et organisation des contrôleurs. Chaque exemple inclut des tests de requêtes avec curl et Postman.</p>
+            <p>La leçon couvre aussi la configuration avancée : routers modulaires, modèles d'organisation (feature-based vs layered), templating, gestion des fichiers statiques et intégration avec des moteurs de vue.</p>
+            <ul>
+              <li>Atelier : création d'un routeur REST complet pour la gestion des utilisateurs</li>
+              <li>Tableau de comparaison entre Express, Fastify et NestJS pour comprendre les choix techniques</li>
+              <li>Configuration d'un middleware de journalisation et d'un système de CORS robuste</li>
+            </ul>
+            <p>En bonus, nous ajoutons un pipeline de tests automatisés avec Jest/Supertest pour sécuriser vos routes.</p>
+          `
+        },
+        {
+          title: 'Middleware et Authentification',
+          description: 'Création de middleware et JWT',
+          duration_minutes: 120,
+          order_index: 3,
+          content: `
+            <p>Cette leçon explique la chaîne des middlewares Express et comment injecter des traitements transversaux (logs, métriques, compression, sécurité). Nous construisons plusieurs middlewares personnalisés avec gestion d'erreurs centralisée.</p>
+            <p>La deuxième partie plonge dans l'authentification : JWT, cookies, rafraîchissement de tokens, rôles et permissions. Nous détaillons la sécurisation des routes, la rotation de clés et la gestion des sessions côté client.</p>
+            <ul>
+              <li>Implémentation complète d'un middleware d'autorisation par rôle</li>
+              <li>Schémas sequence diagram pour comprendre le cycle login / logout / refresh</li>
+              <li>Recettes pour protéger contre les attaques courantes (CSRF, XSS, timing attack)</li>
+            </ul>
+            <p>Vous repartirez avec un module d'auth prêt à l'emploi, documenté et testé.</p>
+          `
+        },
+        {
+          title: 'API RESTful',
+          description: 'Conception et implémentation d\'APIs REST',
+          duration_minutes: 120,
+          order_index: 4,
+          content: `
+            <p>Nous étudions le design d'API REST : conventions d'URL, codes HTTP, filtrage, pagination, tri et hypermédias. Chaque règle est démontrée dans une API de gestion de catalogue comprenant des relations complexes.</p>
+            <p>Nous abordons également la documentation (OpenAPI/Swagger), l'automatisation des tests contractuels et la versioning strategy. Une section dédiée montre comment monitorer les performances et détecter les endpoints lents.</p>
+            <ul>
+              <li>Atelier : conception d'un schéma OpenAPI 3 complet puis génération automatique du client</li>
+              <li>Mise en place d'une couche de validation via Joi/Zod avec messages d'erreur contextualisés</li>
+              <li>Exemples de réponses normalisées incluant métadonnées, liens et messages d'aide</li>
+            </ul>
+            <p>Nous terminons par un déploiement simulé sur une plateforme cloud avec configuration d'un reverse-proxy.</p>
+          `
+        },
+        {
+          title: 'Gestion des erreurs et validation',
+          description: 'Gestion robuste des erreurs',
+          duration_minutes: 90,
+          order_index: 5,
+          content: `
+            <p>Nous construisons une stratégie globale de gestion d'erreurs : classification (client, serveur, dépendance), structure de réponse unifiée et journaux contextualisés. Les exemples montrent comment chaîner les erreurs pour faciliter le debugging.</p>
+            <p>Vous apprendrez à valider les entrées/sorties à plusieurs niveaux (requêtes HTTP, schémas de base de données, réponses). Nous mettons en place des tests d'intégration pour garantir la cohérence de bout en bout.</p>
+            <ul>
+              <li>Création d'un middleware d'erreur Express avec suivi des corrélations</li>
+              <li>Intégration d'un service de traçage (OpenTelemetry) afin de relier logs et spans</li>
+              <li>Checklist de validation couvrant les données sensibles, les fichiers uploadés et les webhooks</li>
+            </ul>
+            <p>Une section finale montre comment préparer l'application pour la production avec alertes proactives et dashboards.</p>
+          `
+        }
       ],
       quiz: {
         title: 'Quiz Module 2 : Backend Node.js',
@@ -356,11 +521,86 @@ const webDevelopmentCourse = {
       order_index: 3,
       is_unlocked: false,
       lessons: [
-        { title: 'Introduction aux bases de données', description: 'Concepts SQL et NoSQL', duration_minutes: 75, order_index: 1 },
-        { title: 'MySQL : Requêtes et jointures', description: 'Requêtes SQL complexes', duration_minutes: 90, order_index: 2 },
-        { title: 'ORM avec Sequelize', description: 'Utilisation de Sequelize pour MySQL', duration_minutes: 90, order_index: 3 },
-        { title: 'MongoDB et Mongoose', description: 'Bases de données NoSQL', duration_minutes: 90, order_index: 4 },
-        { title: 'Optimisation et indexation', description: 'Performance des bases de données', duration_minutes: 75, order_index: 5 }
+        {
+          title: 'Introduction aux bases de données',
+          description: 'Concepts SQL et NoSQL',
+          duration_minutes: 75,
+          order_index: 1,
+          content: `
+            <p>Nous revisitons les fondations de la persistance des données : modèles relationnels, clé primaire, intégrité référentielle, normalisation ainsi que l'émergence des modèles NoSQL (document, colonne, graphe, clé-valeur).</p>
+            <p>Chaque concept est accompagné de diagrammes UML, de scripts SQL/Mongo et d'analogies concrètes pour choisir la bonne technologie selon les besoins métier.</p>
+            <ul>
+              <li>Tableau comparatif détaillé des moteurs populaires (MySQL, PostgreSQL, MongoDB, Redis)</li>
+              <li>Étude de cas : cahier des charges d'une application et justification du choix de la base</li>
+              <li>Atelier : modéliser un schéma mixte hybride relationnel + document pour un produit e-commerce</li>
+            </ul>
+            <p>Nous couvrons également les bonnes pratiques de versioning de schéma et d'automatisation des migrations.</p>
+          `
+        },
+        {
+          title: 'MySQL : Requêtes et jointures',
+          description: 'Requêtes SQL complexes',
+          duration_minutes: 90,
+          order_index: 2,
+          content: `
+            <p>Nous approfondissons SQL via des requêtes avancées : jointures multiples, sous-requêtes corrélées, CTE, fonctions de fenêtre et vues matérialisées. Chaque requête est expliquée ligne par ligne avec plan d'exécution.</p>
+            <p>Nous travaillons sur un dataset complet (utilisateurs, commandes, paiements) pour démontrer les patterns d'analytics temps réel et de rapports consolidés.</p>
+            <ul>
+              <li>Guide d'optimisation des requêtes avec EXPLAIN et indices composites</li>
+              <li>Exercices : transformer des règles métier en requêtes SQL lisibles et performantes</li>
+              <li>Recette : créer un pipeline de rapports quotidiens directement dans MySQL</li>
+            </ul>
+            <p>La leçon inclut un module sur la gestion des transactions, des verrous et de l'isolation.</p>
+          `
+        },
+        {
+          title: 'ORM avec Sequelize',
+          description: 'Utilisation de Sequelize pour MySQL',
+          duration_minutes: 90,
+          order_index: 3,
+          content: `
+            <p>Nous introduisons Sequelize, ses modèles, migrations et seeders. Vous apprendrez à définir des relations complexes, des hooks et des validateurs personnalisés.</p>
+            <p>Nous configurons ensuite un service Node complet qui expose des repository patterns, gère les transactions et intègre des tests unitaires avec une base en mémoire.</p>
+            <ul>
+              <li>Création d'un modèle polymorphe avec scopes dynamiques et pagination prête à l'emploi</li>
+              <li>Exemple de migration évolutive avec rollback sécurisé</li>
+              <li>Conseils pour maintenir la cohérence entre schéma code et schéma réel</li>
+            </ul>
+            <p>Nous montrons aussi comment mélanger ORM et requêtes brutes pour les cas critiques.</p>
+          `
+        },
+        {
+          title: 'MongoDB et Mongoose',
+          description: 'Bases de données NoSQL',
+          duration_minutes: 90,
+          order_index: 4,
+          content: `
+            <p>Nous détaillons l'écosystème MongoDB : documents BSON, collections, indexes, pipeline d'agrégation et transactions multi-documents. Chaque section comprend des exemples concrets issus d'applications réelles.</p>
+            <p>Avec Mongoose, nous créons des schémas stricts, des middlewares, des virtuals et des query helpers. Nous abordons aussi la validation, les discriminators et la gestion des relations référencées.</p>
+            <ul>
+              <li>Exemple complet d'agrégation (match, unwind, group, project) pour construire un dashboard</li>
+              <li>Pattern bucket + TTL pour stocker des logs analytiques</li>
+              <li>Comparaison des stratégies d'indexation et d'architecture shardée</li>
+            </ul>
+            <p>Nous terminons par un atelier où vous migrez une fonctionnalité SQL vers MongoDB en détaillant les concessions.</p>
+          `
+        },
+        {
+          title: 'Optimisation et indexation',
+          description: 'Performance des bases de données',
+          duration_minutes: 75,
+          order_index: 5,
+          content: `
+            <p>Cette leçon se concentre sur les performances : typologie des index, couverture, statistiques, partitionnement et caching applicatif. Nous démontrons l'impact des choix d'index sur des requêtes concrètes via des benchmarks.</p>
+            <p>Nous analysons également la surveillance (slow query log, Performance Schema, Profiler Mongo) et construisons un plan de maintenance régulier.</p>
+            <ul>
+              <li>Atelier : identifier et corriger trois requêtes problématiques d'une application existante</li>
+              <li>Stratégies de cache côté application (Redis) et invalidation maîtrisée</li>
+              <li>Checklist de préparation avant passage en production</li>
+            </ul>
+            <p>En conclusion, nous présentons des outils open-source pour automatiser les audits de performance.</p>
+          `
+        }
       ],
       quiz: {
         title: 'Quiz Module 3 : Bases de données',
@@ -388,12 +628,102 @@ const webDevelopmentCourse = {
       order_index: 4,
       is_unlocked: false,
       lessons: [
-        { title: 'Introduction à React', description: 'Composants et JSX', duration_minutes: 90, order_index: 1 },
-        { title: 'State et Props', description: 'Gestion de l\'état dans React', duration_minutes: 120, order_index: 2 },
-        { title: 'Hooks React', description: 'useState, useEffect et hooks personnalisés', duration_minutes: 120, order_index: 3 },
-        { title: 'Routing avec React Router', description: 'Navigation dans une app React', duration_minutes: 90, order_index: 4 },
-        { title: 'State Management avec Redux', description: 'Gestion globale de l\'état', duration_minutes: 120, order_index: 5 },
-        { title: 'Projet : Application React complète', description: 'Création d\'une application complète', duration_minutes: 120, order_index: 6 }
+        {
+          title: 'Introduction à React',
+          description: 'Composants et JSX',
+          duration_minutes: 90,
+          order_index: 1,
+          content: `
+            <p>Nous démarrons par la philosophie React : UI déclarative, état minimal, synchronisation unidirectionnelle des données. Vous comprendrez comment JSX est transformé en appels <code>React.createElement</code> et comment React orchestre le rendu.</p>
+            <p>Nous construisons plusieurs composants (stateless, stateful, composés) en montrant la différence entre composition et héritage, et en introduisant les PropTypes/TypeScript pour formaliser les contrats.</p>
+            <ul>
+              <li>Construction d'un design system miniature avec boutons, alertes et cartes</li>
+              <li>Patrons pour partager du code entre composants via composition</li>
+              <li>Checklist d'accessibilité à appliquer sur chaque composant</li>
+            </ul>
+            <p>La leçon inclut des extraits de code commentés et des explications sur le Virtual DOM.</p>
+          `
+        },
+        {
+          title: 'State et Props',
+          description: 'Gestion de l\'état dans React',
+          duration_minutes: 120,
+          order_index: 2,
+          content: `
+            <p>Nous explorons les différents types d'état : local, dérivé, mémorisé et contrôlé. Chaque scénario est illustré par des cas d'usage (formulaires, modales, listes dynamiques) et des anti-patterns à éviter.</p>
+            <p>Nous comparons aussi les stratégies de levée d'état, de contextes et d'optimisations (memo, useMemo, useCallback). L'objectif est de vous donner une grille de lecture pour choisir la bonne approche.</p>
+            <ul>
+              <li>Atelier : refactoriser un formulaire complexe pour éliminer les re-renders inutiles</li>
+              <li>Exemple complet de composant contrôlé vs non contrôlé</li>
+              <li>Tableaux décisionnels pour choisir entre props drilling, context ou store global</li>
+            </ul>
+            <p>Nous concluons par l'intégration d'un système de notifications global basé sur un reducer.</p>
+          `
+        },
+        {
+          title: 'Hooks React',
+          description: 'useState, useEffect et hooks personnalisés',
+          duration_minutes: 120,
+          order_index: 3,
+          content: `
+            <p>Nous détaillons les hooks essentiels (useState, useEffect, useMemo, useReducer, useRef) via des démonstrations progressives. L'accent est mis sur la compréhension des dépendances et des cycles de vie.</p>
+            <p>Vous apprendrez à écrire vos propres hooks pour encapsuler des comportements complexes (fetch, timers, synchronisation avec localStorage). Nous couvrons également les pièges fréquents (boucles infinies, state stale).</p>
+            <ul>
+              <li>Construction d'un hook useFetch complet avec annulation et mise en cache</li>
+              <li>Exemples d'utilisation de useReducer pour gérer des formulaires dynamiques</li>
+              <li>Guide pour tester les hooks avec React Testing Library</li>
+            </ul>
+            <p>Chaque section inclut des diagrammes décrivant le déroulement des effets et la manière de les nettoyer.</p>
+          `
+        },
+        {
+          title: 'Routing avec React Router',
+          description: 'Navigation dans une app React',
+          duration_minutes: 90,
+          order_index: 4,
+          content: `
+            <p>Nous mettons en place une navigation avancée : routes imbriquées, paramètres dynamiques, loaders, actions et gestion des erreurs. Vous apprendrez à structurer un router pour différentes zones de l'application.</p>
+            <p>Nous voyons aussi comment protéger des routes, gérer les redirections après authentification et synchroniser les requêtes réseau avec les transitions de pages.</p>
+            <ul>
+              <li>Création d'un layout principal avec sidebar, header et zones enfants</li>
+              <li>Implémentation d'un breadcrumb dynamique basé sur la configuration du router</li>
+              <li>Hooks personnalisés pour manipuler l'historique et la recherche</li>
+            </ul>
+            <p>Une section bonus montre comment combiner React Router avec React Query pour charger les données intelligemment.</p>
+          `
+        },
+        {
+          title: 'State Management avec Redux',
+          description: 'Gestion globale de l\'état',
+          duration_minutes: 120,
+          order_index: 5,
+          content: `
+            <p>Nous replaçons Redux dans le paysage des solutions de state management, puis nous construisons un store complet avec Redux Toolkit : slices, reducers, actions, middleware et sélecteurs mémorisés.</p>
+            <p>Nous abordons aussi RTK Query pour gérer les requêtes réseau et le cache global. Les exemples montrent comment orchestrer des flux temps réel, des notifications et des entités normalisées.</p>
+            <ul>
+              <li>Pattern feature-based : organisation du dossier Redux par domaine</li>
+              <li>Gestion des erreurs globales et synchronisation avec la couche UI</li>
+              <li>Tests unitaires de reducers et de selectors avec scénarios réalistes</li>
+            </ul>
+            <p>La leçon se termine par l'interconnexion Redux & React Router pour gérer les transitions complexes.</p>
+          `
+        },
+        {
+          title: 'Projet : Application React complète',
+          description: 'Création d\'une application complète',
+          duration_minutes: 120,
+          order_index: 6,
+          content: `
+            <p>Vous développez une application de gestion de cours incluant authentification, dashboard, formulaires dynamiques, synchronisation API et mode hors-ligne. Chaque étape est détaillée avec un plan de développement et des livrables.</p>
+            <p>Nous configurons également les tests end-to-end (Playwright/Cypress), l'analyse de performance (Lighthouse) et la préparation à la production (chunk splitting, lazy loading, monitoring).</p>
+            <ul>
+              <li>Roadmap par sprint pour organiser le travail en équipe</li>
+              <li>Intégration d'un thème personnalisable et d'un système d'internationalisation</li>
+              <li>Guide de déploiement sur Vercel avec variables d'environnement sécurisées</li>
+            </ul>
+            <p>Vous terminez la leçon avec un dépôt Git complet, prêt à être présenté à un recruteur ou à un client.</p>
+          `
+        }
       ],
       quiz: {
         title: 'Quiz Module 4 : React',
@@ -421,10 +751,70 @@ const webDevelopmentCourse = {
       order_index: 5,
       is_unlocked: false,
       lessons: [
-        { title: 'Git et GitHub', description: 'Versioning et collaboration', duration_minutes: 60, order_index: 1 },
-        { title: 'CI/CD avec GitHub Actions', description: 'Automatisation du déploiement', duration_minutes: 60, order_index: 2 },
-        { title: 'Déploiement sur Vercel/Netlify', description: 'Hébergement frontend', duration_minutes: 45, order_index: 3 },
-        { title: 'Docker et conteneurisation', description: 'Conteneurs et orchestration', duration_minutes: 75, order_index: 4 }
+        {
+          title: 'Git et GitHub',
+          description: 'Versioning et collaboration',
+          duration_minutes: 60,
+          order_index: 1,
+          content: `
+            <p>Nous dépassons les commandes basiques pour explorer des workflows professionnels : GitFlow, trunk-based, release branches. Chaque stratégie est illustrée par des diagrammes et des scénarios collaboratifs.</p>
+            <p>Nous analysons aussi les outils GitHub (issues, projects, templates, protections de branch) afin de transformer un dépôt en espace de travail organisé.</p>
+            <ul>
+              <li>Atelier : résolution d'un conflit complexe avec rebase interactif</li>
+              <li>Configuration des hooks pré-commit et des contrôles automatiques</li>
+              <li>Guide pour sécuriser les secrets et auditer l'historique</li>
+            </ul>
+            <p>La leçon inclut un plan de communication pour les revues de code efficaces.</p>
+          `
+        },
+        {
+          title: 'CI/CD avec GitHub Actions',
+          description: 'Automatisation du déploiement',
+          duration_minutes: 60,
+          order_index: 2,
+          content: `
+            <p>Nous construisons plusieurs pipelines CI/CD : lint + tests, build frontend, déploiement backend. Chaque workflow YAML est expliqué étape par étape avec les bonnes pratiques de cache, de matrice et de secrets.</p>
+            <p>Nous abordons également les stratégies de déploiement progressif (staging, production, preview) et la mise en place de notifications Slack/Teams.</p>
+            <ul>
+              <li>Création d'actions réutilisables pour centraliser la logique de build</li>
+              <li>Mise en place d'un job conditionnel déclenché seulement sur les tags</li>
+              <li>Surveillance des pipelines avec des dashboards et alertes personnalisées</li>
+            </ul>
+            <p>En bonus, nous couplons GitHub Actions avec des conteneurs Docker pour garantir des builds reproductibles.</p>
+          `
+        },
+        {
+          title: 'Déploiement sur Vercel/Netlify',
+          description: 'Hébergement frontend',
+          duration_minutes: 45,
+          order_index: 3,
+          content: `
+            <p>Nous comparons les plateformes serverless populaires et réalisons plusieurs déploiements en direct. Vous apprendrez à configurer les environnements, les redirections, les previews et les optimisations d'image.</p>
+            <p>Nous intégrons également un backend Node via serverless functions, montrant comment partager du code entre le frontend et l'API.</p>
+            <ul>
+              <li>Checklist de préparation avant push (variables, analytics, monitoring)</li>
+              <li>Configuration des protections (headers de sécurité, rate limiting)</li>
+              <li>Automatisation des tests Lighthouse dans la pipeline de déploiement</li>
+            </ul>
+            <p>La leçon se conclut par un plan de rollback rapide en cas d'incident.</p>
+          `
+        },
+        {
+          title: 'Docker et conteneurisation',
+          description: 'Conteneurs et orchestration',
+          duration_minutes: 75,
+          order_index: 4,
+          content: `
+            <p>Nous expliquons le modèle des conteneurs, la construction d'images optimisées et la gestion des multi-stage builds. Nous créons ensuite un docker-compose pour orchestrer frontend, backend et base de données.</p>
+            <p>Nous couvrons également les notions d'orchestration (Kubernetes, ECS) et fournissons un guide pour migrer progressivement vers ces plateformes.</p>
+            <ul>
+              <li>Création d'une image Node ultra-légère avec distroless</li>
+              <li>Configuration d'un registre privé et automatisation du push depuis GitHub Actions</li>
+              <li>Surveillance des conteneurs avec des probes et des métriques personnalisées</li>
+            </ul>
+            <p>La leçon inclut un plan de durcissement sécurité (scans d'images, signatures, politiques réseau).</p>
+          `
+        }
       ],
       quiz: {
         title: 'Quiz Module 5 : DevOps',

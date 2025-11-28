@@ -278,7 +278,7 @@ const generateCertificatePDF = async (certificate) => {
 
       doc.fontSize(16)
          .fill(secondaryColor)
-         .text('CERTIFICAT DE FORMATION', 50, 120, { align: 'center' });
+         .text('ATTESTATION DE FORMATION', 50, 120, { align: 'center' });
 
       // Contenu
       doc.fontSize(18)
@@ -339,7 +339,7 @@ const generateCertificatePDF = async (certificate) => {
 
       doc.fontSize(10)
          .fill('#666666')
-         .text('Ce certificat est délivré électroniquement et peut être vérifié en ligne', 50, 520, { align: 'center' });
+         .text('Cette attestation est délivrée électroniquement et peut être vérifiée en ligne', 50, 520, { align: 'center' });
 
       doc.end();
 

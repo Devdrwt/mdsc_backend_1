@@ -298,10 +298,43 @@ const send2FACodeEmail = async (email, firstName, code2FA) => {
   }
 };
 
+// Méthode générique pour envoyer un email
+const sendEmail = async ({ to, subject, html, text, from }) => {
+  // Vérifier si l'email est activé
+  if (process.env.EMAIL_ENABLED === 'false') {
+    console.log('ℹ️  Emails désactivés - email non envoyé');
+    return false;
+  }
+
+  const emailUser = (process.env.EMAIL_USER || '').trim();
+  const emailPass = (process.env.EMAIL_PASSWORD || '').trim();
+
+  if (!emailUser || !emailPass) {
+    console.log('ℹ️  Configuration email absente - email non envoyé');
+    return false;
+  }
+
+  try {
+    await transporter.sendMail({
+      from: from || process.env.EMAIL_FROM || emailUser,
+      to: to,
+      subject: subject,
+      html: html,
+      text: text || html.replace(/<[^>]*>/g, '') // Extraire le texte du HTML si text n'est pas fourni
+    });
+    console.log(`✅ Email envoyé à ${to}`);
+    return true;
+  } catch (error) {
+    console.error(`❌ Erreur lors de l'envoi de l'email à ${to}:`, error.message);
+    throw error;
+  }
+};
+
 module.exports = {
   verifyEmailConfig,
   sendVerificationEmail,
   sendPasswordResetEmail,
   send2FACodeEmail,
+  sendEmail,
 };
 

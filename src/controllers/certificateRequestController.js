@@ -90,6 +90,21 @@ const requestCertificate = async (req, res) => {
       }
     }
 
+    // Vérifier que l'étudiant a noté le cours (obligatoire avant certificat)
+    const [ratings] = await pool.execute(
+      'SELECT id FROM course_reviews WHERE enrollment_id = ? AND status = ?',
+      [enrollmentId, 'approved']
+    );
+
+    if (ratings.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Vous devez noter le cours avant de demander un certificat',
+        requires_rating: true,
+        reason: 'rating_required'
+      });
+    }
+
     // Créer la demande
     const [requestResult] = await pool.execute(
       `INSERT INTO certificate_requests (

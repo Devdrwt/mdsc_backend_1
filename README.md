@@ -73,7 +73,6 @@ NODE_ENV=development
    - https://myaccount.google.com/apppasswords
    - Sélectionnez "Autre" et nommez-le "MdSC Auth"
    - Utilisez ce mot de passe dans `EMAIL_PASSWORD`
-
 ### 3. Démarrer le serveur
 
 ```bash

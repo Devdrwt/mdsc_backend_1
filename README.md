@@ -74,7 +74,7 @@ NODE_ENV=development
    - Sélectionnez "Autre" et nommez-le "MdSC Auth"
    - Utilisez ce mot de passe dans `EMAIL_PASSWORD`
 
-## 3. Démarrer le serveur
+### 3. Démarrer le serveur
 
 ```bash
 # Installation des dépendances

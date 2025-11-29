@@ -286,6 +286,24 @@ const approveCertificateRequest = async (req, res) => {
     const random = Math.floor(10000000 + Math.random() * 90000000); // 8 chiffres aléatoires
     const certificateNumber = `MDSC-${random}-BJ`;
 
+    // Générer le QR code
+    const qrCodeDir = path.join(__dirname, '../../certificates/qrcodes');
+    if (!fs.existsSync(qrCodeDir)) {
+      fs.mkdirSync(qrCodeDir, { recursive: true });
+    }
+    
+    const qrCodePath = path.join(qrCodeDir, `${certificateCode}.png`);
+    // Utiliser certificate_number (format MDSC-XXXXXX-BJ) pour la vérification dans le QR code
+    const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/verify-certificate/${certificateNumber}`;
+    
+    await QRCode.toFile(qrCodePath, verificationUrl, {
+      errorCorrectionLevel: 'H',
+      type: 'png',
+      width: 300
+    });
+
+    const qrCodeUrl = `/certificates/qrcodes/${certificateCode}.png`;
+
     // Créer le certificat dans la base de données
     const [certificateResult] = await pool.execute(
       `INSERT INTO certificates (
@@ -299,7 +317,7 @@ const approveCertificateRequest = async (req, res) => {
         certificateCode,
         certificateNumber,
         certificateData.url,
-        null // qr_code_url sera généré séparément si nécessaire
+        qrCodeUrl
       ]
     );
 

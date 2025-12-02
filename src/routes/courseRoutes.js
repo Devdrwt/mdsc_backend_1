@@ -6,6 +6,7 @@ const quizController = require('../controllers/quizController');
 const certificateController = require('../controllers/certificateController');
 const evaluationController = require('../controllers/evaluationController');
 const instructorDashboardController = require('../controllers/instructorDashboardController');
+const lessonController = require('../controllers/lessonController');
 const { authenticateToken, optionalAuth, authorize } = require('../middleware/auth');
 const { 
   validateCourse, 
@@ -21,6 +22,8 @@ router.get('/featured', courseController.getFeaturedCourses);
 
 // Routes protégées pour les cours de l'utilisateur (AVANT les routes avec paramètres)
 router.get('/my', authenticateToken, courseController.getMyCourses);
+// Route pour les favoris (doit être AVANT /:id pour éviter les conflits)
+router.get('/favorites', authenticateToken, courseController.getFavoriteCourses);
 
 // Routes pour les cours d'un instructeur spécifique
 router.get('/instructor/:instructorId', authenticateToken, courseController.getInstructorCourses);
@@ -48,6 +51,8 @@ router.get('/:courseId/analytics',
   authorize(['instructor', 'admin']), 
   instructorDashboardController.getCoursePerformance
 );
+// Route pour le planning d'un cours (doit être avant /:id pour éviter les conflits)
+router.get('/:courseId/schedule', authenticateToken, courseController.getCourseSchedule);
 router.get('/:id/check-enrollment', authenticateToken, courseController.checkEnrollment);
 router.get('/:id', optionalAuth, courseController.getCourseById); // Route avec authentification optionnelle
 // Liste des inscrits d'un cours (protégée)
@@ -72,6 +77,10 @@ router.delete('/enrollments/:courseId', authenticateToken, enrollmentController.
 router.get('/:courseId/progress', authenticateToken, enrollmentController.getCourseProgress);
 router.put('/:courseId/lessons/:lessonId/complete', authenticateToken, enrollmentController.updateLessonProgress);
 router.get('/:courseId/lessons', authenticateToken, courseController.getCourseLessons);
+// Route pour récupérer une leçon complète (pour étudiants)
+// Support des deux formats : /lessons/:lessonId et /lessons/:lessonId/student
+router.get('/:courseId/lessons/:lessonId/student', authenticateToken, lessonController.getLessonForStudent);
+router.get('/:courseId/lessons/:lessonId', authenticateToken, lessonController.getLessonForStudent);
 
 // Routes pour les quiz
 router.get('/:courseId/quizzes', authenticateToken, quizController.getCourseQuizzes);
@@ -93,10 +102,9 @@ router.get('/certificates/my-certificates', authenticateToken, certificateContro
 router.get('/certificates/:certificateId', authenticateToken, certificateController.getCertificateById);
 router.get('/certificates/:certificateId/download', authenticateToken, certificateController.downloadCertificate);
 
-// Routes pour les favoris
-router.post('/courses/:courseId/favorite', authenticateToken, courseController.addToFavorites);
-router.delete('/courses/:courseId/favorite', authenticateToken, courseController.removeFromFavorites);
-router.get('/courses/favorites', authenticateToken, courseController.getFavoriteCourses);
+// Routes pour les favoris (POST et DELETE peuvent être après /:id car elles ont un paramètre)
+router.post('/:courseId/favorite', authenticateToken, courseController.addToFavorites);
+router.delete('/:courseId/favorite', authenticateToken, courseController.removeFromFavorites);
 
 // Routes pour les avis
 router.post('/courses/:courseId/review', authenticateToken, courseController.addReview);

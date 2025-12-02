@@ -250,7 +250,8 @@ const getCourseProgress = async (req, res) => {
       return;
     }
 
-    // Récupérer les leçons avec progression (vérifier les deux tables progress et lesson_progress)
+    // Récupérer les leçons avec progression et contenus/médias (vérifier les deux tables progress et lesson_progress)
+    // Note: On récupère d'abord les leçons, puis on récupère tous les médias du cours séparément
     const [lessons] = await pool.execute(
       `
       SELECT
@@ -259,6 +260,12 @@ const getCourseProgress = async (req, res) => {
         l.order_index,
         l.duration_minutes,
         l.content_type,
+        l.content,
+        l.content_text,
+        l.content_url,
+        l.video_url,
+        l.description,
+        l.media_file_id,
         l.is_required,
         COALESCE(
           lp.is_completed,
@@ -267,7 +274,16 @@ const getCourseProgress = async (req, res) => {
         ) as is_completed,
         COALESCE(lp.completed_at, p.completed_at) as completed_at,
         COALESCE(lp.time_spent_minutes, FLOOR(p.time_spent / 60), 0) as time_spent_minutes,
-        lp.last_position_seconds
+        lp.last_position_seconds,
+        mf.id as media_file_id_from_join,
+        mf.url as media_url,
+        mf.thumbnail_url,
+        mf.file_category,
+        mf.filename,
+        mf.original_filename,
+        mf.file_size,
+        mf.file_type,
+        mf.duration as media_duration
       FROM lessons l
       LEFT JOIN lesson_progress lp
         ON lp.lesson_id = l.id
@@ -277,11 +293,29 @@ const getCourseProgress = async (req, res) => {
       LEFT JOIN progress p
         ON p.lesson_id = l.id
        AND p.enrollment_id = e.id
+      LEFT JOIN media_files mf ON (
+        l.media_file_id = mf.id 
+        OR (l.id = mf.lesson_id AND l.media_file_id IS NULL)
+      )
       WHERE l.course_id = ?
         AND l.is_published = TRUE
-      ORDER BY l.order_index ASC
-    `,
+      ORDER BY l.order_index ASC, mf.uploaded_at DESC
+      `,
       [studentId, courseId, studentId, courseId, courseId]
+    );
+
+    // Récupérer tous les médias du cours qui pourraient être associés aux leçons
+    // (médias avec lesson_id spécifique OU médias du cours sans lesson_id)
+    const [allCourseMedia] = await pool.execute(
+      `
+      SELECT 
+        id, lesson_id, url, thumbnail_url, file_category, file_type,
+        filename, original_filename, file_size, duration, uploaded_at
+      FROM media_files
+      WHERE course_id = ?
+      ORDER BY lesson_id, uploaded_at DESC
+      `,
+      [courseId]
     );
 
     const [quizzes] = await pool.execute(
@@ -305,14 +339,122 @@ const getCourseProgress = async (req, res) => {
       [studentId, courseId]
     );
 
-    const totalLessons = lessons.length;
-    const completedLessons = lessons.filter((lesson) => lesson.is_completed).length;
+    // Créer un map des médias par lesson_id pour association rapide
+    const mediaByLessonId = {};
+    allCourseMedia.forEach(media => {
+      if (media.lesson_id) {
+        if (!mediaByLessonId[media.lesson_id]) {
+          mediaByLessonId[media.lesson_id] = [];
+        }
+        mediaByLessonId[media.lesson_id].push(media);
+      }
+    });
+
+    // Médias sans lesson_id (à distribuer aux leçons par ordre)
+    const unassignedMedia = allCourseMedia.filter(m => !m.lesson_id).sort((a, b) => 
+      new Date(a.uploaded_at || 0) - new Date(b.uploaded_at || 0)
+    );
+
+    // Créer un map des leçons uniques par ID pour éviter les doublons
+    const uniqueLessonsMap = new Map();
+    lessons.forEach(lesson => {
+      if (!uniqueLessonsMap.has(lesson.id)) {
+        uniqueLessonsMap.set(lesson.id, lesson);
+      }
+    });
+    const uniqueLessons = Array.from(uniqueLessonsMap.values()).sort((a, b) => 
+      (a.order_index || 0) - (b.order_index || 0)
+    );
+
+    // Formater les leçons avec les URLs des médias
+    const formattedLessons = uniqueLessons.map((lesson) => {
+      // Récupérer les médias directement associés à cette leçon
+      const directMedia = mediaByLessonId[lesson.id] || [];
+      
+      // Trouver l'index de cette leçon dans l'ordre des leçons du cours
+      const lessonOrderIndex = uniqueLessons.findIndex(l => l.id === lesson.id);
+      
+      // Si la leçon n'a pas de média direct mais qu'il y a des médias non assignés,
+      // associer le média non assigné correspondant à l'ordre de la leçon
+      let lessonMedia = [...directMedia];
+      if (lessonMedia.length === 0 && unassignedMedia.length > 0 && lessonOrderIndex >= 0 && lessonOrderIndex < unassignedMedia.length) {
+        lessonMedia = [unassignedMedia[lessonOrderIndex]];
+      }
+
+      // Utiliser le média de la requête principale ou le premier média trouvé
+      const primaryMedia = lesson.media_file_id_from_join && lesson.media_url 
+        ? {
+            id: lesson.media_file_id_from_join,
+            url: buildMediaUrl(lesson.media_url),
+            thumbnail_url: buildMediaUrl(lesson.thumbnail_url),
+            file_category: lesson.file_category,
+            filename: lesson.filename,
+            original_filename: lesson.original_filename,
+            file_size: lesson.file_size,
+            file_type: lesson.file_type,
+            duration: lesson.media_duration
+          }
+        : (lessonMedia.length > 0 ? {
+            id: lessonMedia[0].id,
+            url: buildMediaUrl(lessonMedia[0].url),
+            thumbnail_url: buildMediaUrl(lessonMedia[0].thumbnail_url),
+            file_category: lessonMedia[0].file_category,
+            filename: lessonMedia[0].filename,
+            original_filename: lessonMedia[0].original_filename,
+            file_size: lessonMedia[0].file_size,
+            file_type: lessonMedia[0].file_type,
+            duration: lessonMedia[0].duration
+          } : null);
+
+      // Formater tous les médias de la leçon
+      const allMediaFiles = lessonMedia.length > 0 
+        ? lessonMedia.map(mf => ({
+            id: mf.id,
+            url: buildMediaUrl(mf.url),
+            thumbnail_url: buildMediaUrl(mf.thumbnail_url),
+            file_category: mf.file_category,
+            file_type: mf.file_type,
+            filename: mf.filename,
+            original_filename: mf.original_filename,
+            file_size: mf.file_size,
+            duration: mf.duration
+          }))
+        : null;
+
+      const baseLesson = {
+        id: lesson.id,
+        title: lesson.title,
+        order_index: lesson.order_index,
+        duration_minutes: lesson.duration_minutes,
+        content_type: lesson.content_type,
+        content: lesson.content,
+        content_text: lesson.content_text,
+        content_url: lesson.content_url ? buildMediaUrl(lesson.content_url) : null,
+        video_url: lesson.video_url ? buildMediaUrl(lesson.video_url) : null,
+        description: lesson.description,
+        media_file_id: lesson.media_file_id || lesson.media_file_id_from_join || (primaryMedia ? primaryMedia.id : null),
+        is_required: lesson.is_required,
+        is_completed: Boolean(lesson.is_completed),
+        completed_at: lesson.completed_at,
+        time_spent_minutes: lesson.time_spent_minutes || 0,
+        last_position_seconds: lesson.last_position_seconds || 0,
+        media_file: primaryMedia,
+        media_files: allMediaFiles
+      };
+      return baseLesson;
+    });
+
+    // Les leçons sont déjà uniques (une par ID), pas besoin de déduplication
+    const lessonsArray = formattedLessons;
+
+    const totalLessons = lessonsArray.length;
+    const completedLessons = lessonsArray.filter((lesson) => lesson.is_completed).length;
 
     res.json({
       success: true,
       data: {
         enrollment,
-        lessons,
+        lessons: lessonsArray,
         quizzes,
         statistics: {
           total_lessons: totalLessons,
@@ -990,6 +1132,162 @@ const updateSettingsPolicies = async (req, res) => {
   });
 };
 
+// Récupérer le planning d'un étudiant pour un cours spécifique
+const getStudentSchedule = async (req, res) => {
+  const studentId = ensureStudent(req, res);
+  if (!studentId) {
+    return;
+  }
+
+  const courseId = parseInt(req.params.courseId, 10);
+  if (Number.isNaN(courseId)) {
+    res.status(400).json({
+      success: false,
+      message: 'Identifiant de cours invalide'
+    });
+    return;
+  }
+
+  try {
+    // Vérifier que l'étudiant est inscrit au cours
+    const [[enrollment]] = await pool.execute(
+      `
+      SELECT e.*, c.title as course_title
+      FROM enrollments e
+      JOIN courses c ON c.id = e.course_id
+      WHERE e.user_id = ? AND e.course_id = ? AND e.is_active = TRUE
+      `,
+      [studentId, courseId]
+    );
+
+    if (!enrollment) {
+      res.status(404).json({
+        success: false,
+        message: 'Vous n\'êtes pas inscrit à ce cours'
+      });
+      return;
+    }
+
+    // Récupérer les sessions live du cours
+    const [liveSessions] = await pool.execute(
+      `
+      SELECT
+        ls.id,
+        ls.title,
+        ls.description,
+        ls.scheduled_start_at AS start_date,
+        ls.scheduled_end_at AS end_date,
+        ls.status,
+        ls.max_participants,
+        ls.is_recording_enabled,
+        lsp.joined_at,
+        lsp.is_present,
+        u.first_name AS instructor_first_name,
+        u.last_name AS instructor_last_name,
+        u.email AS instructor_email
+      FROM live_sessions ls
+      JOIN users u ON ls.instructor_id = u.id
+      LEFT JOIN live_session_participants lsp ON ls.id = lsp.session_id AND lsp.user_id = ?
+      WHERE ls.course_id = ?
+        AND ls.status IN ('scheduled', 'live')
+      ORDER BY ls.scheduled_start_at ASC
+      `,
+      [studentId, courseId]
+    );
+
+    // Récupérer les événements du calendrier liés au cours
+    const [events] = await pool.execute(
+      `
+      SELECT
+        e.id,
+        e.title,
+        e.description,
+        e.event_type,
+        e.start_date,
+        e.end_date,
+        e.is_all_day,
+        e.location,
+        e.is_public,
+        creator.first_name AS creator_first_name,
+        creator.last_name AS creator_last_name
+      FROM events e
+      LEFT JOIN users creator ON creator.id = e.created_by
+      WHERE e.course_id = ?
+        AND (e.is_public = TRUE OR e.created_by = ?)
+      ORDER BY e.start_date ASC
+      `,
+      [courseId, studentId]
+    );
+
+    // Formater les sessions live (filtrer celles sans date valide)
+    const formattedSessions = liveSessions
+      .filter(session => session.start_date != null)
+      .map((session) => ({
+        id: session.id,
+        title: session.title,
+        description: session.description,
+        type: 'live_session',
+        start_date: session.start_date ? new Date(session.start_date).toISOString() : null,
+        end_date: session.end_date ? new Date(session.end_date).toISOString() : null,
+        status: session.status,
+        max_participants: session.max_participants,
+        is_recording_enabled: Boolean(session.is_recording_enabled),
+        joined_at: session.joined_at ? new Date(session.joined_at).toISOString() : null,
+        is_present: Boolean(session.is_present),
+        instructor: {
+          first_name: session.instructor_first_name,
+          last_name: session.instructor_last_name,
+          email: session.instructor_email
+        }
+      }));
+
+    // Formater les événements (filtrer ceux sans date valide)
+    const formattedEvents = events
+      .filter(event => event.start_date != null)
+      .map((event) => ({
+        id: event.id,
+        title: event.title,
+        description: event.description,
+        type: 'event',
+        event_type: event.event_type,
+        start_date: event.start_date ? new Date(event.start_date).toISOString() : null,
+        end_date: event.end_date ? new Date(event.end_date).toISOString() : null,
+        is_all_day: Boolean(event.is_all_day),
+        location: event.location,
+        is_public: Boolean(event.is_public),
+        created_by: event.creator_first_name ? {
+          first_name: event.creator_first_name,
+          last_name: event.creator_last_name
+        } : null
+      }));
+
+    // Fusionner et trier par date (filtrer ceux sans start_date valide)
+    const schedule = [...formattedSessions, ...formattedEvents]
+      .filter(item => item.start_date != null)
+      .sort((a, b) => {
+        return new Date(a.start_date) - new Date(b.start_date);
+      });
+
+    res.json({
+      success: true,
+      data: {
+        course_id: courseId,
+        course_title: enrollment.course_title,
+        schedule: schedule,
+        live_sessions: formattedSessions,
+        events: formattedEvents
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la récupération du planning:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Impossible de récupérer le planning'
+    });
+  }
+};
+
 module.exports = {
   getCourses,
   getCourseProgress,
@@ -1001,7 +1299,8 @@ module.exports = {
   getCatalogCategories,
   getSettings,
   updateSettings,
-  updateSettingsPolicies
+  updateSettingsPolicies,
+  getStudentSchedule
 };
 
                                                                                                                                                                                       

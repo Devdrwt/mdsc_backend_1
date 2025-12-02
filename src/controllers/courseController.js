@@ -674,7 +674,23 @@ const deleteCourse = async (req, res) => {
 const addLesson = async (req, res) => {
   try {
     const courseId = req.params.id || req.params.courseId; // Support both :id and :courseId routes
-    const { title, description, content, video_url, duration_minutes, module_id } = req.body;
+    const { 
+      title, 
+      description, 
+      content, 
+      content_text,
+      content_url,
+      video_url, 
+      duration_minutes, 
+      duration,
+      module_id,
+      content_type = 'text',
+      media_file_id,
+      order_index,
+      order,
+      is_required = true,
+      is_published = false
+    } = req.body;
     const userId = req.user?.id ?? req.user?.userId;
 
     // Vérifier que l'utilisateur est l'instructeur du cours
@@ -695,58 +711,68 @@ const addLesson = async (req, res) => {
       });
     }
 
+    // Utiliser duration si fourni, sinon duration_minutes
+    const finalDuration = duration_minutes || duration || 0;
+    // Utiliser order_index si fourni, sinon order, sinon calculer
+    let finalOrderIndex = order_index || order;
+
     // Récupérer le prochain index (par module si module_id fourni, sinon par cours)
     let orderQuery, nextOrder;
-    if (module_id) {
-      orderQuery = 'SELECT MAX(order_index) as max_order FROM lessons WHERE module_id = ?';
-      const [orderResult] = await pool.execute(orderQuery, [sanitizeValue(module_id)]);
-      nextOrder = (orderResult[0]?.max_order || 0) + 1;
-      const query = `
-        INSERT INTO lessons (course_id, module_id, title, description, content, video_url, duration_minutes, order_index, is_published)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE)
-      `;
-      const [result] = await pool.execute(query, [
-        sanitizeValue(courseId),
-        sanitizeValue(module_id),
-        sanitizeValue(title),
-        sanitizeValue(description),
-        sanitizeValue(content),
-        sanitizeValue(video_url),
-        sanitizeValue(duration_minutes),
-        sanitizeValue(nextOrder)
-      ]);
-      return res.status(201).json({
-        success: true,
-        message: 'Leçon ajoutée avec succès',
-        data: {
-          lesson_id: result.insertId
-        }
-      });
-    } else {
-      orderQuery = 'SELECT MAX(order_index) as max_order FROM lessons WHERE course_id = ? AND (module_id IS NULL OR module_id = 0)';
-      const [orderResult] = await pool.execute(orderQuery, [sanitizeValue(courseId)]);
-      nextOrder = (orderResult[0]?.max_order || 0) + 1;
-      const query = `
-        INSERT INTO lessons (course_id, title, description, content, video_url, duration_minutes, order_index, is_published)
-        VALUES (?, ?, ?, ?, ?, ?, ?, TRUE)
-      `;
-      const [result] = await pool.execute(query, [
-        sanitizeValue(courseId),
-        sanitizeValue(title),
-        sanitizeValue(description),
-        sanitizeValue(content),
-        sanitizeValue(video_url),
-        sanitizeValue(duration_minutes),
-        sanitizeValue(nextOrder)
-      ]);
-      return res.status(201).json({
-        success: true,
-        message: 'Leçon ajoutée avec succès',
-        data: {
-          lesson_id: result.insertId
-        }
-      });
+    if (!finalOrderIndex) {
+      if (module_id) {
+        orderQuery = 'SELECT MAX(order_index) as max_order FROM lessons WHERE module_id = ?';
+        const [orderResult] = await pool.execute(orderQuery, [sanitizeValue(module_id)]);
+        nextOrder = (orderResult[0]?.max_order || 0) + 1;
+      } else {
+        orderQuery = 'SELECT MAX(order_index) as max_order FROM lessons WHERE course_id = ? AND (module_id IS NULL OR module_id = 0)';
+        const [orderResult] = await pool.execute(orderQuery, [sanitizeValue(courseId)]);
+        nextOrder = (orderResult[0]?.max_order || 0) + 1;
+      }
+      finalOrderIndex = nextOrder;
     }
+
+    const query = `
+      INSERT INTO lessons (
+        course_id, module_id, title, description, content, content_text, content_url,
+        video_url, duration_minutes, order_index, content_type, media_file_id,
+        is_required, is_published
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+    const [result] = await pool.execute(query, [
+      sanitizeValue(courseId),
+      sanitizeValue(module_id) || null,
+      sanitizeValue(title),
+      sanitizeValue(description) || '',
+      sanitizeValue(content) || null,
+      sanitizeValue(content_text) || null,
+      sanitizeValue(content_url) || null,
+      sanitizeValue(video_url) || null,
+      sanitizeValue(finalDuration),
+      sanitizeValue(finalOrderIndex),
+      sanitizeValue(content_type),
+      sanitizeValue(media_file_id) || null,
+      sanitizeValue(is_required) !== false,
+      sanitizeValue(is_published) === true
+    ]);
+
+    const newLessonId = result.insertId;
+
+    // Si un media_file_id a été assigné, mettre à jour automatiquement le lesson_id du fichier média
+    if (media_file_id) {
+      await pool.execute(
+        'UPDATE media_files SET lesson_id = ? WHERE id = ? AND course_id = ?',
+        [newLessonId, media_file_id, courseId]
+      );
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: 'Leçon ajoutée avec succès',
+      data: {
+        lesson_id: newLessonId
+      }
+    });
 
   } catch (error) {
     console.error('Erreur lors de l\'ajout de la leçon:', error);
@@ -1382,8 +1408,11 @@ const getFavoriteCourses = async (req, res) => {
 
     const formattedCourses = courses.map(row => formatCourseRow(row));
 
+    // Format de réponse compatible avec le frontend
     res.json({
       success: true,
+      count: total,
+      courses: formattedCourses,
       data: {
         courses: formattedCourses,
         pagination: {
@@ -2025,6 +2054,140 @@ const getRecommendedCourses = async (req, res) => {
   }
 };
 
+// Récupérer le planning d'un cours (sessions live + événements)
+const getCourseSchedule = async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    const userId = req.user?.id ?? req.user?.userId;
+
+    // Vérifier que le cours existe
+    const [courses] = await pool.execute(
+      'SELECT id, title FROM courses WHERE id = ?',
+      [courseId]
+    );
+
+    if (courses.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Cours non trouvé'
+      });
+    }
+
+    // Récupérer les sessions live du cours
+    const [liveSessions] = await pool.execute(
+      `
+      SELECT
+        ls.id,
+        ls.title,
+        ls.description,
+        ls.scheduled_start_at AS start_date,
+        ls.scheduled_end_at AS end_date,
+        ls.status,
+        ls.max_participants,
+        ls.is_recording_enabled,
+        u.first_name AS instructor_first_name,
+        u.last_name AS instructor_last_name,
+        u.email AS instructor_email
+      FROM live_sessions ls
+      JOIN users u ON ls.instructor_id = u.id
+      WHERE ls.course_id = ?
+        AND ls.status IN ('scheduled', 'live')
+      ORDER BY ls.scheduled_start_at ASC
+      `,
+      [courseId]
+    );
+
+    // Récupérer les événements du calendrier liés au cours
+    const [events] = await pool.execute(
+      `
+      SELECT
+        e.id,
+        e.title,
+        e.description,
+        e.event_type,
+        e.start_date,
+        e.end_date,
+        e.is_all_day,
+        e.location,
+        e.is_public,
+        creator.first_name AS creator_first_name,
+        creator.last_name AS creator_last_name
+      FROM events e
+      LEFT JOIN users creator ON creator.id = e.created_by
+      WHERE e.course_id = ?
+        AND (e.is_public = TRUE OR e.created_by = ? OR ? IS NULL)
+      ORDER BY e.start_date ASC
+      `,
+      [courseId, userId, userId]
+    );
+
+    // Formater les sessions live (filtrer celles sans date valide)
+    const formattedSessions = liveSessions
+      .filter(session => session.start_date != null)
+      .map((session) => ({
+        id: session.id,
+        title: session.title,
+        description: session.description,
+        type: 'live_session',
+        start_date: session.start_date ? new Date(session.start_date).toISOString() : null,
+        end_date: session.end_date ? new Date(session.end_date).toISOString() : null,
+        status: session.status,
+        max_participants: session.max_participants,
+        is_recording_enabled: Boolean(session.is_recording_enabled),
+        instructor: {
+          first_name: session.instructor_first_name,
+          last_name: session.instructor_last_name,
+          email: session.instructor_email
+        }
+      }));
+
+    // Formater les événements (filtrer ceux sans date valide)
+    const formattedEvents = events
+      .filter(event => event.start_date != null)
+      .map((event) => ({
+        id: event.id,
+        title: event.title,
+        description: event.description,
+        type: 'event',
+        event_type: event.event_type,
+        start_date: event.start_date ? new Date(event.start_date).toISOString() : null,
+        end_date: event.end_date ? new Date(event.end_date).toISOString() : null,
+        is_all_day: Boolean(event.is_all_day),
+        location: event.location,
+        is_public: Boolean(event.is_public),
+        created_by: event.creator_first_name ? {
+          first_name: event.creator_first_name,
+          last_name: event.creator_last_name
+        } : null
+      }));
+
+    // Fusionner et trier par date (filtrer ceux sans start_date valide)
+    const schedule = [...formattedSessions, ...formattedEvents]
+      .filter(item => item.start_date != null)
+      .sort((a, b) => {
+        return new Date(a.start_date) - new Date(b.start_date);
+      });
+
+    res.json({
+      success: true,
+      data: {
+        course_id: parseInt(courseId),
+        course_title: courses[0].title,
+        schedule: schedule,
+        live_sessions: formattedSessions,
+        events: formattedEvents
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la récupération du planning:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération du planning'
+    });
+  }
+};
+
 // Récupérer un cours par slug
 const getCourseBySlug = async (req, res) => {
   try {
@@ -2282,6 +2445,7 @@ module.exports = {
   addToFavorites,
   removeFromFavorites,
   getFavoriteCourses,
+  getCourseSchedule,
   addReview,
   getCourseReviews,
   updateReview,

@@ -349,10 +349,187 @@ const reorderLessons = async (req, res) => {
   }
 };
 
+// Récupérer une leçon pour un étudiant (avec vérification d'inscription)
+const getLessonForStudent = async (req, res) => {
+  try {
+    const { courseId, lessonId } = req.params;
+    const userId = req.user?.id ?? req.user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Non authentifié'
+      });
+    }
+
+    // Vérifier que l'étudiant est inscrit au cours
+    const [enrollments] = await pool.execute(
+      'SELECT id FROM enrollments WHERE user_id = ? AND course_id = ? AND is_active = TRUE',
+      [userId, courseId]
+    );
+
+    if (enrollments.length === 0) {
+      return res.status(403).json({
+        success: false,
+        message: 'Vous n\'êtes pas inscrit à ce cours'
+      });
+    }
+
+    // Récupérer la leçon avec tous les détails et médias
+    const lessonQuery = `
+      SELECT 
+        l.*,
+        m.title as module_title, 
+        m.order_index as module_order,
+        mf.id as media_file_id_from_join,
+        mf.url as media_url, 
+        mf.thumbnail_url, 
+        mf.file_category, 
+        mf.file_type,
+        mf.filename,
+        mf.original_filename,
+        mf.file_size,
+        mf.duration as media_duration
+      FROM lessons l
+      LEFT JOIN modules m ON l.module_id = m.id
+      LEFT JOIN media_files mf ON (
+        l.media_file_id = mf.id 
+        OR (l.id = mf.lesson_id AND l.media_file_id IS NULL)
+      )
+      WHERE l.id = ? AND l.course_id = ? AND l.is_published = TRUE
+      ORDER BY mf.uploaded_at DESC
+    `;
+
+    const [lessons] = await pool.execute(lessonQuery, [lessonId, courseId]);
+
+    if (lessons.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Leçon non trouvée'
+      });
+    }
+
+    // Formater la réponse
+    const lesson = lessons[0];
+
+    // Récupérer tous les médias directement associés à la leçon
+    const [directMedia] = await pool.execute(
+      `SELECT 
+        id, url, thumbnail_url, file_category, file_type,
+        filename, original_filename, file_size, duration, lesson_id
+      FROM media_files
+      WHERE lesson_id = ? OR id = ?
+      ORDER BY uploaded_at DESC`,
+      [lessonId, lesson.media_file_id || 0]
+    );
+
+    // Récupérer tous les médias du cours qui pourraient être associés (y compris ceux sans lesson_id)
+    const [allCourseMedia] = await pool.execute(
+      `SELECT 
+        id, url, thumbnail_url, file_category, file_type,
+        filename, original_filename, file_size, duration, lesson_id, uploaded_at
+      FROM media_files
+      WHERE course_id = ?
+      ORDER BY lesson_id, uploaded_at DESC`,
+      [courseId]
+    );
+
+    const { buildMediaUrl } = require('../utils/media');
+
+    // Si la leçon n'a pas de média direct, chercher dans les médias du cours non assignés
+    let mediaFiles = directMedia.map(mf => ({
+      id: mf.id,
+      url: buildMediaUrl(mf.url),
+      thumbnail_url: buildMediaUrl(mf.thumbnail_url),
+      file_category: mf.file_category,
+      file_type: mf.file_type,
+      filename: mf.filename,
+      original_filename: mf.original_filename,
+      file_size: mf.file_size,
+      duration: mf.duration
+    }));
+
+    // Si aucun média direct, chercher les médias non assignés du cours
+    if (mediaFiles.length === 0) {
+      const unassignedMedia = allCourseMedia
+        .filter(m => !m.lesson_id)
+        .sort((a, b) => new Date(a.uploaded_at || 0) - new Date(b.uploaded_at || 0));
+
+      // Trouver l'index de la leçon dans le cours pour distribuer les médias
+      const [allLessons] = await pool.execute(
+        `SELECT id, order_index FROM lessons 
+         WHERE course_id = ? AND is_published = TRUE 
+         ORDER BY order_index ASC`,
+        [courseId]
+      );
+      
+      const lessonIndex = allLessons.findIndex(l => l.id === parseInt(lessonId));
+      
+      // Si on trouve un média non assigné correspondant à l'index de la leçon
+      if (lessonIndex >= 0 && lessonIndex < unassignedMedia.length) {
+        const assignedMedia = unassignedMedia[lessonIndex];
+        mediaFiles = [{
+          id: assignedMedia.id,
+          url: buildMediaUrl(assignedMedia.url),
+          thumbnail_url: buildMediaUrl(assignedMedia.thumbnail_url),
+          file_category: assignedMedia.file_category,
+          file_type: assignedMedia.file_type,
+          filename: assignedMedia.filename,
+          original_filename: assignedMedia.original_filename,
+          file_size: assignedMedia.file_size,
+          duration: assignedMedia.duration
+        }];
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        id: lesson.id,
+        title: lesson.title,
+        description: lesson.description,
+        content_type: lesson.content_type,
+        content: lesson.content,
+        content_text: lesson.content_text,
+        content_url: lesson.content_url ? buildMediaUrl(lesson.content_url) : null,
+        video_url: lesson.video_url ? buildMediaUrl(lesson.video_url) : null,
+        duration_minutes: lesson.duration_minutes,
+        order_index: lesson.order_index,
+        is_required: Boolean(lesson.is_required),
+        module: lesson.module_title ? {
+          id: lesson.module_id,
+          title: lesson.module_title,
+          order_index: lesson.module_order
+        } : null,
+        media_file: (lesson.media_file_id_from_join && lesson.media_url) ? {
+          id: lesson.media_file_id_from_join,
+          url: buildMediaUrl(lesson.media_url),
+          thumbnail_url: buildMediaUrl(lesson.thumbnail_url),
+          file_category: lesson.file_category,
+          file_type: lesson.file_type,
+          filename: lesson.filename,
+          original_filename: lesson.original_filename,
+          file_size: lesson.file_size,
+          duration: lesson.media_duration
+        } : (mediaFiles.length > 0 ? mediaFiles[0] : null),
+        media_files: mediaFiles.length > 0 ? mediaFiles : null
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la récupération de la leçon:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération de la leçon'
+    });
+  }
+};
+
 module.exports = {
   createLesson,
   getCourseLessons,
   getLesson,
+  getLessonForStudent,
   updateLesson,
   deleteLesson,
   reorderLessons

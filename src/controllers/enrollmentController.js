@@ -1,5 +1,6 @@
 const { pool } = require('../config/database');
 const { eventEmitter, EVENTS } = require('../middleware/eventEmitter');
+const { buildMediaUrl } = require('../utils/media');
 
 // S'inscrire à un cours
 const enrollInCourse = async (req, res) => {
@@ -434,21 +435,164 @@ const getCourseProgress = async (req, res) => {
       });
     }
 
-    // Récupérer les leçons du cours avec progression (vérifier les deux tables)
+    // Récupérer les leçons du cours avec progression et contenus/médias (vérifier les deux tables)
     const enrollmentId = enrollments[0].id;
     const lessonsQuery = `
       SELECT 
-        l.*, 
+        l.*,
         COALESCE(lp.is_completed, CASE WHEN p.status = 'completed' THEN TRUE ELSE FALSE END, FALSE) as is_completed,
         COALESCE(lp.completed_at, p.completed_at) as completed_at,
-        COALESCE(lp.time_spent_minutes, FLOOR(p.time_spent / 60), 0) as time_spent_minutes
+        COALESCE(lp.time_spent_minutes, FLOOR(p.time_spent / 60), 0) as time_spent_minutes,
+        mf.id as media_file_id_from_join,
+        mf.url as media_url,
+        mf.thumbnail_url,
+        mf.file_category,
+        mf.filename,
+        mf.original_filename,
+        mf.file_size,
+        mf.file_type,
+        mf.duration as media_duration
       FROM lessons l
       LEFT JOIN lesson_progress lp ON l.id = lp.lesson_id AND lp.user_id = ? AND lp.course_id = ?
       LEFT JOIN progress p ON l.id = p.lesson_id AND p.enrollment_id = ?
+      LEFT JOIN media_files mf ON (
+        l.media_file_id = mf.id 
+        OR (l.id = mf.lesson_id AND l.media_file_id IS NULL)
+      )
       WHERE l.course_id = ? AND l.is_published = TRUE
-      ORDER BY l.order_index ASC
+      ORDER BY l.order_index ASC, mf.uploaded_at DESC
     `;
-    const [lessons] = await pool.execute(lessonsQuery, [userId, courseId, enrollmentId, courseId]);
+    const [lessonsRaw] = await pool.execute(lessonsQuery, [userId, courseId, enrollmentId, courseId]);
+
+    // Récupérer tous les médias du cours qui pourraient être associés aux leçons
+    const [allCourseMedia] = await pool.execute(
+      `
+      SELECT 
+        id, lesson_id, url, thumbnail_url, file_category, file_type,
+        filename, original_filename, file_size, duration, uploaded_at
+      FROM media_files
+      WHERE course_id = ?
+      ORDER BY lesson_id, uploaded_at DESC
+      `,
+      [courseId]
+    );
+
+    // Créer un map des médias par lesson_id pour association rapide
+    const mediaByLessonId = {};
+    allCourseMedia.forEach(media => {
+      if (media.lesson_id) {
+        if (!mediaByLessonId[media.lesson_id]) {
+          mediaByLessonId[media.lesson_id] = [];
+        }
+        mediaByLessonId[media.lesson_id].push(media);
+      }
+    });
+
+    // Médias sans lesson_id (à distribuer aux leçons par ordre)
+    const unassignedMedia = allCourseMedia.filter(m => !m.lesson_id).sort((a, b) => 
+      new Date(a.uploaded_at || 0) - new Date(b.uploaded_at || 0)
+    );
+
+    // Créer un map des leçons uniques par ID pour éviter les doublons
+    const uniqueLessonsMap = new Map();
+    lessonsRaw.forEach(lesson => {
+      if (!uniqueLessonsMap.has(lesson.id)) {
+        uniqueLessonsMap.set(lesson.id, lesson);
+      }
+    });
+    const uniqueLessons = Array.from(uniqueLessonsMap.values()).sort((a, b) => 
+      (a.order_index || 0) - (b.order_index || 0)
+    );
+
+    // Formater les leçons avec les URLs des médias et éviter les doublons
+    const lessonsMap = new Map();
+    uniqueLessons.forEach((lesson) => {
+      // Récupérer les médias directement associés à cette leçon
+      const directMedia = mediaByLessonId[lesson.id] || [];
+      
+      // Trouver l'index de cette leçon dans l'ordre des leçons du cours
+      const lessonOrderIndex = uniqueLessons.findIndex(l => l.id === lesson.id);
+      
+      // Si la leçon n'a pas de média direct mais qu'il y a des médias non assignés,
+      // associer le média non assigné correspondant à l'ordre de la leçon
+      let lessonMedia = [...directMedia];
+      if (lessonMedia.length === 0 && unassignedMedia.length > 0 && lessonOrderIndex >= 0 && lessonOrderIndex < unassignedMedia.length) {
+        lessonMedia = [unassignedMedia[lessonOrderIndex]];
+      }
+      
+      // Utiliser le média de la requête principale ou le premier média trouvé
+      const primaryMedia = lesson.media_file_id_from_join && lesson.media_url 
+        ? {
+            id: lesson.media_file_id_from_join,
+            url: buildMediaUrl(lesson.media_url),
+            thumbnail_url: buildMediaUrl(lesson.thumbnail_url),
+            file_category: lesson.file_category,
+            filename: lesson.filename,
+            original_filename: lesson.original_filename,
+            file_size: lesson.file_size,
+            file_type: lesson.file_type,
+            duration: lesson.media_duration
+          }
+        : (lessonMedia.length > 0 ? {
+            id: lessonMedia[0].id,
+            url: buildMediaUrl(lessonMedia[0].url),
+            thumbnail_url: buildMediaUrl(lessonMedia[0].thumbnail_url),
+            file_category: lessonMedia[0].file_category,
+            filename: lessonMedia[0].filename,
+            original_filename: lessonMedia[0].original_filename,
+            file_size: lessonMedia[0].file_size,
+            file_type: lessonMedia[0].file_type,
+            duration: lessonMedia[0].duration
+          } : null);
+
+      // Formater tous les médias de la leçon
+      const allMediaFiles = lessonMedia.length > 0 
+        ? lessonMedia.map(mf => ({
+            id: mf.id,
+            url: buildMediaUrl(mf.url),
+            thumbnail_url: buildMediaUrl(mf.thumbnail_url),
+            file_category: mf.file_category,
+            file_type: mf.file_type,
+            filename: mf.filename,
+            original_filename: mf.original_filename,
+            file_size: mf.file_size,
+            duration: mf.duration
+          }))
+        : null;
+
+      lessonsMap.set(lesson.id, {
+        ...lesson,
+        video_url: lesson.video_url ? buildMediaUrl(lesson.video_url) : null,
+        content_url: lesson.content_url ? buildMediaUrl(lesson.content_url) : null,
+        media_file: primaryMedia,
+        media_files: allMediaFiles
+      });
+    });
+
+    // Distribuer les médias non assignés aux leçons qui n'ont pas de média
+    const lessonsArray = Array.from(lessonsMap.values());
+    let unassignedIndex = 0;
+    lessonsArray.forEach((lesson, index) => {
+      if (!lesson.media_file && unassignedMedia.length > unassignedIndex) {
+        const media = unassignedMedia[unassignedIndex];
+        lesson.media_file = {
+          id: media.id,
+          url: buildMediaUrl(media.url),
+          thumbnail_url: buildMediaUrl(media.thumbnail_url),
+          file_category: media.file_category,
+          filename: media.filename,
+          original_filename: media.original_filename,
+          file_size: media.file_size,
+          file_type: media.file_type,
+          duration: media.duration
+        };
+        lesson.media_files = [lesson.media_file];
+        lesson.media_file_id = media.id;
+        unassignedIndex++;
+      }
+    });
+
+    const lessons = lessonsArray;
 
     // Récupérer les quiz du cours
     const quizzesQuery = `

@@ -1141,15 +1141,267 @@ const deleteLesson = async (req, res) => {
 };
 
 const addToFavorites = async (req, res) => {
-  // Ajouter aux favoris
+  try {
+    const { courseId } = req.params;
+    const userId = req.user?.id ?? req.user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Non authentifié'
+      });
+    }
+
+    // Vérifier que le cours existe
+    const [courses] = await pool.execute(
+      'SELECT id, title FROM courses WHERE id = ?',
+      [courseId]
+    );
+
+    if (courses.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Cours non trouvé'
+      });
+    }
+
+    // Vérifier si le favori existe déjà
+    const [existing] = await pool.execute(
+      'SELECT id FROM course_favorites WHERE user_id = ? AND course_id = ?',
+      [userId, courseId]
+    );
+
+    if (existing.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Ce cours est déjà dans vos favoris'
+      });
+    }
+
+    // Ajouter aux favoris
+    await pool.execute(
+      'INSERT INTO course_favorites (user_id, course_id) VALUES (?, ?)',
+      [userId, courseId]
+    );
+
+    res.json({
+      success: true,
+      message: 'Cours ajouté aux favoris avec succès'
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de l\'ajout aux favoris:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de l\'ajout aux favoris'
+    });
+  }
 };
 
 const removeFromFavorites = async (req, res) => {
-  // Retirer des favoris
+  try {
+    const { courseId } = req.params;
+    const userId = req.user?.id ?? req.user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Non authentifié'
+      });
+    }
+
+    // Vérifier si le favori existe
+    const [existing] = await pool.execute(
+      'SELECT id FROM course_favorites WHERE user_id = ? AND course_id = ?',
+      [userId, courseId]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Ce cours n\'est pas dans vos favoris'
+      });
+    }
+
+    // Retirer des favoris
+    await pool.execute(
+      'DELETE FROM course_favorites WHERE user_id = ? AND course_id = ?',
+      [userId, courseId]
+    );
+
+    res.json({
+      success: true,
+      message: 'Cours retiré des favoris avec succès'
+    });
+
+  } catch (error) {
+    console.error('Erreur lors du retrait des favoris:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors du retrait des favoris'
+    });
+  }
 };
 
 const getFavoriteCourses = async (req, res) => {
-  // Récupérer les cours favoris
+  try {
+    const userId = req.user?.id ?? req.user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Non authentifié'
+      });
+    }
+
+    const {
+      page = 1,
+      limit = 10,
+      search = '',
+      category,
+      difficulty,
+      sort = 'created_at',
+      order = 'DESC'
+    } = req.query;
+
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const perPage = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
+    const offset = (pageNum - 1) * perPage;
+
+    // Construire la requête avec filtres
+    let whereClause = `
+      WHERE c.is_published = TRUE 
+        AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
+        AND COALESCE(c.status, 'draft') != 'draft'
+        AND cf.user_id = ?
+    `;
+    let params = [userId];
+
+    // Filtre de recherche
+    if (search) {
+      whereClause += ' AND (c.title LIKE ? OR c.description LIKE ? OR c.short_description LIKE ?)';
+      const searchTerm = `%${search}%`;
+      params.push(searchTerm, searchTerm, searchTerm);
+    }
+
+    // Filtre par catégorie
+    if (category) {
+      whereClause += ' AND c.category_id = ?';
+      params.push(category);
+    }
+
+    // Filtre par difficulté
+    if (difficulty) {
+      whereClause += ' AND c.difficulty = ?';
+      params.push(difficulty);
+    }
+
+    // Validation du tri
+    const validSorts = ['created_at', 'title', 'average_rating', 'enrollment_count', 'price'];
+    const sortField = validSorts.includes(sort) ? sort : 'created_at';
+    const sortOrder = order.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+
+    // Requête principale
+    const query = `
+      SELECT 
+        c.*,
+        cat.name as category_name,
+        cat.color as category_color,
+        u.first_name as instructor_first_name,
+        u.last_name as instructor_last_name,
+        u.email as instructor_email,
+        u.organization as instructor_organization,
+        COALESCE(
+          CONCAT('/uploads/profiles/', uf.file_name),
+          u.profile_picture
+        ) as instructor_profile_picture,
+        stats.average_rating,
+        stats.review_count,
+        stats.enrollment_count,
+        COALESCE(lesson_counts.total_lessons, 0) as total_lessons,
+        COALESCE(ca.total_views, 0) as total_views,
+        cp.title as prerequisite_title,
+        cp.id as prerequisite_id,
+        cf.created_at as favorited_at
+      FROM course_favorites cf
+      INNER JOIN courses c ON cf.course_id = c.id
+      LEFT JOIN categories cat ON c.category_id = cat.id
+      LEFT JOIN users u ON c.instructor_id = u.id
+      LEFT JOIN (
+        SELECT uf1.user_id, uf1.file_name
+        FROM user_files uf1
+        INNER JOIN (
+          SELECT user_id, MAX(created_at) as max_created_at
+          FROM user_files
+          WHERE file_type = 'profile_picture'
+          GROUP BY user_id
+        ) uf2 ON uf1.user_id = uf2.user_id 
+          AND uf1.created_at = uf2.max_created_at
+          AND uf1.file_type = 'profile_picture'
+      ) uf ON uf.user_id = u.id
+      LEFT JOIN (
+        SELECT 
+          c.id AS course_id,
+          AVG(cr.rating) AS average_rating,
+          COUNT(DISTINCT cr.id) AS review_count,
+          COUNT(DISTINCT e.id) AS enrollment_count
+        FROM courses c
+        LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
+        LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
+        GROUP BY c.id
+      ) stats ON stats.course_id = c.id
+      LEFT JOIN course_analytics ca ON ca.course_id = c.id
+      LEFT JOIN courses cp ON c.prerequisite_course_id = cp.id
+      LEFT JOIN (
+        SELECT 
+          m.course_id,
+          COUNT(DISTINCT l.id) as total_lessons
+        FROM modules m
+        LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+        GROUP BY m.course_id
+      ) lesson_counts ON lesson_counts.course_id = c.id
+      ${whereClause}
+      ORDER BY ${sortField === 'created_at' ? 'cf.created_at' : `c.${sortField}`} ${sortOrder}
+      LIMIT ? OFFSET ?
+    `;
+
+    params.push(perPage, offset);
+
+    const [courses] = await pool.execute(query, params);
+
+    // Compter le total pour la pagination
+    const countQuery = `
+      SELECT COUNT(DISTINCT cf.id) as total
+      FROM course_favorites cf
+      INNER JOIN courses c ON cf.course_id = c.id
+      ${whereClause}
+    `;
+    const countParams = params.slice(0, -2); // Retirer limit et offset
+    const [countResult] = await pool.execute(countQuery, countParams);
+    const total = countResult[0]?.total || 0;
+
+    const formattedCourses = courses.map(row => formatCourseRow(row));
+
+    res.json({
+      success: true,
+      data: {
+        courses: formattedCourses,
+        pagination: {
+          page: pageNum,
+          limit: perPage,
+          total,
+          totalPages: Math.ceil(total / perPage)
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la récupération des favoris:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des favoris'
+    });
+  }
 };
 
 const addReview = async (req, res) => {
@@ -1854,9 +2106,11 @@ const getCourseBySlug = async (req, res) => {
     // Vérifier si l'utilisateur connecté est inscrit à ce cours
     let isEnrolled = false;
     let enrollment = null;
+    let isFavorite = false;
     const userId = req.user?.id ?? req.user?.userId;
     
     if (userId) {
+      // Vérifier l'inscription
       const [enrollments] = await pool.execute(
         `SELECT 
           e.*,
@@ -1877,6 +2131,16 @@ const getCourseBySlug = async (req, res) => {
           progress_percentage: enrollments[0].progress_percentage,
           completed_at: enrollments[0].completed_at
         };
+      }
+
+      // Vérifier si le cours est en favoris
+      const [favorites] = await pool.execute(
+        'SELECT id FROM course_favorites WHERE user_id = ? AND course_id = ? LIMIT 1',
+        [userId, course.id]
+      );
+      
+      if (favorites.length > 0) {
+        isFavorite = true;
       }
     }
 
@@ -1946,7 +2210,8 @@ const getCourseBySlug = async (req, res) => {
         course: {
           ...course,
           is_enrolled: isEnrolled,
-          enrollment: enrollment
+          enrollment: enrollment,
+          is_favorite: isFavorite
         },
         modules: modulesWithLessons
       }

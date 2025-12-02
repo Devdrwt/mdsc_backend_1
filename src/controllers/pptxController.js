@@ -56,12 +56,15 @@ const convertPptxToImages = async (req, res) => {
     const outputDir = path.join(__dirname, '../../uploads/presentations', `slides_${id}`);
     await fs.mkdir(outputDir, { recursive: true });
     
-    // Convertir le PPTX en images avec LibreOffice
-    // Format: --convert-to png --outdir <outputDir> <inputFile>
+    // Convertir le PPTX en images avec LibreOffice directement
+    // Cette méthode préserve mieux l'ordre et la mise en page originale du PowerPoint
     const command = `libreoffice --headless --convert-to png --outdir "${outputDir}" "${filePath}"`;
     
     try {
-      await execAsync(command, { timeout: 60000 }); // Timeout de 60 secondes
+      await execAsync(command, { 
+        timeout: 120000, // 2 minutes pour gros fichiers
+        maxBuffer: 10 * 1024 * 1024
+      });
     } catch (error) {
       console.error('Erreur lors de la conversion:', error);
       // Nettoyer le dossier de sortie en cas d'erreur
@@ -76,14 +79,32 @@ const convertPptxToImages = async (req, res) => {
       });
     }
     
-    // Lister les images générées
+    // Lister et trier les images générées
+    // LibreOffice génère des fichiers avec le nom du fichier original + numéro
+    // Format possible: nom_fichier_1.png, nom_fichier_2.png, etc.
+    // OU: nom_fichier-1.png, nom_fichier-2.png
     const filesInDir = await fs.readdir(outputDir);
+    const baseFileName = path.basename(filePath, path.extname(filePath));
+    
     const imageFiles = filesInDir
       .filter(file => file.toLowerCase().endsWith('.png'))
       .sort((a, b) => {
-        // Trier par numéro de slide
-        const numA = parseInt(a.match(/\d+/)?.[0] || '0');
-        const numB = parseInt(b.match(/\d+/)?.[0] || '0');
+        // Extraire les numéros de slide de manière robuste
+        // Chercher le dernier numéro dans le nom de fichier (avant .png)
+        const extractNumber = (filename) => {
+          // Enlever l'extension
+          const nameWithoutExt = filename.replace(/\.png$/i, '');
+          // Chercher tous les numéros
+          const numbers = nameWithoutExt.match(/\d+/g);
+          if (numbers && numbers.length > 0) {
+            // Prendre le dernier numéro trouvé (le numéro de slide)
+            return parseInt(numbers[numbers.length - 1]);
+          }
+          return 0;
+        };
+        
+        const numA = extractNumber(a);
+        const numB = extractNumber(b);
         return numA - numB;
       });
     

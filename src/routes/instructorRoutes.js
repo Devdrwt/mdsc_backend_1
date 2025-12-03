@@ -47,5 +47,12 @@ router.post('/courses/:courseId/request-publication',
   courseApprovalController.requestPublication
 );
 
+// Route pour demander la suppression d'un cours
+router.post('/courses/:courseId/request-deletion',
+  authenticateToken,
+  authorize(['instructor', 'admin']),
+  courseApprovalController.requestDeletion
+);
+
 module.exports = router;
 

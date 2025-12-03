@@ -7,6 +7,7 @@ const certificateController = require('../controllers/certificateController');
 const evaluationController = require('../controllers/evaluationController');
 const instructorDashboardController = require('../controllers/instructorDashboardController');
 const lessonController = require('../controllers/lessonController');
+const courseApprovalController = require('../controllers/courseApprovalController');
 const { authenticateToken, optionalAuth, authorize } = require('../middleware/auth');
 const { 
   validateCourse, 
@@ -53,6 +54,8 @@ router.get('/:courseId/analytics',
 );
 // Route pour le planning d'un cours (doit être avant /:id pour éviter les conflits)
 router.get('/:courseId/schedule', authenticateToken, courseController.getCourseSchedule);
+// Route pour demander la suppression d'un cours (doit être avant /:id pour éviter les conflits)
+router.post('/:courseId/request-deletion', authenticateToken, authorize(['instructor', 'admin']), courseApprovalController.requestDeletion);
 router.get('/:id/check-enrollment', authenticateToken, courseController.checkEnrollment);
 router.get('/:id', optionalAuth, courseController.getCourseById); // Route avec authentification optionnelle
 // Liste des inscrits d'un cours (protégée)

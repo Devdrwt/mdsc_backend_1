@@ -258,6 +258,7 @@ const getCourseProgress = async (req, res) => {
         l.id,
         l.title,
         l.order_index,
+        l.module_id,
         l.duration_minutes,
         l.content_type,
         l.content,
@@ -425,6 +426,7 @@ const getCourseProgress = async (req, res) => {
         id: lesson.id,
         title: lesson.title,
         order_index: lesson.order_index,
+        module_id: lesson.module_id,
         duration_minutes: lesson.duration_minutes,
         content_type: lesson.content_type,
         content: lesson.content,
@@ -447,20 +449,192 @@ const getCourseProgress = async (req, res) => {
     // Les leçons sont déjà uniques (une par ID), pas besoin de déduplication
     const lessonsArray = formattedLessons;
 
+    // Récupérer les modules avec leurs quiz de modules et questions
+    const [modules] = await pool.execute(
+      `
+      SELECT 
+        m.id,
+        m.title,
+        m.description,
+        m.order_index,
+        mq.id as quiz_id,
+        mq.title as quiz_title,
+        mq.description as quiz_description,
+        mq.passing_score,
+        mq.time_limit_minutes,
+        mq.max_attempts,
+        mq.is_published as quiz_is_published
+      FROM modules m
+      LEFT JOIN module_quizzes mq ON m.id = mq.module_id AND mq.is_published = TRUE
+      WHERE m.course_id = ?
+      ORDER BY m.order_index ASC
+      `,
+      [courseId]
+    );
+
+    // Pour chaque module avec quiz, récupérer les questions (sans les bonnes réponses)
+    const modulesWithQuizzes = await Promise.all(
+      modules.map(async (module) => {
+        if (!module.quiz_id) {
+          return {
+            ...module,
+            quiz: null
+          };
+        }
+
+        // Récupérer les questions du quiz
+        const [questions] = await pool.execute(
+          `
+          SELECT 
+            qq.id,
+            qq.question_text,
+            qq.question_type,
+            qq.points,
+            qq.order_index
+          FROM quiz_questions qq
+          WHERE qq.module_quiz_id = ? AND qq.is_active = TRUE
+          ORDER BY qq.order_index ASC
+          `,
+          [module.quiz_id]
+        );
+
+        console.log(`[getCourseProgress] Module ${module.id}, Quiz ${module.quiz_id}: ${questions.length} questions trouvées`);
+
+        // Récupérer les options/réponses pour chaque question (sans révéler les bonnes réponses)
+        const questionsWithOptions = await Promise.all(
+          questions.map(async (question) => {
+            const [answers] = await pool.execute(
+              `
+              SELECT 
+                id,
+                answer_text,
+                order_index
+              FROM quiz_answers
+              WHERE question_id = ?
+              ORDER BY order_index ASC
+              `,
+              [question.id]
+            );
+
+            // Pour les questions à choix multiples, retourner les options
+            // Pour les questions vrai/faux, retourner ['Vrai', 'Faux']
+            // Pour les questions à réponse courte, ne pas retourner de réponses
+            let options = [];
+            if (question.question_type === 'multiple_choice') {
+              options = answers.map(a => a.answer_text);
+            } else if (question.question_type === 'true_false') {
+              options = ['Vrai', 'Faux'];
+            }
+
+            const formattedQuestion = {
+              id: question.id.toString(),
+              question_text: question.question_text || '',
+              question_type: question.question_type,
+              points: parseFloat(question.points) || 0,
+              order_index: question.order_index || 0,
+              options: options
+            };
+
+            console.log(`[getCourseProgress] Question ${question.id} formatée:`, {
+              id: formattedQuestion.id,
+              type: formattedQuestion.question_type,
+              options_count: formattedQuestion.options.length
+            });
+
+            return formattedQuestion;
+          })
+        );
+
+        console.log(`[getCourseProgress] Module ${module.id}: ${questionsWithOptions.length} questions formatées`);
+
+        // Récupérer les tentatives précédentes
+        const [attempts] = await pool.execute(
+          `
+          SELECT * FROM quiz_attempts 
+          WHERE enrollment_id = ? AND module_quiz_id = ? 
+          ORDER BY started_at DESC
+          `,
+          [enrollment.id, module.quiz_id]
+        );
+
+        const quizData = {
+          id: module.quiz_id,
+          title: module.quiz_title || '',
+          description: module.quiz_description || '',
+          passing_score: Number(module.passing_score) || 0,
+          time_limit_minutes: Number(module.time_limit_minutes) || 0,
+          max_attempts: Number(module.max_attempts) || 0,
+          is_published: Boolean(module.quiz_is_published),
+          questions: questionsWithOptions || [],
+          previous_attempts: attempts || [],
+          can_attempt: (attempts?.length || 0) < (Number(module.max_attempts) || 0)
+        };
+
+        console.log(`[getCourseProgress] Quiz ${module.quiz_id} formaté:`, {
+          id: quizData.id,
+          title: quizData.title,
+          questions_count: quizData.questions.length,
+          has_questions: quizData.questions.length > 0
+        });
+
+        return {
+          id: module.id,
+          title: module.title || '',
+          description: module.description || '',
+          order_index: module.order_index || 0,
+          quiz: quizData
+        };
+      })
+    );
+
     const totalLessons = lessonsArray.length;
     const completedLessons = lessonsArray.filter((lesson) => lesson.is_completed).length;
+
+    // Log pour débogage
+    const modulesWithQuiz = modulesWithQuizzes.filter(m => m.quiz !== null);
+    console.log(`[getCourseProgress] Cours ${courseId}: ${modulesWithQuizzes.length} modules, ${modulesWithQuiz.length} avec quiz`);
+    if (modulesWithQuiz.length > 0) {
+      modulesWithQuiz.forEach(m => {
+        console.log(`[getCourseProgress] Module ${m.id} (${m.title}): Quiz ID ${m.quiz.id} avec ${m.quiz.questions?.length || 0} questions`);
+      });
+    }
+
+    // Extraire les quiz de modules pour les ajouter à la liste des quiz (pour compatibilité frontend)
+    const moduleQuizzes = modulesWithQuizzes
+      .filter(m => m.quiz !== null)
+      .map(m => ({
+        id: m.quiz.id,
+        title: m.quiz.title,
+        description: m.quiz.description,
+        passing_score: m.quiz.passing_score,
+        time_limit_minutes: m.quiz.time_limit_minutes,
+        max_attempts: m.quiz.max_attempts,
+        is_published: m.quiz.is_published,
+        module_id: m.id,
+        module_title: m.title,
+        questions: m.quiz.questions,
+        previous_attempts: m.quiz.previous_attempts,
+        can_attempt: m.quiz.can_attempt,
+        type: 'module_quiz' // Pour distinguer des anciens quiz de cours
+      }));
+
+    // Combiner les anciens quiz de cours avec les quiz de modules
+    const allQuizzes = [...quizzes, ...moduleQuizzes];
+
+    console.log(`[getCourseProgress] Total quiz: ${quizzes.length} quiz de cours + ${moduleQuizzes.length} quiz de modules = ${allQuizzes.length} total`);
 
     res.json({
       success: true,
       data: {
         enrollment,
         lessons: lessonsArray,
-        quizzes,
+        modules: modulesWithQuizzes,
+        quizzes: allQuizzes, // Inclure les quiz de modules dans quizzes pour compatibilité
         statistics: {
           total_lessons: totalLessons,
           completed_lessons: completedLessons,
-          total_quizzes: quizzes.length,
-          passed_quizzes: quizzes.filter((quiz) => quiz.is_passed).length,
+          total_quizzes: allQuizzes.length,
+          passed_quizzes: allQuizzes.filter((quiz) => quiz.is_passed).length,
           progress_percentage: Number(enrollment.progress_percentage || 0)
         }
       }

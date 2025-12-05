@@ -526,19 +526,29 @@ const getCourseProgress = async (req, res) => {
               options = ['Vrai', 'Faux'];
             }
 
+            // Vérifier si la question est valide (a des options pour les QCM et Vrai/Faux)
+            const isValid = question.question_type === 'short_answer' || options.length > 0;
+            
             const formattedQuestion = {
               id: question.id.toString(),
               question_text: question.question_text || '',
               question_type: question.question_type,
               points: parseFloat(question.points) || 0,
               order_index: question.order_index || 0,
-              options: options
+              options: options,
+              is_valid: isValid, // Indicateur pour le frontend
+              has_options: options.length > 0 // Indicateur explicite
             };
+
+            if (!isValid) {
+              console.warn(`[getCourseProgress] ⚠️ Question ${question.id} invalide: pas d'options pour type ${question.question_type}`);
+            }
 
             console.log(`[getCourseProgress] Question ${question.id} formatée:`, {
               id: formattedQuestion.id,
               type: formattedQuestion.question_type,
-              options_count: formattedQuestion.options.length
+              options_count: formattedQuestion.options.length,
+              is_valid: formattedQuestion.is_valid
             });
 
             return formattedQuestion;
@@ -556,18 +566,40 @@ const getCourseProgress = async (req, res) => {
           `,
           [enrollment.id, module.quiz_id]
         );
+        
+        console.log(`[getCourseProgress] Tentatives pour quiz ${module.quiz_id}, enrollment ${enrollment.id}:`, {
+          attempts_count: attempts.length,
+          max_attempts: module.max_attempts,
+          attempts: attempts.map(a => ({ id: a.id, started_at: a.started_at, score: a.score }))
+        });
 
+        // Filtrer les questions invalides ou les marquer
+        const validQuestions = questionsWithOptions.filter(q => q.is_valid);
+        const invalidQuestionsCount = questionsWithOptions.length - validQuestions.length;
+        
+        if (invalidQuestionsCount > 0) {
+          console.warn(`[getCourseProgress] ⚠️ Quiz ${module.quiz_id}: ${invalidQuestionsCount} question(s) invalide(s) (sans options)`);
+        }
+
+        const attemptsCount = attempts?.length || 0;
+        const maxAttempts = Number(module.max_attempts) || 0;
+        const remainingAttempts = Math.max(0, maxAttempts - attemptsCount);
+        
         const quizData = {
           id: module.quiz_id,
           title: module.quiz_title || '',
           description: module.quiz_description || '',
           passing_score: Number(module.passing_score) || 0,
           time_limit_minutes: Number(module.time_limit_minutes) || 0,
-          max_attempts: Number(module.max_attempts) || 0,
+          max_attempts: maxAttempts,
+          attempts_count: attemptsCount, // Nombre de tentatives effectuées
+          remaining_attempts: remainingAttempts, // Nombre de tentatives restantes
           is_published: Boolean(module.quiz_is_published),
-          questions: questionsWithOptions || [],
+          questions: validQuestions, // Ne retourner que les questions valides
+          questions_count: validQuestions.length,
+          invalid_questions_count: invalidQuestionsCount, // Informer le frontend
           previous_attempts: attempts || [],
-          can_attempt: (attempts?.length || 0) < (Number(module.max_attempts) || 0)
+          can_attempt: remainingAttempts > 0
         };
 
         console.log(`[getCourseProgress] Quiz ${module.quiz_id} formaté:`, {

@@ -859,6 +859,9 @@ const submitEvaluation = async (req, res) => {
         }));
       }
 
+      // Stocker les détails par question pour le récapitulatif
+      const questionResults = [];
+
       // Traiter chaque question
       for (const question of allQuestions) {
         const questionPoints = Number(question.points) || 0;
@@ -866,87 +869,128 @@ const submitEvaluation = async (req, res) => {
         totalQuestions++;
 
         const answer = answersArray.find(a => String(a.question_id) === String(question.id));
-        if (!answer) continue;
+        
+        let isCorrect = false;
+        let studentAnswerText = null;
+        let correctAnswerText = null;
+        let pointsEarned = 0;
 
-        const { answer_id, answer_text } = answer;
+        if (answer) {
+          const { answer_id, answer_text } = answer;
+          studentAnswerText = answer_text || null;
 
-        if (answer_id) {
-          const [correctAnswersList] = await pool.execute(
-            'SELECT is_correct FROM quiz_answers WHERE id = ? AND question_id = ?',
-            [answer_id, question.id]
-          );
+          if (answer_id) {
+            // Récupérer la réponse sélectionnée et la bonne réponse
+            const [selectedAnswer] = await pool.execute(
+              'SELECT answer_text, is_correct FROM quiz_answers WHERE id = ? AND question_id = ?',
+              [answer_id, question.id]
+            );
 
-          if (correctAnswersList.length > 0 && correctAnswersList[0].is_correct) {
-            earnedPoints += questionPoints;
-            correctAnswers++;
-          }
-        } else if (answer_text) {
-          const [correctAnswersList] = await pool.execute(
-            'SELECT answer_text FROM quiz_answers WHERE question_id = ? AND is_correct = TRUE',
-            [question.id]
-          );
-
-          if (correctAnswersList.length > 0) {
-            const correctText = correctAnswersList[0].answer_text?.toLowerCase().trim();
-            const userText = answer_text.toLowerCase().trim();
-            
-            // Comparaison exacte d'abord
-            let isCorrect = correctText === userText;
-            
-            // Si pas de correspondance exacte, faire une comparaison flexible
-            if (!isCorrect && correctText && userText) {
-              // Normaliser les textes : supprimer les accents, ponctuation, espaces multiples
-              const normalize = (text) => {
-                return text
-                  .normalize('NFD')
-                  .replace(/[\u0300-\u036f]/g, '') // Supprimer les accents
-                  .replace(/[^\w\s]/g, ' ') // Remplacer la ponctuation par des espaces
-                  .replace(/\s+/g, ' ') // Remplacer les espaces multiples par un seul
-                  .trim();
-              };
+            if (selectedAnswer.length > 0) {
+              studentAnswerText = selectedAnswer[0].answer_text;
+              isCorrect = selectedAnswer[0].is_correct === 1 || selectedAnswer[0].is_correct === true;
               
-              const normalizedCorrect = normalize(correctText);
-              const normalizedUser = normalize(userText);
-              
-              // Vérifier si les mots-clés importants sont présents
-              const correctWords = normalizedCorrect.split(' ').filter(w => w.length > 3); // Mots de plus de 3 caractères
-              const userWords = normalizedUser.split(' ');
-              
-              // Compter les mots-clés présents
-              const matchingKeywords = correctWords.filter(word => 
-                userWords.some(uw => uw.includes(word) || word.includes(uw))
+              // Récupérer toutes les bonnes réponses pour cette question
+              const [correctAnswersList] = await pool.execute(
+                'SELECT answer_text FROM quiz_answers WHERE question_id = ? AND is_correct = TRUE ORDER BY order_index ASC',
+                [question.id]
               );
               
-              // Si au moins 70% des mots-clés sont présents, considérer comme correct
-              const keywordMatchRatio = correctWords.length > 0 
-                ? matchingKeywords.length / correctWords.length 
-                : 0;
-              
-              // Ou si la similarité de Levenshtein est élevée (simplifié : longueur similaire et beaucoup de mots en commun)
-              const wordOverlap = matchingKeywords.length / Math.max(correctWords.length, userWords.length);
-              
-              // Accepter si au moins 70% des mots-clés correspondent OU si 80% de similarité de mots
-              isCorrect = keywordMatchRatio >= 0.7 || wordOverlap >= 0.8;
-              
-              console.log(`[Evaluation] Comparaison flexible pour question ${question.id}:`, {
-                correctText: correctText.substring(0, 100),
-                userText: userText.substring(0, 100),
-                normalizedCorrect: normalizedCorrect.substring(0, 100),
-                normalizedUser: normalizedUser.substring(0, 100),
-                correctWords: correctWords,
-                matchingKeywords: matchingKeywords,
-                keywordMatchRatio: keywordMatchRatio,
-                wordOverlap: wordOverlap,
-                isCorrect: isCorrect
-              });
+              if (correctAnswersList.length > 0) {
+                correctAnswerText = correctAnswersList.map(a => a.answer_text).join(', ');
+              }
             }
-            
+
             if (isCorrect) {
               earnedPoints += questionPoints;
               correctAnswers++;
+              pointsEarned = questionPoints;
+            }
+          } else if (answer_text) {
+            // Question à réponse courte
+            const [correctAnswersList] = await pool.execute(
+              'SELECT answer_text FROM quiz_answers WHERE question_id = ? AND is_correct = TRUE',
+              [question.id]
+            );
+
+            if (correctAnswersList.length > 0) {
+              const correctText = correctAnswersList[0].answer_text?.toLowerCase().trim();
+              const userText = answer_text.toLowerCase().trim();
+              correctAnswerText = correctAnswersList[0].answer_text;
+              
+              // Comparaison exacte d'abord
+              isCorrect = correctText === userText;
+              
+              // Si pas de correspondance exacte, faire une comparaison flexible
+              if (!isCorrect && correctText && userText) {
+                // Normaliser les textes : supprimer les accents, ponctuation, espaces multiples
+                const normalize = (text) => {
+                  return text
+                    .normalize('NFD')
+                    .replace(/[\u0300-\u036f]/g, '') // Supprimer les accents
+                    .replace(/[^\w\s]/g, ' ') // Remplacer la ponctuation par des espaces
+                    .replace(/\s+/g, ' ') // Remplacer les espaces multiples par un seul
+                    .trim();
+                };
+                
+                const normalizedCorrect = normalize(correctText);
+                const normalizedUser = normalize(userText);
+                
+                // Vérifier si les mots-clés importants sont présents
+                const correctWords = normalizedCorrect.split(' ').filter(w => w.length > 3); // Mots de plus de 3 caractères
+                const userWords = normalizedUser.split(' ');
+                
+                // Compter les mots-clés présents
+                const matchingKeywords = correctWords.filter(word => 
+                  userWords.some(uw => uw.includes(word) || word.includes(uw))
+                );
+                
+                // Si au moins 70% des mots-clés sont présents, considérer comme correct
+                const keywordMatchRatio = correctWords.length > 0 
+                  ? matchingKeywords.length / correctWords.length 
+                  : 0;
+                
+                // Ou si la similarité de Levenshtein est élevée (simplifié : longueur similaire et beaucoup de mots en commun)
+                const wordOverlap = matchingKeywords.length / Math.max(correctWords.length, userWords.length);
+                
+                // Accepter si au moins 70% des mots-clés correspondent OU si 80% de similarité de mots
+                isCorrect = keywordMatchRatio >= 0.7 || wordOverlap >= 0.8;
+                
+                console.log(`[Evaluation] Comparaison flexible pour question ${question.id}:`, {
+                  correctText: correctText.substring(0, 100),
+                  userText: userText.substring(0, 100),
+                  normalizedCorrect: normalizedCorrect.substring(0, 100),
+                  normalizedUser: normalizedUser.substring(0, 100),
+                  correctWords: correctWords,
+                  matchingKeywords: matchingKeywords,
+                  keywordMatchRatio: keywordMatchRatio,
+                  wordOverlap: wordOverlap,
+                  isCorrect: isCorrect
+                });
+              }
+              
+              if (isCorrect) {
+                earnedPoints += questionPoints;
+                correctAnswers++;
+                pointsEarned = questionPoints;
+              }
             }
           }
         }
+
+        // Ajouter les détails de cette question au récapitulatif
+        questionResults.push({
+          question_id: question.id,
+          question_text: question.question_text,
+          question_type: question.question_type,
+          points: questionPoints,
+          order_index: question.order_index || 0,
+          student_answer: studentAnswerText,
+          correct_answer: correctAnswerText,
+          is_correct: isCorrect,
+          points_earned: pointsEarned,
+          points_lost: isCorrect ? 0 : questionPoints
+        });
       }
 
       const percentage = totalPoints > 0 ? (earnedPoints / totalPoints) * 100 : 0;
@@ -1021,7 +1065,18 @@ const submitEvaluation = async (req, res) => {
           is_passed: isPassed,
           correct_answers: correctAnswers,
           total_questions: totalQuestions,
-          enrollmentId: actualEnrollmentId
+          enrollmentId: actualEnrollmentId,
+          // Détails par question pour le récapitulatif
+          question_results: questionResults,
+          // Statistiques pour le récapitulatif
+          summary: {
+            total_questions: totalQuestions,
+            correct_questions: correctAnswers,
+            incorrect_questions: totalQuestions - correctAnswers,
+            total_points: totalPoints,
+            earned_points: earnedPoints,
+            lost_points: totalPoints - earnedPoints
+          }
         }
       });
     }
@@ -2243,36 +2298,99 @@ const submitEvaluationAttempt = async (req, res) => {
 
     const attemptId = attemptResult.insertId;
 
-    // Calculer le score (logique similaire à quizController)
+    // Récupérer toutes les questions de l'évaluation
+    const [allQuestions] = await pool.execute(
+      'SELECT id, question_text, question_type, points, order_index FROM quiz_questions WHERE course_evaluation_id = ? AND is_active = TRUE ORDER BY order_index ASC',
+      [evaluation.id]
+    );
+
+    // Calculer le score et stocker les détails par question
     let totalPoints = 0;
     let earnedPoints = 0;
+    let correctAnswers = 0;
+    const questionResults = [];
 
-    // Traiter les réponses
-    for (const answer of answers) {
-      const { question_id, answer_id, answer_text } = answer;
+    // Traiter chaque question
+    for (const question of allQuestions) {
+      const questionPoints = Number(question.points) || 0;
+      totalPoints += questionPoints;
 
-      // Récupérer la question depuis quiz_questions avec course_evaluation_id
-      const [questions] = await pool.execute(
-        'SELECT points FROM quiz_questions WHERE id = ? AND course_evaluation_id = ?',
-        [question_id, evaluation.id]
-      );
+      // Trouver la réponse de l'étudiant pour cette question
+      const answer = answers.find(a => String(a.question_id) === String(question.id));
+      
+      let isCorrect = false;
+      let studentAnswerText = null;
+      let correctAnswerText = null;
+      let pointsEarned = 0;
 
-      if (questions.length > 0) {
-        const question = questions[0];
-        totalPoints += question.points;
+      if (answer) {
+        const { answer_id, answer_text } = answer;
+        studentAnswerText = answer_text || null;
 
-        // Vérifier la réponse
         if (answer_id) {
-          const [correctAnswersList] = await pool.execute(
-            'SELECT is_correct FROM quiz_answers WHERE id = ? AND question_id = ?',
-            [answer_id, question_id]
+          // Récupérer la réponse sélectionnée et la bonne réponse
+          const [selectedAnswer] = await pool.execute(
+            'SELECT answer_text, is_correct FROM quiz_answers WHERE id = ? AND question_id = ?',
+            [answer_id, question.id]
           );
 
-          if (correctAnswersList.length > 0 && correctAnswersList[0].is_correct) {
-            earnedPoints += question.points;
+          if (selectedAnswer.length > 0) {
+            studentAnswerText = selectedAnswer[0].answer_text;
+            isCorrect = selectedAnswer[0].is_correct === 1 || selectedAnswer[0].is_correct === true;
+            
+            // Récupérer toutes les bonnes réponses pour cette question
+            const [correctAnswersList] = await pool.execute(
+              'SELECT answer_text FROM quiz_answers WHERE question_id = ? AND is_correct = TRUE ORDER BY order_index ASC',
+              [question.id]
+            );
+            
+            if (correctAnswersList.length > 0) {
+              correctAnswerText = correctAnswersList.map(a => a.answer_text).join(', ');
+            }
+          }
+
+          if (isCorrect) {
+            earnedPoints += questionPoints;
+            correctAnswers++;
+            pointsEarned = questionPoints;
+          }
+        } else if (answer_text) {
+          // Question à réponse courte
+          const [correctAnswersList] = await pool.execute(
+            'SELECT answer_text FROM quiz_answers WHERE question_id = ? AND is_correct = TRUE',
+            [question.id]
+          );
+
+          if (correctAnswersList.length > 0) {
+            const correctText = correctAnswersList[0].answer_text?.toLowerCase().trim();
+            const userText = answer_text.toLowerCase().trim();
+            correctAnswerText = correctAnswersList[0].answer_text;
+            
+            // Comparaison exacte
+            isCorrect = correctText === userText;
+            
+            if (isCorrect) {
+              earnedPoints += questionPoints;
+              correctAnswers++;
+              pointsEarned = questionPoints;
+            }
           }
         }
       }
+
+      // Ajouter les détails de cette question au récapitulatif
+      questionResults.push({
+        question_id: question.id,
+        question_text: question.question_text,
+        question_type: question.question_type,
+        points: questionPoints,
+        order_index: question.order_index || 0,
+        student_answer: studentAnswerText,
+        correct_answer: correctAnswerText,
+        is_correct: isCorrect,
+        points_earned: pointsEarned,
+        points_lost: isCorrect ? 0 : questionPoints
+      });
     }
 
     const percentage = totalPoints > 0 ? (earnedPoints / totalPoints) * 100 : 0;
@@ -2366,7 +2484,20 @@ const submitEvaluationAttempt = async (req, res) => {
         total_points: totalPoints,
         percentage: percentage,
         is_passed: isPassed,
-        eligible_for_certificate: isPassed
+        eligible_for_certificate: isPassed,
+        correct_answers: correctAnswers,
+        total_questions: allQuestions.length,
+        // Détails par question pour le récapitulatif
+        question_results: questionResults,
+        // Statistiques pour le récapitulatif
+        summary: {
+          total_questions: allQuestions.length,
+          correct_questions: correctAnswers,
+          incorrect_questions: allQuestions.length - correctAnswers,
+          total_points: totalPoints,
+          earned_points: earnedPoints,
+          lost_points: totalPoints - earnedPoints
+        }
       }
     });
 

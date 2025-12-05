@@ -71,8 +71,58 @@ const createModuleQuiz = async (req, res) => {
 
     // Créer les questions si fournies
     if (questions && Array.isArray(questions)) {
+      // Valider les questions avant de les créer
       for (let i = 0; i < questions.length; i++) {
         const question = questions[i];
+        const questionType = question.question_type || 'multiple_choice';
+        
+        // Validation : s'assurer que les questions ont les données nécessaires
+        if (!question.question_text || question.question_text.trim().length === 0) {
+          return res.status(400).json({
+            success: false,
+            message: `La question ${i + 1} doit avoir un texte`
+          });
+        }
+        
+        // Validation pour les questions à choix multiples
+        if (questionType === 'multiple_choice') {
+          if (!question.answers || !Array.isArray(question.answers) || question.answers.length < 2) {
+            return res.status(400).json({
+              success: false,
+              message: `La question ${i + 1} (QCM) doit avoir au moins 2 réponses`
+            });
+          }
+          // Vérifier qu'au moins une réponse est correcte
+          const hasCorrectAnswer = question.answers.some(a => a.is_correct === true);
+          if (!hasCorrectAnswer) {
+            return res.status(400).json({
+              success: false,
+              message: `La question ${i + 1} (QCM) doit avoir au moins une réponse correcte`
+            });
+          }
+        }
+        
+        // Validation pour les questions vrai/faux
+        if (questionType === 'true_false' && question.correct_answer === undefined) {
+          return res.status(400).json({
+            success: false,
+            message: `La question ${i + 1} (Vrai/Faux) doit avoir une réponse correcte définie`
+          });
+        }
+        
+        // Validation pour les questions à réponse courte
+        if (questionType === 'short_answer' && (!question.correct_answer || question.correct_answer.trim().length === 0)) {
+          return res.status(400).json({
+            success: false,
+            message: `La question ${i + 1} (Réponse courte) doit avoir une réponse correcte`
+          });
+        }
+      }
+      
+      // Créer les questions après validation
+      for (let i = 0; i < questions.length; i++) {
+        const question = questions[i];
+        const questionType = question.question_type || 'multiple_choice';
         
         // Pour les quiz de modules, on utilise module_quiz_id (quiz_id peut être NULL)
         const [questionResult] = await pool.execute(
@@ -83,7 +133,7 @@ const createModuleQuiz = async (req, res) => {
             null, // NULL pour les quiz de modules (quiz_id est maintenant nullable)
             quizId, // Lien vers le quiz de module via module_quiz_id
             sanitizeValue(question.question_text),
-            sanitizeValue(question.question_type || 'multiple_choice'),
+            sanitizeValue(questionType),
             sanitizeValue(question.points || 1),
             i
           ]
@@ -92,7 +142,7 @@ const createModuleQuiz = async (req, res) => {
         const questionId = questionResult.insertId;
 
         // Gérer les réponses selon le type de question
-        if (question.question_type === 'multiple_choice' && question.answers && Array.isArray(question.answers)) {
+        if (questionType === 'multiple_choice' && question.answers && Array.isArray(question.answers)) {
           // QCM : créer plusieurs réponses
           for (let j = 0; j < question.answers.length; j++) {
             const answer = question.answers[j];
@@ -108,7 +158,7 @@ const createModuleQuiz = async (req, res) => {
               ]
             );
           }
-        } else if (question.question_type === 'true_false' && question.correct_answer !== undefined) {
+        } else if (questionType === 'true_false' && question.correct_answer !== undefined) {
           // Vrai/Faux : créer deux réponses (true et false)
           const correctAnswer = question.correct_answer === true || question.correct_answer === 'true';
           await pool.execute(
@@ -119,7 +169,7 @@ const createModuleQuiz = async (req, res) => {
             `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
             [questionId, 'Faux', !correctAnswer, 1]
           );
-        } else if (question.question_type === 'short_answer' && question.correct_answer) {
+        } else if (questionType === 'short_answer' && question.correct_answer) {
           // Réponse courte : stocker la réponse correcte dans quiz_answers
           await pool.execute(
             `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
@@ -344,15 +394,22 @@ const getModuleQuizForStudent = async (req, res) => {
       [enrollmentId, quiz.id]
     );
 
+    const attemptsCount = attempts.length || 0;
+    const maxAttempts = Number(quiz.max_attempts) || 0;
+    const remainingAttempts = Math.max(0, maxAttempts - attemptsCount);
+    
     res.json({
       success: true,
       data: {
         quiz: {
           ...quiz,
-          questions: questionsWithOptions
+          questions: questionsWithOptions,
+          max_attempts: maxAttempts,
+          attempts_count: attemptsCount, // Nombre de tentatives effectuées
+          remaining_attempts: remainingAttempts // Nombre de tentatives restantes
         },
         previous_attempts: attempts,
-        can_attempt: attempts.length < quiz.max_attempts
+        can_attempt: remainingAttempts > 0
       }
     });
 
@@ -814,7 +871,55 @@ const updateModuleQuiz = async (req, res) => {
 
     // Mettre à jour les questions si fournies
     if (questions && Array.isArray(questions) && finalQuizId) {
-      // Supprimer les anciennes questions
+      // Valider les questions avant de les créer (même logique que createModuleQuiz)
+      for (let i = 0; i < questions.length; i++) {
+        const question = questions[i];
+        const questionType = question.question_type || 'multiple_choice';
+        
+        // Validation : s'assurer que les questions ont les données nécessaires
+        if (!question.question_text || question.question_text.trim().length === 0) {
+          return res.status(400).json({
+            success: false,
+            message: `La question ${i + 1} doit avoir un texte`
+          });
+        }
+        
+        // Validation pour les questions à choix multiples
+        if (questionType === 'multiple_choice') {
+          if (!question.answers || !Array.isArray(question.answers) || question.answers.length < 2) {
+            return res.status(400).json({
+              success: false,
+              message: `La question ${i + 1} (QCM) doit avoir au moins 2 réponses`
+            });
+          }
+          // Vérifier qu'au moins une réponse est correcte
+          const hasCorrectAnswer = question.answers.some(a => a.is_correct === true);
+          if (!hasCorrectAnswer) {
+            return res.status(400).json({
+              success: false,
+              message: `La question ${i + 1} (QCM) doit avoir au moins une réponse correcte`
+            });
+          }
+        }
+        
+        // Validation pour les questions vrai/faux
+        if (questionType === 'true_false' && question.correct_answer === undefined) {
+          return res.status(400).json({
+            success: false,
+            message: `La question ${i + 1} (Vrai/Faux) doit avoir une réponse correcte définie`
+          });
+        }
+        
+        // Validation pour les questions à réponse courte
+        if (questionType === 'short_answer' && (!question.correct_answer || question.correct_answer.trim().length === 0)) {
+          return res.status(400).json({
+            success: false,
+            message: `La question ${i + 1} (Réponse courte) doit avoir une réponse correcte`
+          });
+        }
+      }
+      
+      // Supprimer les anciennes questions après validation
       await pool.execute(
         'DELETE FROM quiz_answers WHERE question_id IN (SELECT id FROM quiz_questions WHERE module_quiz_id = ?)',
         [finalQuizId]
@@ -824,9 +929,10 @@ const updateModuleQuiz = async (req, res) => {
         [finalQuizId]
       );
 
-      // Créer les nouvelles questions (même logique que createModuleQuiz)
+      // Créer les nouvelles questions après validation
       for (let i = 0; i < questions.length; i++) {
         const question = questions[i];
+        const questionType = question.question_type || 'multiple_choice';
         
         const [questionResult] = await pool.execute(
           `INSERT INTO quiz_questions (
@@ -836,7 +942,7 @@ const updateModuleQuiz = async (req, res) => {
             null,
             finalQuizId,
             sanitizeValue(question.question_text),
-            sanitizeValue(question.question_type || 'multiple_choice'),
+            sanitizeValue(questionType),
             sanitizeValue(question.points || 1),
             question.order_index !== undefined ? question.order_index : i
           ]
@@ -845,7 +951,7 @@ const updateModuleQuiz = async (req, res) => {
         const questionId = questionResult.insertId;
 
         // Gérer les réponses selon le type de question
-        if (question.question_type === 'multiple_choice' && question.answers && Array.isArray(question.answers)) {
+        if (questionType === 'multiple_choice' && question.answers && Array.isArray(question.answers)) {
           for (let j = 0; j < question.answers.length; j++) {
             const answer = question.answers[j];
             await pool.execute(
@@ -853,7 +959,7 @@ const updateModuleQuiz = async (req, res) => {
               [questionId, sanitizeValue(answer.answer_text), answer.is_correct || false, j]
             );
           }
-        } else if (question.question_type === 'true_false' && question.correct_answer !== undefined) {
+        } else if (questionType === 'true_false' && question.correct_answer !== undefined) {
           const correctAnswer = question.correct_answer === true || question.correct_answer === 'true';
           await pool.execute(
             `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
@@ -863,7 +969,7 @@ const updateModuleQuiz = async (req, res) => {
             `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
             [questionId, 'Faux', !correctAnswer, 1]
           );
-        } else if (question.question_type === 'short_answer' && question.correct_answer) {
+        } else if (questionType === 'short_answer' && question.correct_answer) {
           await pool.execute(
             `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
             [questionId, sanitizeValue(question.correct_answer), true, 0]

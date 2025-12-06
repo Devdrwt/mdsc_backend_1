@@ -164,6 +164,134 @@ const requestPublication = async (req, res) => {
 };
 
 /**
+ * Demander la suppression d'un cours
+ */
+const requestDeletion = async (req, res) => {
+  try {
+    // Support pour les deux formats : id ou courseId
+    const courseId = req.params.id || req.params.courseId;
+    const instructorId = req.user.userId;
+
+    if (!courseId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID du cours requis'
+      });
+    }
+
+    // Vérifier que le cours appartient à l'instructeur
+    const [courses] = await pool.execute(
+      'SELECT * FROM courses WHERE id = ? AND instructor_id = ?',
+      [courseId, instructorId]
+    );
+
+    if (courses.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Cours non trouvé'
+      });
+    }
+
+    const course = courses[0];
+
+    // Vérifier s'il y a des étudiants inscrits
+    const [enrollments] = await pool.execute(
+      'SELECT COUNT(*) as count FROM enrollments WHERE course_id = ?',
+      [courseId]
+    );
+
+    const enrollmentCount = enrollments[0]?.count || 0;
+
+    // Vérifier si une demande de suppression est déjà en cours
+    const [existingApprovals] = await pool.execute(
+      'SELECT id, comments FROM course_approvals WHERE course_id = ? AND status = "pending" AND comments LIKE "%demande de suppression%"',
+      [courseId]
+    );
+
+    if (existingApprovals.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Une demande de suppression est déjà en cours'
+      });
+    }
+
+    // Mettre à jour le statut à pending_approval (on utilise ce statut pour toutes les demandes)
+    await pool.execute(
+      'UPDATE courses SET status = "pending_approval" WHERE id = ?',
+      [courseId]
+    );
+
+    // Créer une entrée dans course_approvals pour la suppression avec un commentaire
+    await pool.execute(
+      'INSERT INTO course_approvals (course_id, admin_id, status, comments, created_at) VALUES (?, NULL, "pending", ?, NOW())',
+      [courseId, `Demande de suppression - ${enrollmentCount} étudiant(s) inscrit(s)`]
+    ).catch(() => {
+      // Si la table n'existe pas encore, continuer quand même
+      console.warn('⚠️ Table course_approvals non trouvée. Migration nécessaire.');
+    });
+
+    // Récupérer les informations de l'instructeur
+    const [instructors] = await pool.execute(
+      'SELECT first_name, last_name FROM users WHERE id = ?',
+      [instructorId]
+    );
+    const instructor = instructors[0] || {};
+    const instructorName = `${instructor.first_name || ''} ${instructor.last_name || ''}`.trim() || 'Un instructeur';
+
+    // Créer une notification pour tous les admins
+    try {
+      const [admins] = await pool.execute(
+        'SELECT id FROM users WHERE role = "admin"'
+      );
+
+      const notificationTitle = 'Nouvelle demande de suppression de cours';
+      const notificationMessage = `Le cours "${course.title}" a été soumis pour suppression par ${instructorName}.${enrollmentCount > 0 ? ` ${enrollmentCount} étudiant(s) inscrit(s).` : ''}`;
+      const actionUrl = `/dashboard/admin/courses?courseId=${courseId}`;
+      const metadata = JSON.stringify({
+        course_id: courseId,
+        course_title: course.title,
+        instructor_id: instructorId,
+        instructor_name: instructorName,
+        enrollment_count: enrollmentCount,
+        action: 'deletion_review_required',
+        link: actionUrl
+      });
+
+      // Créer une notification pour chaque admin
+      for (const admin of admins) {
+        await pool.execute(
+          `INSERT INTO notifications (
+            user_id, title, message, type, is_read, action_url, metadata
+          ) VALUES (?, ?, ?, 'warning', FALSE, ?, ?)`,
+          [admin.id, notificationTitle, notificationMessage, actionUrl, metadata]
+        );
+      }
+
+      console.log(`✅ Notifications créées pour ${admins.length} admin(s) concernant la suppression du cours "${course.title}"`);
+    } catch (notificationError) {
+      // Ne pas faire échouer la demande si la création de notification échoue
+      console.error('⚠️ Erreur lors de la création des notifications admin:', notificationError);
+    }
+
+    res.json({
+      success: true,
+      message: 'Demande de suppression soumise avec succès',
+      data: {
+        course_id: courseId,
+        enrollment_count: enrollmentCount
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la demande de suppression:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la demande de suppression'
+    });
+  }
+};
+
+/**
  * Mettre un cours en attente de validation (Admin)
  */
 const setCoursePending = async (req, res) => {
@@ -1039,6 +1167,7 @@ const getAllCourses = async (req, res) => {
 
 module.exports = {
   requestPublication,
+  requestDeletion,
   getPendingCourses,
   getCourseForApproval,
   getAllCourses,

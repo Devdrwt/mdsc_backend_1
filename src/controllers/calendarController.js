@@ -154,68 +154,74 @@ const getEvents = async (req, res) => {
       liveSessionParams
     );
 
-    // Formater les événements
-    const formattedEvents = events.map((event) => ({
-      id: `event-${event.id}`,
-      title: event.title,
-      description: event.description,
-      event_type: event.event_type,
-      start_date: event.start_date,
-      end_date: event.end_date,
-      is_all_day: Boolean(event.is_all_day),
-      location: event.location,
-      is_public: Boolean(event.is_public),
-      type: 'event',
-      course: event.course_id
-        ? {
-            id: event.course_id,
-            title: event.course_title,
-            slug: event.course_slug
-          }
-        : null,
-      created_by: event.created_by
-        ? {
-            id: event.created_by,
-            first_name: event.creator_first_name,
-            last_name: event.creator_last_name,
-            email: event.creator_email,
-            role: event.creator_role
-          }
-        : null,
-      created_at: event.created_at,
-      updated_at: event.updated_at
-    }));
+    // Formater les événements (filtrer ceux sans date valide)
+    const formattedEvents = events
+      .filter(event => event.start_date != null) // Filtrer les événements sans date
+      .map((event) => ({
+        id: `event-${event.id}`,
+        title: event.title,
+        description: event.description,
+        event_type: event.event_type,
+        start_date: event.start_date ? new Date(event.start_date).toISOString() : null,
+        end_date: event.end_date ? new Date(event.end_date).toISOString() : null,
+        is_all_day: Boolean(event.is_all_day),
+        location: event.location,
+        is_public: Boolean(event.is_public),
+        type: 'event',
+        course: event.course_id
+          ? {
+              id: event.course_id,
+              title: event.course_title,
+              slug: event.course_slug
+            }
+          : null,
+        created_by: event.created_by
+          ? {
+              id: event.created_by,
+              first_name: event.creator_first_name,
+              last_name: event.creator_last_name,
+              email: event.creator_email,
+              role: event.creator_role
+            }
+          : null,
+        created_at: event.created_at,
+        updated_at: event.updated_at
+      }));
 
-    // Formater les sessions live
-    const formattedLiveSessions = liveSessions.map((session) => ({
-      id: `live-session-${session.id}`,
-      title: session.title,
-      description: session.description,
-      event_type: 'live_session',
-      start_date: session.start_date,
-      end_date: session.end_date,
-      is_all_day: false,
-      location: null,
-      is_public: false,
-      type: 'live_session',
-      status: session.status,
-      course: {
-        id: session.course_id,
-        title: session.course_title,
-        slug: session.course_slug
-      },
-      instructor: {
-        first_name: session.instructor_first_name,
-        last_name: session.instructor_last_name,
-        email: session.instructor_email
-      },
-      url: `/courses/${session.course_id}/live-sessions/${session.id}`
-    }));
+    // Formater les sessions live (filtrer celles sans date valide)
+    const formattedLiveSessions = liveSessions
+      .filter(session => session.start_date != null) // Filtrer les sessions sans date
+      .map((session) => ({
+        id: `live-session-${session.id}`,
+        title: session.title,
+        description: session.description,
+        event_type: 'live_session',
+        start_date: session.start_date ? new Date(session.start_date).toISOString() : null,
+        end_date: session.end_date ? new Date(session.end_date).toISOString() : null,
+        is_all_day: false,
+        location: null,
+        is_public: false,
+        type: 'live_session',
+        status: session.status,
+        course: {
+          id: session.course_id,
+          title: session.course_title,
+          slug: session.course_slug
+        },
+        instructor: {
+          first_name: session.instructor_first_name,
+          last_name: session.instructor_last_name,
+          email: session.instructor_email
+        },
+        url: `/courses/${session.course_id}/live-sessions/${session.id}`
+      }));
 
-    // Fusionner et trier par date
-    const allEvents = [...formattedEvents, ...formattedLiveSessions].sort((a, b) => {
-      return new Date(a.start_date) - new Date(b.start_date);
-    });
+    // Fusionner et trier par date (filtrer ceux sans start_date valide)
+    const allEvents = [...formattedEvents, ...formattedLiveSessions]
+      .filter(event => event.start_date != null)
+      .sort((a, b) => {
+        return new Date(a.start_date) - new Date(b.start_date);
+      });
 
     res.json({
       success: true,

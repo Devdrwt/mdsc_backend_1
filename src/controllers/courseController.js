@@ -674,7 +674,23 @@ const deleteCourse = async (req, res) => {
 const addLesson = async (req, res) => {
   try {
     const courseId = req.params.id || req.params.courseId; // Support both :id and :courseId routes
-    const { title, description, content, video_url, duration_minutes, module_id } = req.body;
+    const { 
+      title, 
+      description, 
+      content, 
+      content_text,
+      content_url,
+      video_url, 
+      duration_minutes, 
+      duration,
+      module_id,
+      content_type = 'text',
+      media_file_id,
+      order_index,
+      order,
+      is_required = true,
+      is_published = false
+    } = req.body;
     const userId = req.user?.id ?? req.user?.userId;
 
     // Vérifier que l'utilisateur est l'instructeur du cours
@@ -695,58 +711,68 @@ const addLesson = async (req, res) => {
       });
     }
 
+    // Utiliser duration si fourni, sinon duration_minutes
+    const finalDuration = duration_minutes || duration || 0;
+    // Utiliser order_index si fourni, sinon order, sinon calculer
+    let finalOrderIndex = order_index || order;
+
     // Récupérer le prochain index (par module si module_id fourni, sinon par cours)
     let orderQuery, nextOrder;
-    if (module_id) {
-      orderQuery = 'SELECT MAX(order_index) as max_order FROM lessons WHERE module_id = ?';
-      const [orderResult] = await pool.execute(orderQuery, [sanitizeValue(module_id)]);
-      nextOrder = (orderResult[0]?.max_order || 0) + 1;
-      const query = `
-        INSERT INTO lessons (course_id, module_id, title, description, content, video_url, duration_minutes, order_index, is_published)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE)
-      `;
-      const [result] = await pool.execute(query, [
-        sanitizeValue(courseId),
-        sanitizeValue(module_id),
-        sanitizeValue(title),
-        sanitizeValue(description),
-        sanitizeValue(content),
-        sanitizeValue(video_url),
-        sanitizeValue(duration_minutes),
-        sanitizeValue(nextOrder)
-      ]);
-      return res.status(201).json({
-        success: true,
-        message: 'Leçon ajoutée avec succès',
-        data: {
-          lesson_id: result.insertId
-        }
-      });
-    } else {
-      orderQuery = 'SELECT MAX(order_index) as max_order FROM lessons WHERE course_id = ? AND (module_id IS NULL OR module_id = 0)';
-      const [orderResult] = await pool.execute(orderQuery, [sanitizeValue(courseId)]);
-      nextOrder = (orderResult[0]?.max_order || 0) + 1;
-      const query = `
-        INSERT INTO lessons (course_id, title, description, content, video_url, duration_minutes, order_index, is_published)
-        VALUES (?, ?, ?, ?, ?, ?, ?, TRUE)
-      `;
-      const [result] = await pool.execute(query, [
-        sanitizeValue(courseId),
-        sanitizeValue(title),
-        sanitizeValue(description),
-        sanitizeValue(content),
-        sanitizeValue(video_url),
-        sanitizeValue(duration_minutes),
-        sanitizeValue(nextOrder)
-      ]);
-      return res.status(201).json({
-        success: true,
-        message: 'Leçon ajoutée avec succès',
-        data: {
-          lesson_id: result.insertId
-        }
-      });
+    if (!finalOrderIndex) {
+      if (module_id) {
+        orderQuery = 'SELECT MAX(order_index) as max_order FROM lessons WHERE module_id = ?';
+        const [orderResult] = await pool.execute(orderQuery, [sanitizeValue(module_id)]);
+        nextOrder = (orderResult[0]?.max_order || 0) + 1;
+      } else {
+        orderQuery = 'SELECT MAX(order_index) as max_order FROM lessons WHERE course_id = ? AND (module_id IS NULL OR module_id = 0)';
+        const [orderResult] = await pool.execute(orderQuery, [sanitizeValue(courseId)]);
+        nextOrder = (orderResult[0]?.max_order || 0) + 1;
+      }
+      finalOrderIndex = nextOrder;
     }
+
+    const query = `
+      INSERT INTO lessons (
+        course_id, module_id, title, description, content, content_text, content_url,
+        video_url, duration_minutes, order_index, content_type, media_file_id,
+        is_required, is_published
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+    const [result] = await pool.execute(query, [
+      sanitizeValue(courseId),
+      sanitizeValue(module_id) || null,
+      sanitizeValue(title),
+      sanitizeValue(description) || '',
+      sanitizeValue(content) || null,
+      sanitizeValue(content_text) || null,
+      sanitizeValue(content_url) || null,
+      sanitizeValue(video_url) || null,
+      sanitizeValue(finalDuration),
+      sanitizeValue(finalOrderIndex),
+      sanitizeValue(content_type),
+      sanitizeValue(media_file_id) || null,
+      sanitizeValue(is_required) !== false,
+      sanitizeValue(is_published) === true
+    ]);
+
+    const newLessonId = result.insertId;
+
+    // Si un media_file_id a été assigné, mettre à jour automatiquement le lesson_id du fichier média
+    if (media_file_id) {
+      await pool.execute(
+        'UPDATE media_files SET lesson_id = ? WHERE id = ? AND course_id = ?',
+        [newLessonId, media_file_id, courseId]
+      );
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: 'Leçon ajoutée avec succès',
+      data: {
+        lesson_id: newLessonId
+      }
+    });
 
   } catch (error) {
     console.error('Erreur lors de l\'ajout de la leçon:', error);
@@ -1141,15 +1167,270 @@ const deleteLesson = async (req, res) => {
 };
 
 const addToFavorites = async (req, res) => {
-  // Ajouter aux favoris
+  try {
+    const { courseId } = req.params;
+    const userId = req.user?.id ?? req.user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Non authentifié'
+      });
+    }
+
+    // Vérifier que le cours existe
+    const [courses] = await pool.execute(
+      'SELECT id, title FROM courses WHERE id = ?',
+      [courseId]
+    );
+
+    if (courses.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Cours non trouvé'
+      });
+    }
+
+    // Vérifier si le favori existe déjà
+    const [existing] = await pool.execute(
+      'SELECT id FROM course_favorites WHERE user_id = ? AND course_id = ?',
+      [userId, courseId]
+    );
+
+    if (existing.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Ce cours est déjà dans vos favoris'
+      });
+    }
+
+    // Ajouter aux favoris
+    await pool.execute(
+      'INSERT INTO course_favorites (user_id, course_id) VALUES (?, ?)',
+      [userId, courseId]
+    );
+
+    res.json({
+      success: true,
+      message: 'Cours ajouté aux favoris avec succès'
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de l\'ajout aux favoris:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de l\'ajout aux favoris'
+    });
+  }
 };
 
 const removeFromFavorites = async (req, res) => {
-  // Retirer des favoris
+  try {
+    const { courseId } = req.params;
+    const userId = req.user?.id ?? req.user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Non authentifié'
+      });
+    }
+
+    // Vérifier si le favori existe
+    const [existing] = await pool.execute(
+      'SELECT id FROM course_favorites WHERE user_id = ? AND course_id = ?',
+      [userId, courseId]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Ce cours n\'est pas dans vos favoris'
+      });
+    }
+
+    // Retirer des favoris
+    await pool.execute(
+      'DELETE FROM course_favorites WHERE user_id = ? AND course_id = ?',
+      [userId, courseId]
+    );
+
+    res.json({
+      success: true,
+      message: 'Cours retiré des favoris avec succès'
+    });
+
+  } catch (error) {
+    console.error('Erreur lors du retrait des favoris:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors du retrait des favoris'
+    });
+  }
 };
 
 const getFavoriteCourses = async (req, res) => {
-  // Récupérer les cours favoris
+  try {
+    const userId = req.user?.id ?? req.user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Non authentifié'
+      });
+    }
+
+    const {
+      page = 1,
+      limit = 10,
+      search = '',
+      category,
+      difficulty,
+      sort = 'created_at',
+      order = 'DESC'
+    } = req.query;
+
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const perPage = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
+    const offset = (pageNum - 1) * perPage;
+
+    // Construire la requête avec filtres
+    let whereClause = `
+      WHERE c.is_published = TRUE 
+        AND (COALESCE(c.status, 'draft') = 'approved' OR COALESCE(c.status, 'draft') = 'published') 
+        AND COALESCE(c.status, 'draft') != 'draft'
+        AND cf.user_id = ?
+    `;
+    let params = [userId];
+
+    // Filtre de recherche
+    if (search) {
+      whereClause += ' AND (c.title LIKE ? OR c.description LIKE ? OR c.short_description LIKE ?)';
+      const searchTerm = `%${search}%`;
+      params.push(searchTerm, searchTerm, searchTerm);
+    }
+
+    // Filtre par catégorie
+    if (category) {
+      whereClause += ' AND c.category_id = ?';
+      params.push(category);
+    }
+
+    // Filtre par difficulté
+    if (difficulty) {
+      whereClause += ' AND c.difficulty = ?';
+      params.push(difficulty);
+    }
+
+    // Validation du tri
+    const validSorts = ['created_at', 'title', 'average_rating', 'enrollment_count', 'price'];
+    const sortField = validSorts.includes(sort) ? sort : 'created_at';
+    const sortOrder = order.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+
+    // Requête principale
+    const query = `
+      SELECT 
+        c.*,
+        cat.name as category_name,
+        cat.color as category_color,
+        u.first_name as instructor_first_name,
+        u.last_name as instructor_last_name,
+        u.email as instructor_email,
+        u.organization as instructor_organization,
+        COALESCE(
+          CONCAT('/uploads/profiles/', uf.file_name),
+          u.profile_picture
+        ) as instructor_profile_picture,
+        stats.average_rating,
+        stats.review_count,
+        stats.enrollment_count,
+        COALESCE(lesson_counts.total_lessons, 0) as total_lessons,
+        COALESCE(ca.total_views, 0) as total_views,
+        cp.title as prerequisite_title,
+        cp.id as prerequisite_id,
+        cf.created_at as favorited_at
+      FROM course_favorites cf
+      INNER JOIN courses c ON cf.course_id = c.id
+      LEFT JOIN categories cat ON c.category_id = cat.id
+      LEFT JOIN users u ON c.instructor_id = u.id
+      LEFT JOIN (
+        SELECT uf1.user_id, uf1.file_name
+        FROM user_files uf1
+        INNER JOIN (
+          SELECT user_id, MAX(created_at) as max_created_at
+          FROM user_files
+          WHERE file_type = 'profile_picture'
+          GROUP BY user_id
+        ) uf2 ON uf1.user_id = uf2.user_id 
+          AND uf1.created_at = uf2.max_created_at
+          AND uf1.file_type = 'profile_picture'
+      ) uf ON uf.user_id = u.id
+      LEFT JOIN (
+        SELECT 
+          c.id AS course_id,
+          AVG(cr.rating) AS average_rating,
+          COUNT(DISTINCT cr.id) AS review_count,
+          COUNT(DISTINCT e.id) AS enrollment_count
+        FROM courses c
+        LEFT JOIN course_reviews cr ON c.id = cr.course_id AND cr.is_approved = TRUE
+        LEFT JOIN enrollments e ON c.id = e.course_id AND e.is_active = TRUE
+        GROUP BY c.id
+      ) stats ON stats.course_id = c.id
+      LEFT JOIN course_analytics ca ON ca.course_id = c.id
+      LEFT JOIN courses cp ON c.prerequisite_course_id = cp.id
+      LEFT JOIN (
+        SELECT 
+          m.course_id,
+          COUNT(DISTINCT l.id) as total_lessons
+        FROM modules m
+        LEFT JOIN lessons l ON m.id = l.module_id AND l.is_published = TRUE
+        GROUP BY m.course_id
+      ) lesson_counts ON lesson_counts.course_id = c.id
+      ${whereClause}
+      ORDER BY ${sortField === 'created_at' ? 'cf.created_at' : `c.${sortField}`} ${sortOrder}
+      LIMIT ? OFFSET ?
+    `;
+
+    params.push(perPage, offset);
+
+    const [courses] = await pool.execute(query, params);
+
+    // Compter le total pour la pagination
+    const countQuery = `
+      SELECT COUNT(DISTINCT cf.id) as total
+      FROM course_favorites cf
+      INNER JOIN courses c ON cf.course_id = c.id
+      ${whereClause}
+    `;
+    const countParams = params.slice(0, -2); // Retirer limit et offset
+    const [countResult] = await pool.execute(countQuery, countParams);
+    const total = countResult[0]?.total || 0;
+
+    const formattedCourses = courses.map(row => formatCourseRow(row));
+
+    // Format de réponse compatible avec le frontend
+    res.json({
+      success: true,
+      count: total,
+      courses: formattedCourses,
+      data: {
+        courses: formattedCourses,
+        pagination: {
+          page: pageNum,
+          limit: perPage,
+          total,
+          totalPages: Math.ceil(total / perPage)
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la récupération des favoris:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des favoris'
+    });
+  }
 };
 
 const addReview = async (req, res) => {
@@ -1773,6 +2054,140 @@ const getRecommendedCourses = async (req, res) => {
   }
 };
 
+// Récupérer le planning d'un cours (sessions live + événements)
+const getCourseSchedule = async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    const userId = req.user?.id ?? req.user?.userId;
+
+    // Vérifier que le cours existe
+    const [courses] = await pool.execute(
+      'SELECT id, title FROM courses WHERE id = ?',
+      [courseId]
+    );
+
+    if (courses.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Cours non trouvé'
+      });
+    }
+
+    // Récupérer les sessions live du cours
+    const [liveSessions] = await pool.execute(
+      `
+      SELECT
+        ls.id,
+        ls.title,
+        ls.description,
+        ls.scheduled_start_at AS start_date,
+        ls.scheduled_end_at AS end_date,
+        ls.status,
+        ls.max_participants,
+        ls.is_recording_enabled,
+        u.first_name AS instructor_first_name,
+        u.last_name AS instructor_last_name,
+        u.email AS instructor_email
+      FROM live_sessions ls
+      JOIN users u ON ls.instructor_id = u.id
+      WHERE ls.course_id = ?
+        AND ls.status IN ('scheduled', 'live')
+      ORDER BY ls.scheduled_start_at ASC
+      `,
+      [courseId]
+    );
+
+    // Récupérer les événements du calendrier liés au cours
+    const [events] = await pool.execute(
+      `
+      SELECT
+        e.id,
+        e.title,
+        e.description,
+        e.event_type,
+        e.start_date,
+        e.end_date,
+        e.is_all_day,
+        e.location,
+        e.is_public,
+        creator.first_name AS creator_first_name,
+        creator.last_name AS creator_last_name
+      FROM events e
+      LEFT JOIN users creator ON creator.id = e.created_by
+      WHERE e.course_id = ?
+        AND (e.is_public = TRUE OR e.created_by = ? OR ? IS NULL)
+      ORDER BY e.start_date ASC
+      `,
+      [courseId, userId, userId]
+    );
+
+    // Formater les sessions live (filtrer celles sans date valide)
+    const formattedSessions = liveSessions
+      .filter(session => session.start_date != null)
+      .map((session) => ({
+        id: session.id,
+        title: session.title,
+        description: session.description,
+        type: 'live_session',
+        start_date: session.start_date ? new Date(session.start_date).toISOString() : null,
+        end_date: session.end_date ? new Date(session.end_date).toISOString() : null,
+        status: session.status,
+        max_participants: session.max_participants,
+        is_recording_enabled: Boolean(session.is_recording_enabled),
+        instructor: {
+          first_name: session.instructor_first_name,
+          last_name: session.instructor_last_name,
+          email: session.instructor_email
+        }
+      }));
+
+    // Formater les événements (filtrer ceux sans date valide)
+    const formattedEvents = events
+      .filter(event => event.start_date != null)
+      .map((event) => ({
+        id: event.id,
+        title: event.title,
+        description: event.description,
+        type: 'event',
+        event_type: event.event_type,
+        start_date: event.start_date ? new Date(event.start_date).toISOString() : null,
+        end_date: event.end_date ? new Date(event.end_date).toISOString() : null,
+        is_all_day: Boolean(event.is_all_day),
+        location: event.location,
+        is_public: Boolean(event.is_public),
+        created_by: event.creator_first_name ? {
+          first_name: event.creator_first_name,
+          last_name: event.creator_last_name
+        } : null
+      }));
+
+    // Fusionner et trier par date (filtrer ceux sans start_date valide)
+    const schedule = [...formattedSessions, ...formattedEvents]
+      .filter(item => item.start_date != null)
+      .sort((a, b) => {
+        return new Date(a.start_date) - new Date(b.start_date);
+      });
+
+    res.json({
+      success: true,
+      data: {
+        course_id: parseInt(courseId),
+        course_title: courses[0].title,
+        schedule: schedule,
+        live_sessions: formattedSessions,
+        events: formattedEvents
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la récupération du planning:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération du planning'
+    });
+  }
+};
+
 // Récupérer un cours par slug
 const getCourseBySlug = async (req, res) => {
   try {
@@ -1854,9 +2269,11 @@ const getCourseBySlug = async (req, res) => {
     // Vérifier si l'utilisateur connecté est inscrit à ce cours
     let isEnrolled = false;
     let enrollment = null;
+    let isFavorite = false;
     const userId = req.user?.id ?? req.user?.userId;
     
     if (userId) {
+      // Vérifier l'inscription
       const [enrollments] = await pool.execute(
         `SELECT 
           e.*,
@@ -1877,6 +2294,16 @@ const getCourseBySlug = async (req, res) => {
           progress_percentage: enrollments[0].progress_percentage,
           completed_at: enrollments[0].completed_at
         };
+      }
+
+      // Vérifier si le cours est en favoris
+      const [favorites] = await pool.execute(
+        'SELECT id FROM course_favorites WHERE user_id = ? AND course_id = ? LIMIT 1',
+        [userId, course.id]
+      );
+      
+      if (favorites.length > 0) {
+        isFavorite = true;
       }
     }
 
@@ -1946,7 +2373,8 @@ const getCourseBySlug = async (req, res) => {
         course: {
           ...course,
           is_enrolled: isEnrolled,
-          enrollment: enrollment
+          enrollment: enrollment,
+          is_favorite: isFavorite
         },
         modules: modulesWithLessons
       }
@@ -2017,6 +2445,7 @@ module.exports = {
   addToFavorites,
   removeFromFavorites,
   getFavoriteCourses,
+  getCourseSchedule,
   addReview,
   getCourseReviews,
   updateReview,

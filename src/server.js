@@ -76,6 +76,7 @@ const adminEventRoutes = require('./routes/adminEventRoutes');
 const ratingRoutes = require('./routes/ratingRoutes');
 const forumRoutes = require('./routes/forumRoutes');
 const liveSessionRoutes = require('./routes/liveSessionRoutes');
+const testimonialsRoutes = require('./routes/testimonialsRoutes');
 const adminPaymentConfigRoutes = require('./routes/adminPaymentConfigRoutes');
 const reminderRoutes = require('./routes/reminderRoutes');
 
@@ -385,6 +386,7 @@ app.use('/api/instructor', require('./routes/instructorRoutes'));
 app.use('/api', ratingRoutes);
 app.use('/api', forumRoutes);
 app.use('/api', liveSessionRoutes);
+app.use('/api/testimonials', testimonialsRoutes);
 
 // Gestion des erreurs 404
 app.use((req, res) => {

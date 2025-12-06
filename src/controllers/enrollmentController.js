@@ -1,5 +1,6 @@
 const { pool } = require('../config/database');
 const { eventEmitter, EVENTS } = require('../middleware/eventEmitter');
+const { buildMediaUrl } = require('../utils/media');
 
 // S'inscrire à un cours
 const enrollInCourse = async (req, res) => {
@@ -434,21 +435,165 @@ const getCourseProgress = async (req, res) => {
       });
     }
 
-    // Récupérer les leçons du cours avec progression (vérifier les deux tables)
+    // Récupérer les leçons du cours avec progression et contenus/médias (vérifier les deux tables)
     const enrollmentId = enrollments[0].id;
     const lessonsQuery = `
       SELECT 
-        l.*, 
+        l.*,
+        l.module_id,
         COALESCE(lp.is_completed, CASE WHEN p.status = 'completed' THEN TRUE ELSE FALSE END, FALSE) as is_completed,
         COALESCE(lp.completed_at, p.completed_at) as completed_at,
-        COALESCE(lp.time_spent_minutes, FLOOR(p.time_spent / 60), 0) as time_spent_minutes
+        COALESCE(lp.time_spent_minutes, FLOOR(p.time_spent / 60), 0) as time_spent_minutes,
+        mf.id as media_file_id_from_join,
+        mf.url as media_url,
+        mf.thumbnail_url,
+        mf.file_category,
+        mf.filename,
+        mf.original_filename,
+        mf.file_size,
+        mf.file_type,
+        mf.duration as media_duration
       FROM lessons l
       LEFT JOIN lesson_progress lp ON l.id = lp.lesson_id AND lp.user_id = ? AND lp.course_id = ?
       LEFT JOIN progress p ON l.id = p.lesson_id AND p.enrollment_id = ?
+      LEFT JOIN media_files mf ON (
+        l.media_file_id = mf.id 
+        OR (l.id = mf.lesson_id AND l.media_file_id IS NULL)
+      )
       WHERE l.course_id = ? AND l.is_published = TRUE
-      ORDER BY l.order_index ASC
+      ORDER BY l.order_index ASC, mf.uploaded_at DESC
     `;
-    const [lessons] = await pool.execute(lessonsQuery, [userId, courseId, enrollmentId, courseId]);
+    const [lessonsRaw] = await pool.execute(lessonsQuery, [userId, courseId, enrollmentId, courseId]);
+
+    // Récupérer tous les médias du cours qui pourraient être associés aux leçons
+    const [allCourseMedia] = await pool.execute(
+      `
+      SELECT 
+        id, lesson_id, url, thumbnail_url, file_category, file_type,
+        filename, original_filename, file_size, duration, uploaded_at
+      FROM media_files
+      WHERE course_id = ?
+      ORDER BY lesson_id, uploaded_at DESC
+      `,
+      [courseId]
+    );
+
+    // Créer un map des médias par lesson_id pour association rapide
+    const mediaByLessonId = {};
+    allCourseMedia.forEach(media => {
+      if (media.lesson_id) {
+        if (!mediaByLessonId[media.lesson_id]) {
+          mediaByLessonId[media.lesson_id] = [];
+        }
+        mediaByLessonId[media.lesson_id].push(media);
+      }
+    });
+
+    // Médias sans lesson_id (à distribuer aux leçons par ordre)
+    const unassignedMedia = allCourseMedia.filter(m => !m.lesson_id).sort((a, b) => 
+      new Date(a.uploaded_at || 0) - new Date(b.uploaded_at || 0)
+    );
+
+    // Créer un map des leçons uniques par ID pour éviter les doublons
+    const uniqueLessonsMap = new Map();
+    lessonsRaw.forEach(lesson => {
+      if (!uniqueLessonsMap.has(lesson.id)) {
+        uniqueLessonsMap.set(lesson.id, lesson);
+      }
+    });
+    const uniqueLessons = Array.from(uniqueLessonsMap.values()).sort((a, b) => 
+      (a.order_index || 0) - (b.order_index || 0)
+    );
+
+    // Formater les leçons avec les URLs des médias et éviter les doublons
+    const lessonsMap = new Map();
+    uniqueLessons.forEach((lesson) => {
+      // Récupérer les médias directement associés à cette leçon
+      const directMedia = mediaByLessonId[lesson.id] || [];
+      
+      // Trouver l'index de cette leçon dans l'ordre des leçons du cours
+      const lessonOrderIndex = uniqueLessons.findIndex(l => l.id === lesson.id);
+      
+      // Si la leçon n'a pas de média direct mais qu'il y a des médias non assignés,
+      // associer le média non assigné correspondant à l'ordre de la leçon
+      let lessonMedia = [...directMedia];
+      if (lessonMedia.length === 0 && unassignedMedia.length > 0 && lessonOrderIndex >= 0 && lessonOrderIndex < unassignedMedia.length) {
+        lessonMedia = [unassignedMedia[lessonOrderIndex]];
+      }
+      
+      // Utiliser le média de la requête principale ou le premier média trouvé
+      const primaryMedia = lesson.media_file_id_from_join && lesson.media_url 
+        ? {
+            id: lesson.media_file_id_from_join,
+            url: buildMediaUrl(lesson.media_url),
+            thumbnail_url: buildMediaUrl(lesson.thumbnail_url),
+            file_category: lesson.file_category,
+            filename: lesson.filename,
+            original_filename: lesson.original_filename,
+            file_size: lesson.file_size,
+            file_type: lesson.file_type,
+            duration: lesson.media_duration
+          }
+        : (lessonMedia.length > 0 ? {
+            id: lessonMedia[0].id,
+            url: buildMediaUrl(lessonMedia[0].url),
+            thumbnail_url: buildMediaUrl(lessonMedia[0].thumbnail_url),
+            file_category: lessonMedia[0].file_category,
+            filename: lessonMedia[0].filename,
+            original_filename: lessonMedia[0].original_filename,
+            file_size: lessonMedia[0].file_size,
+            file_type: lessonMedia[0].file_type,
+            duration: lessonMedia[0].duration
+          } : null);
+
+      // Formater tous les médias de la leçon
+      const allMediaFiles = lessonMedia.length > 0 
+        ? lessonMedia.map(mf => ({
+            id: mf.id,
+            url: buildMediaUrl(mf.url),
+            thumbnail_url: buildMediaUrl(mf.thumbnail_url),
+            file_category: mf.file_category,
+            file_type: mf.file_type,
+            filename: mf.filename,
+            original_filename: mf.original_filename,
+            file_size: mf.file_size,
+            duration: mf.duration
+          }))
+        : null;
+
+      lessonsMap.set(lesson.id, {
+        ...lesson,
+        video_url: lesson.video_url ? buildMediaUrl(lesson.video_url) : null,
+        content_url: lesson.content_url ? buildMediaUrl(lesson.content_url) : null,
+        media_file: primaryMedia,
+        media_files: allMediaFiles
+      });
+    });
+
+    // Distribuer les médias non assignés aux leçons qui n'ont pas de média
+    const lessonsArray = Array.from(lessonsMap.values());
+    let unassignedIndex = 0;
+    lessonsArray.forEach((lesson, index) => {
+      if (!lesson.media_file && unassignedMedia.length > unassignedIndex) {
+        const media = unassignedMedia[unassignedIndex];
+        lesson.media_file = {
+          id: media.id,
+          url: buildMediaUrl(media.url),
+          thumbnail_url: buildMediaUrl(media.thumbnail_url),
+          file_category: media.file_category,
+          filename: media.filename,
+          original_filename: media.original_filename,
+          file_size: media.file_size,
+          file_type: media.file_type,
+          duration: media.duration
+        };
+        lesson.media_files = [lesson.media_file];
+        lesson.media_file_id = media.id;
+        unassignedIndex++;
+      }
+    });
+
+    const lessons = lessonsArray;
 
     // Récupérer les quiz du cours
     const quizzesQuery = `
@@ -459,18 +604,223 @@ const getCourseProgress = async (req, res) => {
     `;
     const [quizzes] = await pool.execute(quizzesQuery, [userId, courseId]);
 
+    // Récupérer les modules avec leurs quiz de modules et questions
+    const [modules] = await pool.execute(
+      `
+      SELECT 
+        m.id,
+        m.title,
+        m.description,
+        m.order_index,
+        mq.id as quiz_id,
+        mq.title as quiz_title,
+        mq.description as quiz_description,
+        mq.passing_score,
+        mq.time_limit_minutes,
+        mq.max_attempts,
+        mq.is_published as quiz_is_published
+      FROM modules m
+      LEFT JOIN module_quizzes mq ON m.id = mq.module_id AND mq.is_published = TRUE
+      WHERE m.course_id = ?
+      ORDER BY m.order_index ASC
+      `,
+      [courseId]
+    );
+
+    // Pour chaque module avec quiz, récupérer les questions (sans les bonnes réponses)
+    const modulesWithQuizzes = await Promise.all(
+      modules.map(async (module) => {
+        if (!module.quiz_id) {
+          return {
+            ...module,
+            quiz: null
+          };
+        }
+
+        // Récupérer les questions du quiz
+        const [questions] = await pool.execute(
+          `
+          SELECT 
+            qq.id,
+            qq.question_text,
+            qq.question_type,
+            qq.points,
+            qq.order_index
+          FROM quiz_questions qq
+          WHERE qq.module_quiz_id = ? AND qq.is_active = TRUE
+          ORDER BY qq.order_index ASC
+          `,
+          [module.quiz_id]
+        );
+
+        console.log(`[getCourseProgress] Module ${module.id}, Quiz ${module.quiz_id}: ${questions.length} questions trouvées`);
+
+        // Récupérer les options/réponses pour chaque question (sans révéler les bonnes réponses)
+        const questionsWithOptions = await Promise.all(
+          questions.map(async (question) => {
+            const [answers] = await pool.execute(
+              `
+              SELECT 
+                id,
+                answer_text,
+                order_index
+              FROM quiz_answers
+              WHERE question_id = ?
+              ORDER BY order_index ASC
+              `,
+              [question.id]
+            );
+
+            // Pour les questions à choix multiples, retourner les options
+            // Pour les questions vrai/faux, retourner ['Vrai', 'Faux']
+            // Pour les questions à réponse courte, ne pas retourner de réponses
+            let options = [];
+            if (question.question_type === 'multiple_choice') {
+              options = answers.map(a => a.answer_text);
+            } else if (question.question_type === 'true_false') {
+              options = ['Vrai', 'Faux'];
+            }
+
+            // Vérifier si la question est valide (a des options pour les QCM et Vrai/Faux)
+            const isValid = question.question_type === 'short_answer' || options.length > 0;
+            
+            const formattedQuestion = {
+              id: question.id.toString(),
+              question_text: question.question_text || '',
+              question_type: question.question_type,
+              points: parseFloat(question.points) || 0,
+              order_index: question.order_index || 0,
+              options: options,
+              is_valid: isValid, // Indicateur pour le frontend
+              has_options: options.length > 0 // Indicateur explicite
+            };
+
+            if (!isValid) {
+              console.warn(`[getCourseProgress] ⚠️ Question ${question.id} invalide: pas d'options pour type ${question.question_type}`);
+            }
+
+            console.log(`[getCourseProgress] Question ${question.id} formatée:`, {
+              id: formattedQuestion.id,
+              type: formattedQuestion.question_type,
+              options_count: formattedQuestion.options.length,
+              is_valid: formattedQuestion.is_valid
+            });
+
+            return formattedQuestion;
+          })
+        );
+
+        console.log(`[getCourseProgress] Module ${module.id}: ${questionsWithOptions.length} questions formatées`);
+
+        // Récupérer les tentatives précédentes
+        const [attempts] = await pool.execute(
+          `
+          SELECT * FROM quiz_attempts 
+          WHERE enrollment_id = ? AND module_quiz_id = ? 
+          ORDER BY started_at DESC
+          `,
+          [enrollmentId, module.quiz_id]
+        );
+        
+        console.log(`[getCourseProgress] Tentatives pour quiz ${module.quiz_id}, enrollment ${enrollmentId}:`, {
+          attempts_count: attempts.length,
+          max_attempts: module.max_attempts,
+          attempts: attempts.map(a => ({ id: a.id, started_at: a.started_at, score: a.score }))
+        });
+
+        // Filtrer les questions invalides ou les marquer
+        const validQuestions = questionsWithOptions.filter(q => q.is_valid);
+        const invalidQuestionsCount = questionsWithOptions.length - validQuestions.length;
+        
+        if (invalidQuestionsCount > 0) {
+          console.warn(`[getCourseProgress] ⚠️ Quiz ${module.quiz_id}: ${invalidQuestionsCount} question(s) invalide(s) (sans options)`);
+        }
+
+        const attemptsCount = attempts?.length || 0;
+        const maxAttempts = Number(module.max_attempts) || 0;
+        const remainingAttempts = Math.max(0, maxAttempts - attemptsCount);
+        
+        const quizData = {
+          id: module.quiz_id,
+          title: module.quiz_title || '',
+          description: module.quiz_description || '',
+          passing_score: Number(module.passing_score) || 0,
+          time_limit_minutes: Number(module.time_limit_minutes) || 0,
+          max_attempts: maxAttempts,
+          attempts_count: attemptsCount, // Nombre de tentatives effectuées
+          remaining_attempts: remainingAttempts, // Nombre de tentatives restantes
+          is_published: Boolean(module.quiz_is_published),
+          questions: validQuestions, // Ne retourner que les questions valides
+          questions_count: validQuestions.length,
+          invalid_questions_count: invalidQuestionsCount, // Informer le frontend
+          previous_attempts: attempts || [],
+          can_attempt: remainingAttempts > 0
+        };
+
+        console.log(`[getCourseProgress] Quiz ${module.quiz_id} formaté:`, {
+          id: quizData.id,
+          title: quizData.title,
+          questions_count: quizData.questions.length,
+          has_questions: quizData.questions.length > 0
+        });
+
+        return {
+          id: module.id,
+          title: module.title || '',
+          description: module.description || '',
+          order_index: module.order_index || 0,
+          quiz: quizData
+        };
+      })
+    );
+
     // Calculer les statistiques
     const totalLessons = lessons.length;
     const completedLessons = lessons.filter(lesson => lesson.is_completed).length;
-    const totalQuizzes = quizzes.length;
-    const passedQuizzes = quizzes.filter(quiz => quiz.is_passed).length;
+
+    // Log pour débogage
+    const modulesWithQuiz = modulesWithQuizzes.filter(m => m.quiz !== null);
+    console.log(`[getCourseProgress] Cours ${courseId}: ${modulesWithQuizzes.length} modules, ${modulesWithQuiz.length} avec quiz`);
+    if (modulesWithQuiz.length > 0) {
+      modulesWithQuiz.forEach(m => {
+        console.log(`[getCourseProgress] Module ${m.id} (${m.title}): Quiz ID ${m.quiz.id} avec ${m.quiz.questions?.length || 0} questions`);
+      });
+    }
+
+    // Extraire les quiz de modules pour les ajouter à la liste des quiz (pour compatibilité frontend)
+    const moduleQuizzes = modulesWithQuizzes
+      .filter(m => m.quiz !== null)
+      .map(m => ({
+        id: m.quiz.id,
+        title: m.quiz.title,
+        description: m.quiz.description,
+        passing_score: m.quiz.passing_score,
+        time_limit_minutes: m.quiz.time_limit_minutes,
+        max_attempts: m.quiz.max_attempts,
+        is_published: m.quiz.is_published,
+        module_id: m.id,
+        module_title: m.title,
+        questions: m.quiz.questions,
+        previous_attempts: m.quiz.previous_attempts,
+        can_attempt: m.quiz.can_attempt,
+        type: 'module_quiz' // Pour distinguer des anciens quiz de cours
+      }));
+
+    // Combiner les anciens quiz de cours avec les quiz de modules
+    const allQuizzes = [...quizzes, ...moduleQuizzes];
+
+    const totalQuizzes = allQuizzes.length;
+    const passedQuizzes = allQuizzes.filter(quiz => quiz.is_passed).length;
+
+    console.log(`[getCourseProgress] Total quiz: ${quizzes.length} quiz de cours + ${moduleQuizzes.length} quiz de modules = ${allQuizzes.length} total`);
 
     res.json({
       success: true,
       data: {
         enrollment: enrollments[0],
         lessons,
-        quizzes,
+        modules: modulesWithQuizzes,
+        quizzes: allQuizzes, // Inclure les quiz de modules dans quizzes pour compatibilité
         statistics: {
           total_lessons: totalLessons,
           completed_lessons: completedLessons,

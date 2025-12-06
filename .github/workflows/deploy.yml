@@ -20,10 +20,10 @@ jobs:
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Build frontend image
-        run: docker build -t myorg/mdsc-frontend:latest .
+        run: docker build -t drwintech/mdsc-frontend:latest .
 
       - name: Push frontend image
-        run: docker push myorg/mdsc-frontend:latest
+        run: docker push drwintech/mdsc-frontend:latest
 
       - name: SSH Deploy on VPS
         uses: appleboy/ssh-action@v0.1.8

@@ -1,35 +1,19 @@
-name: Deploy MDSC
+name: Deploy Backend MDSC
 
 on:
   push:
-    branches:
-      - production
+    branches: [ "production" ]
   workflow_dispatch:
 
 jobs:
-  deploy:
+  deploy-backend:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Build & push BE
-      - name: Build backend image
-        run: docker build -t myorg/mdsc-backend:latest ./mdsc_backend_1
-
-      - name: Push backend
-        run: docker push myorg/mdsc-backend:latest
-
-      # Build & push FE
-      - name: Build frontend image
-        run: docker build -t myorg/mdsc-frontend:latest ./mdsc_frontend
-
-      - name: Push frontend
-        run: docker push myorg/mdsc-frontend:latest
-
-      # Déploiement sur VPS
-      - name: Deploy to VPS
+      - name: SSH Deploy on VPS
         uses: appleboy/ssh-action@v0.1.8
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -37,4 +21,4 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
             cd ~/mdsc_deploy
-            ./deploy.sh
+            ./deploy_backend.sh

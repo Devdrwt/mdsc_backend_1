@@ -71,6 +71,44 @@ const createModuleQuiz = async (req, res) => {
 
     // Créer les questions si fournies
     if (questions && Array.isArray(questions)) {
+      // Normaliser les questions : convertir différents formats en format standard
+      for (let i = 0; i < questions.length; i++) {
+        const question = questions[i];
+        const questionType = question.question_type || 'multiple_choice';
+        
+        // Pour les QCM : convertir options + correct_answer en format answers
+        if (questionType === 'multiple_choice' && question.options && Array.isArray(question.options) && !question.answers) {
+          question.answers = question.options.map(option => ({
+            answer_text: option,
+            is_correct: option === question.correct_answer || option.trim() === (question.correct_answer || '').trim()
+          }));
+        }
+        
+        // Pour les questions Vrai/Faux : normaliser correct_answer
+        if (questionType === 'true_false' && question.correct_answer !== undefined) {
+          // Accepter différents formats : true/false, "true"/"false", "Vrai"/"Faux", 1/0
+          if (typeof question.correct_answer === 'string') {
+            const answerLower = question.correct_answer.toLowerCase().trim();
+            if (answerLower === 'vrai' || answerLower === 'true' || answerLower === '1') {
+              question.correct_answer = true;
+            } else if (answerLower === 'faux' || answerLower === 'false' || answerLower === '0') {
+              question.correct_answer = false;
+            }
+          } else if (question.correct_answer === 1 || question.correct_answer === '1') {
+            question.correct_answer = true;
+          } else if (question.correct_answer === 0 || question.correct_answer === '0') {
+            question.correct_answer = false;
+          }
+        }
+        
+        // Pour les questions à réponse courte : s'assurer que correct_answer est une chaîne
+        if (questionType === 'short_answer' && question.correct_answer !== undefined) {
+          if (typeof question.correct_answer !== 'string') {
+            question.correct_answer = String(question.correct_answer);
+          }
+        }
+      }
+      
       // Valider les questions avant de les créer
       for (let i = 0; i < questions.length; i++) {
         const question = questions[i];
@@ -86,14 +124,20 @@ const createModuleQuiz = async (req, res) => {
         
         // Validation pour les questions à choix multiples
         if (questionType === 'multiple_choice') {
-          if (!question.answers || !Array.isArray(question.answers) || question.answers.length < 2) {
+          // Filtrer les réponses vides avant de compter
+          const validAnswers = question.answers ? question.answers.filter(a => {
+            const answerText = typeof a === 'string' ? a : (a.answer_text || a.text || '');
+            return answerText && answerText.trim().length > 0;
+          }) : [];
+          
+          if (!question.answers || !Array.isArray(question.answers) || validAnswers.length < 2) {
             return res.status(400).json({
               success: false,
               message: `La question ${i + 1} (QCM) doit avoir au moins 2 réponses`
             });
           }
           // Vérifier qu'au moins une réponse est correcte
-          const hasCorrectAnswer = question.answers.some(a => a.is_correct === true);
+          const hasCorrectAnswer = question.answers.some(a => a.is_correct === true || a.is_correct === 'true' || a.isCorrect === true);
           if (!hasCorrectAnswer) {
             return res.status(400).json({
               success: false,
@@ -103,19 +147,28 @@ const createModuleQuiz = async (req, res) => {
         }
         
         // Validation pour les questions vrai/faux
-        if (questionType === 'true_false' && question.correct_answer === undefined) {
-          return res.status(400).json({
-            success: false,
-            message: `La question ${i + 1} (Vrai/Faux) doit avoir une réponse correcte définie`
-          });
+        if (questionType === 'true_false') {
+          // Accepter différents formats après normalisation
+          if (question.correct_answer === undefined || 
+              (typeof question.correct_answer === 'string' && question.correct_answer.trim().length === 0)) {
+            return res.status(400).json({
+              success: false,
+              message: `La question ${i + 1} (Vrai/Faux) doit avoir une réponse correcte définie (true/false, "Vrai"/"Faux", ou 1/0)`
+            });
+          }
         }
         
         // Validation pour les questions à réponse courte
-        if (questionType === 'short_answer' && (!question.correct_answer || question.correct_answer.trim().length === 0)) {
-          return res.status(400).json({
-            success: false,
-            message: `La question ${i + 1} (Réponse courte) doit avoir une réponse correcte`
-          });
+        if (questionType === 'short_answer') {
+          const correctAnswer = question.correct_answer !== undefined 
+            ? (typeof question.correct_answer === 'string' ? question.correct_answer : String(question.correct_answer))
+            : '';
+          if (!correctAnswer || correctAnswer.trim().length === 0) {
+            return res.status(400).json({
+              success: false,
+              message: `La question ${i + 1} (Réponse courte) doit avoir une réponse correcte`
+            });
+          }
         }
       }
       
@@ -146,14 +199,20 @@ const createModuleQuiz = async (req, res) => {
           // QCM : créer plusieurs réponses
           for (let j = 0; j < question.answers.length; j++) {
             const answer = question.answers[j];
+            // Gérer les différents formats : objet {answer_text, is_correct} ou chaîne simple
+            const answerText = typeof answer === 'string' ? answer : (answer.answer_text || answer.text || '');
+            const isCorrect = typeof answer === 'string' 
+              ? (answer === question.correct_answer || answer.trim() === (question.correct_answer || '').trim())
+              : (answer.is_correct === true || answer.is_correct === 'true' || answer.isCorrect === true);
+            
             await pool.execute(
               `INSERT INTO quiz_answers (
                 question_id, answer_text, is_correct, order_index
               ) VALUES (?, ?, ?, ?)`,
               [
                 questionId,
-                sanitizeValue(answer.answer_text),
-                answer.is_correct || false,
+                sanitizeValue(answerText),
+                isCorrect,
                 j
               ]
             );
@@ -871,6 +930,44 @@ const updateModuleQuiz = async (req, res) => {
 
     // Mettre à jour les questions si fournies
     if (questions && Array.isArray(questions) && finalQuizId) {
+      // Normaliser les questions : convertir différents formats en format standard
+      for (let i = 0; i < questions.length; i++) {
+        const question = questions[i];
+        const questionType = question.question_type || 'multiple_choice';
+        
+        // Pour les QCM : convertir options + correct_answer en format answers
+        if (questionType === 'multiple_choice' && question.options && Array.isArray(question.options) && !question.answers) {
+          question.answers = question.options.map(option => ({
+            answer_text: option,
+            is_correct: option === question.correct_answer || option.trim() === (question.correct_answer || '').trim()
+          }));
+        }
+        
+        // Pour les questions Vrai/Faux : normaliser correct_answer
+        if (questionType === 'true_false' && question.correct_answer !== undefined) {
+          // Accepter différents formats : true/false, "true"/"false", "Vrai"/"Faux", 1/0
+          if (typeof question.correct_answer === 'string') {
+            const answerLower = question.correct_answer.toLowerCase().trim();
+            if (answerLower === 'vrai' || answerLower === 'true' || answerLower === '1') {
+              question.correct_answer = true;
+            } else if (answerLower === 'faux' || answerLower === 'false' || answerLower === '0') {
+              question.correct_answer = false;
+            }
+          } else if (question.correct_answer === 1 || question.correct_answer === '1') {
+            question.correct_answer = true;
+          } else if (question.correct_answer === 0 || question.correct_answer === '0') {
+            question.correct_answer = false;
+          }
+        }
+        
+        // Pour les questions à réponse courte : s'assurer que correct_answer est une chaîne
+        if (questionType === 'short_answer' && question.correct_answer !== undefined) {
+          if (typeof question.correct_answer !== 'string') {
+            question.correct_answer = String(question.correct_answer);
+          }
+        }
+      }
+      
       // Valider les questions avant de les créer (même logique que createModuleQuiz)
       for (let i = 0; i < questions.length; i++) {
         const question = questions[i];
@@ -886,14 +983,20 @@ const updateModuleQuiz = async (req, res) => {
         
         // Validation pour les questions à choix multiples
         if (questionType === 'multiple_choice') {
-          if (!question.answers || !Array.isArray(question.answers) || question.answers.length < 2) {
+          // Filtrer les réponses vides avant de compter
+          const validAnswers = question.answers ? question.answers.filter(a => {
+            const answerText = typeof a === 'string' ? a : (a.answer_text || a.text || '');
+            return answerText && answerText.trim().length > 0;
+          }) : [];
+          
+          if (!question.answers || !Array.isArray(question.answers) || validAnswers.length < 2) {
             return res.status(400).json({
               success: false,
               message: `La question ${i + 1} (QCM) doit avoir au moins 2 réponses`
             });
           }
           // Vérifier qu'au moins une réponse est correcte
-          const hasCorrectAnswer = question.answers.some(a => a.is_correct === true);
+          const hasCorrectAnswer = question.answers.some(a => a.is_correct === true || a.is_correct === 'true' || a.isCorrect === true);
           if (!hasCorrectAnswer) {
             return res.status(400).json({
               success: false,
@@ -903,19 +1006,28 @@ const updateModuleQuiz = async (req, res) => {
         }
         
         // Validation pour les questions vrai/faux
-        if (questionType === 'true_false' && question.correct_answer === undefined) {
-          return res.status(400).json({
-            success: false,
-            message: `La question ${i + 1} (Vrai/Faux) doit avoir une réponse correcte définie`
-          });
+        if (questionType === 'true_false') {
+          // Accepter différents formats après normalisation
+          if (question.correct_answer === undefined || 
+              (typeof question.correct_answer === 'string' && question.correct_answer.trim().length === 0)) {
+            return res.status(400).json({
+              success: false,
+              message: `La question ${i + 1} (Vrai/Faux) doit avoir une réponse correcte définie (true/false, "Vrai"/"Faux", ou 1/0)`
+            });
+          }
         }
         
         // Validation pour les questions à réponse courte
-        if (questionType === 'short_answer' && (!question.correct_answer || question.correct_answer.trim().length === 0)) {
-          return res.status(400).json({
-            success: false,
-            message: `La question ${i + 1} (Réponse courte) doit avoir une réponse correcte`
-          });
+        if (questionType === 'short_answer') {
+          const correctAnswer = question.correct_answer !== undefined 
+            ? (typeof question.correct_answer === 'string' ? question.correct_answer : String(question.correct_answer))
+            : '';
+          if (!correctAnswer || correctAnswer.trim().length === 0) {
+            return res.status(400).json({
+              success: false,
+              message: `La question ${i + 1} (Réponse courte) doit avoir une réponse correcte`
+            });
+          }
         }
       }
       
@@ -954,9 +1066,15 @@ const updateModuleQuiz = async (req, res) => {
         if (questionType === 'multiple_choice' && question.answers && Array.isArray(question.answers)) {
           for (let j = 0; j < question.answers.length; j++) {
             const answer = question.answers[j];
+            // Gérer les différents formats : objet {answer_text, is_correct} ou chaîne simple
+            const answerText = typeof answer === 'string' ? answer : (answer.answer_text || answer.text || '');
+            const isCorrect = typeof answer === 'string' 
+              ? (answer === question.correct_answer || answer.trim() === (question.correct_answer || '').trim())
+              : (answer.is_correct === true || answer.is_correct === 'true' || answer.isCorrect === true);
+            
             await pool.execute(
               `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
-              [questionId, sanitizeValue(answer.answer_text), answer.is_correct || false, j]
+              [questionId, sanitizeValue(answerText), isCorrect, j]
             );
           }
         } else if (questionType === 'true_false' && question.correct_answer !== undefined) {

@@ -99,7 +99,7 @@ Le serveur démarre sur `http://localhost:5000`
 - **Email** : Vérification, notifications, templates HTML
 - **Routes de progression** : Suivi des leçons complétées
 
-### 🚧 En développement
+#### 🚧 En développement
 - **IA/ChatIA** : Conversations avec GPT-4o Mini, résumés automatiques
 - **Gamification** : Badges, points, niveaux, leaderboard
 - **Analytics avancés** : Tableaux de bord, métriques, monitoring

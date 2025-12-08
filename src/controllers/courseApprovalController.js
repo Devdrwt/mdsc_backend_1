@@ -51,17 +51,20 @@ const requestPublication = async (req, res) => {
     // Vérifier les conditions de publication
     const validationErrors = [];
 
-    // 1. Au moins un module avec au moins une leçon
-    const [modules] = await pool.execute(
-      `SELECT m.id FROM modules m
-       JOIN lessons l ON m.id = l.module_id
-       WHERE m.course_id = ? AND l.is_published = TRUE
-       GROUP BY m.id`,
-      [courseId]
-    );
+    // 1. Au moins un module avec au moins une leçon (uniquement pour les cours on_demand)
+    // Les cours en live n'ont pas besoin de modules/leçons, seulement l'évaluation finale
+    if (course.course_type !== 'live') {
+      const [modules] = await pool.execute(
+        `SELECT m.id FROM modules m
+         JOIN lessons l ON m.id = l.module_id
+         WHERE m.course_id = ? AND l.is_published = TRUE
+         GROUP BY m.id`,
+        [courseId]
+      );
 
-    if (modules.length === 0) {
-      validationErrors.push('Le cours doit contenir au moins un module avec au moins une leçon publiée');
+      if (modules.length === 0) {
+        validationErrors.push('Le cours doit contenir au moins un module avec au moins une leçon publiée');
+      }
     }
 
     // 2. Évaluation finale créée

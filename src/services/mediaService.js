@@ -12,7 +12,7 @@ class MediaService {
     video: {
       formats: ['mp4', 'webm', 'mov', 'avi', 'mkv'],
       mimeTypes: ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska'],
-      maxSize: 500 * 1024 * 1024, // 500MB
+      maxSize: 150 * 1024 * 1024, // 150MB
       category: 'video'
     },
     document: {
@@ -23,32 +23,32 @@ class MediaService {
                   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                   'application/vnd.ms-powerpoint',
                   'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
-      maxSize: 50 * 1024 * 1024, // 50MB
+      maxSize: 150 * 1024 * 1024, // 150MB
       category: 'document'
     },
     audio: {
       formats: ['mp3', 'wav', 'ogg', 'm4a'],
       mimeTypes: ['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4'],
-      maxSize: 100 * 1024 * 1024, // 100MB
+      maxSize: 150 * 1024 * 1024, // 150MB
       category: 'audio'
     },
     presentation: {
       formats: ['ppt', 'pptx'],
       mimeTypes: ['application/vnd.ms-powerpoint',
                   'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
-      maxSize: 100 * 1024 * 1024, // 100MB
+      maxSize: 150 * 1024 * 1024, // 150MB
       category: 'presentation'
     },
     h5p: {
       formats: ['h5p', 'zip'],
       mimeTypes: ['application/zip', 'application/x-h5p'],
-      maxSize: 200 * 1024 * 1024, // 200MB
+      maxSize: 150 * 1024 * 1024, // 150MB
       category: 'h5p'
     },
     image: {
       formats: ['jpg', 'jpeg', 'png', 'gif', 'webp'],
       mimeTypes: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
-      maxSize: 10 * 1024 * 1024, // 10MB
+      maxSize: 150 * 1024 * 1024, // 150MB
       category: 'image'
     }
   };
@@ -81,7 +81,7 @@ class MediaService {
    */
   static getMaxFileSize(contentType) {
     const config = this.CONTENT_TYPE_CONFIG[contentType];
-    return config ? config.maxSize : 10 * 1024 * 1024; // Default 10MB
+    return config ? config.maxSize : 150 * 1024 * 1024; // Default 150MB
   }
 
   /**

@@ -44,7 +44,7 @@ const upload = multer({
   storage: storage,
   fileFilter: fileFilter,
   limits: {
-    fileSize: 5 * 1024 * 1024 // 5MB max
+    fileSize: 150 * 1024 * 1024 // 150MB max
   }
 });
 
@@ -409,7 +409,7 @@ const uploadCourse = multer({
   storage: courseStorage,
   fileFilter: courseFileFilter,
   limits: {
-    fileSize: 100 * 1024 * 1024 // 100MB max pour vidéos
+    fileSize: 150 * 1024 * 1024 // 150MB max
   }
 });
 
@@ -451,17 +451,17 @@ const uploadCourseFile = async (req, res) => {
     }
 
     // Validation taille selon catégorie
-    if (category === 'course_thumbnail' && req.file.size > 5 * 1024 * 1024) {
+    if (category === 'course_thumbnail' && req.file.size > 150 * 1024 * 1024) {
       return res.status(413).json({
         success: false,
-        message: 'Fichier trop volumineux. Taille maximale: 5 MB'
+        message: 'Fichier trop volumineux. Taille maximale: 150 MB'
       });
     }
     
-    if (category === 'course_intro_video' && req.file.size > 100 * 1024 * 1024) {
+    if (category === 'course_intro_video' && req.file.size > 150 * 1024 * 1024) {
       return res.status(413).json({
         success: false,
-        message: 'Fichier trop volumineux. Taille maximale: 100 MB'
+        message: 'Fichier trop volumineux. Taille maximale: 150 MB'
       });
     }
 

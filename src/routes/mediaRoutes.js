@@ -106,7 +106,12 @@ router.post('/upload',
       }
     });
     
-    const parseAll = multer({ storage: tempStorage }).any();
+    const parseAll = multer({ 
+      storage: tempStorage,
+      limits: {
+        fileSize: 150 * 1024 * 1024 // 150MB max
+      }
+    }).any();
     
     parseAll(req, res, async (err) => {
       if (err) return next(err);

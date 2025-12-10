@@ -3,81 +3,110 @@ const router = express.Router();
 const path = require('path');
 const mediaController = require('../controllers/mediaController');
 const MediaService = require('../services/mediaService');
+const MinioService = require('../services/minioService');
 const { authenticateToken, authorize } = require('../middleware/auth');
+const { pool } = require('../config/database');
 
 // Servir les fichiers statiques uploadés via /api/media/uploads
 // Cette route doit être avant les autres routes pour éviter les conflits
+// Supporte maintenant MinIO et stockage local
 const uploadsPath = path.join(__dirname, '../../uploads');
 const fs = require('fs');
 
-router.use('/uploads', (req, res, next) => {
-  // Construire le chemin complet du fichier
-  let filePath = path.join(uploadsPath, req.path);
-  
-  // Vérifier que le chemin est sécurisé (pas de directory traversal)
-  const normalizedPath = path.normalize(filePath);
-  if (!normalizedPath.startsWith(path.normalize(uploadsPath))) {
-    return res.status(403).json({ success: false, message: 'Accès interdit' });
-  }
-  
-  // Si le fichier n'existe pas au chemin demandé, chercher dans d'autres dossiers possibles
-  if (!fs.existsSync(filePath)) {
+router.use('/uploads', async (req, res, next) => {
+  try {
     const filename = path.basename(req.path);
-    const possiblePaths = [
-      path.join(uploadsPath, 'courses', 'thumbnails', filename),
-      path.join(uploadsPath, 'courses', 'videos', filename),
-      path.join(uploadsPath, 'profiles', filename),
-      path.join(uploadsPath, 'images', filename),
-      path.join(uploadsPath, 'modules', filename)
-    ];
     
-    // Chercher le fichier dans les dossiers possibles
-    for (const possiblePath of possiblePaths) {
-      if (fs.existsSync(possiblePath)) {
-        filePath = possiblePath;
-        break;
+    // Chercher le fichier dans la base de données (media_files)
+    const [mediaFiles] = await pool.execute(
+      'SELECT * FROM media_files WHERE filename = ? OR url LIKE ? LIMIT 1',
+      [filename, `%/${filename}`]
+    );
+    
+    // Si le fichier est dans MinIO, rediriger vers l'URL MinIO
+    if (mediaFiles.length > 0 && mediaFiles[0].storage_type === 'minio' && mediaFiles[0].storage_path) {
+      const minioUrl = MinioService.getPublicUrl(mediaFiles[0].storage_path);
+      if (minioUrl) {
+        return res.redirect(302, minioUrl);
       }
     }
+    
+    // Sinon, chercher dans le stockage local
+    let filePath = path.join(uploadsPath, req.path);
+    
+    // Vérifier que le chemin est sécurisé (pas de directory traversal)
+    const normalizedPath = path.normalize(filePath);
+    if (!normalizedPath.startsWith(path.normalize(uploadsPath))) {
+      return res.status(403).json({ success: false, message: 'Accès interdit' });
+    }
+    
+    // Si le fichier n'existe pas au chemin demandé, chercher dans d'autres dossiers possibles
+    if (!fs.existsSync(filePath)) {
+      const possiblePaths = [
+        path.join(uploadsPath, 'courses', 'thumbnails', filename),
+        path.join(uploadsPath, 'courses', 'videos', filename),
+        path.join(uploadsPath, 'profiles', filename),
+        path.join(uploadsPath, 'images', filename),
+        path.join(uploadsPath, 'modules', filename),
+        path.join(uploadsPath, 'videos', filename),
+        path.join(uploadsPath, 'documents', filename),
+        path.join(uploadsPath, 'audio', filename),
+        path.join(uploadsPath, 'presentations', filename),
+        path.join(uploadsPath, 'h5p', filename),
+        path.join(uploadsPath, 'others', filename)
+      ];
+      
+      // Chercher le fichier dans les dossiers possibles
+      for (const possiblePath of possiblePaths) {
+        if (fs.existsSync(possiblePath)) {
+          filePath = possiblePath;
+          break;
+        }
+      }
+    }
+    
+    // Vérifier que le fichier existe (après recherche)
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ success: false, message: 'Fichier non trouvé' });
+    }
+    
+    // Vérifier que c'est un fichier (pas un dossier)
+    const stats = fs.statSync(filePath);
+    if (!stats.isFile()) {
+      return res.status(404).json({ success: false, message: 'Fichier non trouvé' });
+    }
+    
+    // Déterminer le type MIME
+    const ext = path.extname(filePath).toLowerCase();
+    const mimeTypes = {
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp',
+      '.svg': 'image/svg+xml',
+      '.mp4': 'video/mp4',
+      '.webm': 'video/webm',
+      '.pdf': 'application/pdf',
+      '.doc': 'application/msword',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    };
+    
+    // Définir les en-têtes
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.setHeader('Cache-Control', 'public, max-age=31536000');
+    
+    if (mimeTypes[ext]) {
+      res.setHeader('Content-Type', mimeTypes[ext]);
+    }
+    
+    // Servir le fichier
+    res.sendFile(filePath);
+  } catch (error) {
+    console.error('Erreur lors de la récupération du fichier:', error);
+    res.status(500).json({ success: false, message: 'Erreur lors de la récupération du fichier' });
   }
-  
-  // Vérifier que le fichier existe (après recherche)
-  if (!fs.existsSync(filePath)) {
-    return res.status(404).json({ success: false, message: 'Fichier non trouvé' });
-  }
-  
-  // Vérifier que c'est un fichier (pas un dossier)
-  const stats = fs.statSync(filePath);
-  if (!stats.isFile()) {
-    return res.status(404).json({ success: false, message: 'Fichier non trouvé' });
-  }
-  
-  // Déterminer le type MIME
-  const ext = path.extname(filePath).toLowerCase();
-  const mimeTypes = {
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.png': 'image/png',
-    '.gif': 'image/gif',
-    '.webp': 'image/webp',
-    '.svg': 'image/svg+xml',
-    '.mp4': 'video/mp4',
-    '.webm': 'video/webm',
-    '.pdf': 'application/pdf',
-    '.doc': 'application/msword',
-    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-  };
-  
-  // Définir les en-têtes
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-  res.setHeader('Cache-Control', 'public, max-age=31536000');
-  
-  if (mimeTypes[ext]) {
-    res.setHeader('Content-Type', mimeTypes[ext]);
-  }
-  
-  // Servir le fichier
-  res.sendFile(filePath);
 });
 
 // Upload single file

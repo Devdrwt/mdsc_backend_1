@@ -2,25 +2,29 @@ const { pool } = require('../config/database');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
+const MinioService = require('../services/minioService');
 
 // Configuration multer pour l'upload de fichiers
-const storage = multer.diskStorage({
-  destination: async (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '../../uploads/profiles');
-    try {
-      await fs.mkdir(uploadDir, { recursive: true });
-      cb(null, uploadDir);
-    } catch (error) {
-      cb(error);
-    }
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname);
-    const userId = req.user?.id ?? req.user?.userId ?? 'anon';
-    cb(null, `${userId}-${file.fieldname}-${uniqueSuffix}${ext}`);
-  }
-});
+// Utilise MinIO si disponible, sinon stockage local
+const storage = MinioService.isAvailable() 
+  ? multer.memoryStorage() // Stockage mémoire pour MinIO
+  : multer.diskStorage({
+      destination: async (req, file, cb) => {
+        const uploadDir = path.join(__dirname, '../../uploads/profiles');
+        try {
+          await fs.mkdir(uploadDir, { recursive: true });
+          cb(null, uploadDir);
+        } catch (error) {
+          cb(error);
+        }
+      },
+      filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        const ext = path.extname(file.originalname);
+        const userId = req.user?.id ?? req.user?.userId ?? 'anon';
+        cb(null, `${userId}-${file.fieldname}-${uniqueSuffix}${ext}`);
+      }
+    });
 
 const fileFilter = (req, file, cb) => {
   // Accepter tous les types MIME autorisés (profile_picture et identity_document)
@@ -89,12 +93,18 @@ const uploadProfileFile = async (req, res) => {
     }
 
     // Supprimer l'ancien fichier du même type s'il existe
-    const existingFileQuery = 'SELECT file_path FROM user_files WHERE user_id = ? AND file_type = ?';
+    const existingFileQuery = 'SELECT file_path, storage_type FROM user_files WHERE user_id = ? AND file_type = ?';
     const [existingFiles] = await pool.execute(existingFileQuery, [userId, file_type]);
     
     if (existingFiles.length > 0) {
+      const existingFile = existingFiles[0];
       try {
-        await fs.unlink(existingFiles[0].file_path);
+        // Supprimer selon le type de stockage
+        if (existingFile.storage_type === 'minio' && existingFile.file_path) {
+          await MinioService.deleteFile(existingFile.file_path);
+        } else if (existingFile.file_path) {
+          await fs.unlink(existingFile.file_path);
+        }
       } catch (error) {
         console.log('Fichier précédent non trouvé:', error.message);
       }
@@ -102,27 +112,60 @@ const uploadProfileFile = async (req, res) => {
       await pool.execute('DELETE FROM user_files WHERE user_id = ? AND file_type = ?', [userId, file_type]);
     }
 
+    // Uploader vers MinIO si disponible, sinon utiliser le stockage local
+    let storageType = 'local';
+    let storagePath = null;
+    let fileName = req.file.filename || null;
+    let fileUrl = null;
+
+    if (MinioService.isAvailable()) {
+      try {
+        const objectName = MinioService.generateObjectName('profiles', req.file.originalname, userId);
+        const uploadResult = await MinioService.uploadFile(req.file, objectName, req.file.mimetype);
+        
+        storageType = 'minio';
+        storagePath = objectName;
+        fileName = path.basename(objectName);
+        fileUrl = uploadResult.url;
+        
+        // Nettoyer le fichier temporaire local s'il existe
+        if (req.file.path) {
+          try {
+            await fs.unlink(req.file.path);
+          } catch (error) {
+            console.warn('Impossible de supprimer le fichier temporaire:', error.message);
+          }
+        }
+      } catch (error) {
+        console.error('Erreur lors de l\'upload vers MinIO, utilisation du stockage local:', error);
+        storagePath = req.file.path;
+        const apiUrl = process.env.API_URL || `http://localhost:${process.env.PORT || 5000}`;
+        fileUrl = `${apiUrl}/uploads/profiles/${req.file.filename}`;
+      }
+    } else {
+      storagePath = req.file.path;
+      const apiUrl = process.env.API_URL || `http://localhost:${process.env.PORT || 5000}`;
+      fileUrl = `${apiUrl}/uploads/profiles/${req.file.filename}`;
+    }
+
     // Insérer les informations du fichier en base
     const insertQuery = `
       INSERT INTO user_files (
         user_id, file_type, file_name, original_name, file_path,
-        file_size, mime_type, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+        file_size, mime_type, storage_type, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
     `;
 
     const [result] = await pool.execute(insertQuery, [
       userId,
       file_type,
-      req.file.filename || null,
+      fileName,
       req.file.originalname || null,
-      req.file.path || null,
+      storagePath,
       req.file.size || 0,
-      req.file.mimetype || null
+      req.file.mimetype || null,
+      storageType
     ]);
-
-    // Construire l'URL complète du fichier
-    const apiUrl = process.env.API_URL || `http://localhost:${process.env.PORT || 5000}`;
-    const fileUrl = `${apiUrl}/uploads/profiles/${req.file.filename}`;
 
     res.status(201).json({
       success: true,
@@ -168,18 +211,27 @@ const getUserFiles = async (req, res) => {
 
     res.json({
       success: true,
-      data: files.map(file => ({
-        id: file.id,
-        file_type: file.file_type,
-        file_name: file.file_name,
-        original_name: file.original_name,
-        file_size: file.file_size,
-        mime_type: file.mime_type,
-        is_verified: file.is_verified,
-        verified_at: file.verified_at,
-        created_at: file.created_at,
-        url: file.file_name ? `${apiUrl}/uploads/profiles/${file.file_name}` : null
-      }))
+      data: files.map(file => {
+        let url = null;
+        if (file.storage_type === 'minio' && file.file_path) {
+          url = MinioService.getPublicUrl(file.file_path);
+        } else if (file.file_name) {
+          url = `${apiUrl}/uploads/profiles/${file.file_name}`;
+        }
+        
+        return {
+          id: file.id,
+          file_type: file.file_type,
+          file_name: file.file_name,
+          original_name: file.original_name,
+          file_size: file.file_size,
+          mime_type: file.mime_type,
+          is_verified: file.is_verified,
+          verified_at: file.verified_at,
+          created_at: file.created_at,
+          url: url
+        };
+      })
     });
 
   } catch (error) {
@@ -208,9 +260,14 @@ const deleteProfileFile = async (req, res) => {
       });
     }
 
-    // Supprimer le fichier physique
+    // Supprimer le fichier physique selon le type de stockage
     try {
-      await fs.unlink(files[0].file_path);
+      const file = files[0];
+      if (file.storage_type === 'minio' && file.file_path) {
+        await MinioService.deleteFile(file.file_path);
+      } else if (file.file_path) {
+        await fs.unlink(file.file_path);
+      }
     } catch (error) {
       console.log('Fichier physique non trouvé:', error.message);
     }
@@ -322,42 +379,45 @@ const getPendingFiles = async (req, res) => {
 };
 
 // Configuration multer pour l'upload de fichiers de cours
-const courseStorage = multer.diskStorage({
-  destination: async (req, file, cb) => {
-    // Déterminer le dossier selon la catégorie
-    let category = null;
-    try {
-      let options = {};
-      try {
-        options = req.body.options ? JSON.parse(req.body.options) : {};
-      } catch (e) {
-        // Ignorer
+// Utilise MinIO si disponible, sinon stockage local
+const courseStorage = MinioService.isAvailable()
+  ? multer.memoryStorage() // Stockage mémoire pour MinIO
+  : multer.diskStorage({
+      destination: async (req, file, cb) => {
+        // Déterminer le dossier selon la catégorie
+        let category = null;
+        try {
+          let options = {};
+          try {
+            options = req.body.options ? JSON.parse(req.body.options) : {};
+          } catch (e) {
+            // Ignorer
+          }
+          category = options.category || req.body.category;
+          
+          let uploadDir;
+          if (category === 'course_thumbnail') {
+            uploadDir = path.join(__dirname, '../../uploads/courses/thumbnails');
+          } else if (category === 'course_intro_video') {
+            uploadDir = path.join(__dirname, '../../uploads/courses/videos');
+          } else {
+            // Par défaut, utiliser le dossier profiles (pour compatibilité avec uploads de profil)
+            uploadDir = path.join(__dirname, '../../uploads/profiles');
+          }
+          
+          await fs.mkdir(uploadDir, { recursive: true });
+          cb(null, uploadDir);
+        } catch (error) {
+          cb(error);
+        }
+      },
+      filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        const ext = path.extname(file.originalname);
+        const userId = req.user?.id ?? req.user?.userId ?? 'anon';
+        cb(null, `${userId}-${uniqueSuffix}${ext}`);
       }
-      category = options.category || req.body.category;
-      
-      let uploadDir;
-      if (category === 'course_thumbnail') {
-        uploadDir = path.join(__dirname, '../../uploads/courses/thumbnails');
-      } else if (category === 'course_intro_video') {
-        uploadDir = path.join(__dirname, '../../uploads/courses/videos');
-      } else {
-        // Par défaut, utiliser le dossier profiles (pour compatibilité avec uploads de profil)
-        uploadDir = path.join(__dirname, '../../uploads/profiles');
-      }
-      
-      await fs.mkdir(uploadDir, { recursive: true });
-      cb(null, uploadDir);
-    } catch (error) {
-      cb(error);
-    }
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname);
-    const userId = req.user?.id ?? req.user?.userId ?? 'anon';
-    cb(null, `${userId}-${uniqueSuffix}${ext}`);
-  }
-});
+    });
 
 const courseFileFilter = (req, file, cb) => {
   try {
@@ -501,7 +561,7 @@ const uploadCourseFile = async (req, res) => {
     // Générer thumbnail URL (pour images, c'est le même fichier, pour vidéos on pourrait générer plus tard)
     let thumbnailUrl = null;
     if (category === 'course_thumbnail') {
-      thumbnailUrl = fileUrl;
+      thumbnailUrl = fullFileUrl;
     }
 
     // Préparer les métadonnées
@@ -525,7 +585,7 @@ const uploadCourseFile = async (req, res) => {
         mimeType: req.file.mimetype,
         size: req.file.size,
         url: fullFileUrl,
-        storage_path: req.file.path,
+        storage_path: storagePath,
         thumbnailUrl: category === 'course_thumbnail' ? fullFileUrl : thumbnailUrl,
         metadata: metadata,
         createdAt: new Date().toISOString(),

@@ -152,9 +152,16 @@ const getMediaFile = async (req, res) => {
       });
     }
 
+    // Construire l'URL complète si nécessaire
+    const { buildMediaUrl } = require('../services/mediaService');
+    const mediaFileWithUrl = {
+      ...mediaFile,
+      url: buildMediaUrl(mediaFile)
+    };
+
     res.json({
       success: true,
-      data: mediaFile
+      data: mediaFileWithUrl
     });
 
   } catch (error) {
@@ -274,6 +281,7 @@ const downloadMediaFile = async (req, res) => {
   try {
     const { id } = req.params;
     const path = require('path');
+    const MinioService = require('../services/minioService');
 
     const mediaFile = await MediaService.getMediaFile(id);
 
@@ -284,7 +292,38 @@ const downloadMediaFile = async (req, res) => {
       });
     }
 
-    // Construire le chemin complet
+    // Si le fichier est dans MinIO, télécharger depuis MinIO
+    if (mediaFile.storage_type === 'minio' && mediaFile.storage_path) {
+      try {
+        const fileStream = await MinioService.downloadFile(mediaFile.storage_path);
+        
+        // Définir les en-têtes
+        res.setHeader('Content-Disposition', `attachment; filename="${mediaFile.original_filename}"`);
+        res.setHeader('Content-Type', mediaFile.file_type || 'application/octet-stream');
+        
+        // Stream le fichier vers la réponse
+        fileStream.pipe(res);
+        
+        fileStream.on('error', (err) => {
+          console.error('Erreur lors du streaming depuis MinIO:', err);
+          if (!res.headersSent) {
+            res.status(500).json({
+              success: false,
+              message: 'Erreur lors du téléchargement du fichier'
+            });
+          }
+        });
+      } catch (error) {
+        console.error('Erreur lors du téléchargement depuis MinIO:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Erreur lors du téléchargement du fichier'
+        });
+      }
+      return;
+    }
+
+    // Sinon, télécharger depuis le stockage local
     const filePath = path.join(__dirname, '../../', mediaFile.url);
 
     res.download(filePath, mediaFile.original_filename, (err) => {

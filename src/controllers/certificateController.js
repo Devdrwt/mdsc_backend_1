@@ -391,18 +391,31 @@ const generateCertificateForCourseHTTP = async (req, res) => {
 };
 
 // Générer automatiquement un certificat (appelé quand un cours est complété)
+// Pour les cours live, on considère le cours complété si :
+// - la date de fin est passée
+// - et l'évaluation finale (ou quiz final) est réussie
+// même si l'enrollment n'est pas encore marqué "completed".
 const generateCertificateForCourse = async (userId, courseId) => {
   try {
-    // Vérifier que l'utilisateur a complété le cours
-    const enrollmentQuery = `
-      SELECT * FROM enrollments 
-      WHERE user_id = ? AND course_id = ? AND status = 'completed'
-    `;
-    const [enrollments] = await pool.execute(enrollmentQuery, [userId, courseId]);
-
-    if (enrollments.length === 0) {
-      throw new Error('Cours non complété');
+    // Charger le cours (type + date de fin)
+    const [courses] = await pool.execute(
+      'SELECT id, course_type, course_end_date FROM courses WHERE id = ?',
+      [courseId]
+    );
+    if (courses.length === 0) {
+      throw new Error('Cours introuvable');
     }
+    const course = courses[0];
+
+    // Récupérer l'enrollment (même si non "completed")
+    const [enrollments] = await pool.execute(
+      'SELECT * FROM enrollments WHERE user_id = ? AND course_id = ? LIMIT 1',
+      [userId, courseId]
+    );
+    if (enrollments.length === 0) {
+      throw new Error('Inscription au cours introuvable');
+    }
+    const enrollment = enrollments[0];
 
     // Vérifier s'il y a une évaluation finale (course_evaluations) - PRIORITAIRE
     const finalEvaluationQuery = `
@@ -416,8 +429,7 @@ const generateCertificateForCourse = async (userId, courseId) => {
 
     if (finalEvaluations.length > 0) {
       const finalEvaluation = finalEvaluations[0];
-      // Utiliser l'enrollment déjà récupéré au début de la fonction
-      const enrollmentId = enrollments[0].id;
+      const enrollmentId = enrollment.id;
       const finalAttemptQuery = `
         SELECT id FROM quiz_attempts
         WHERE enrollment_id = ? AND course_evaluation_id = ? AND is_passed = TRUE
@@ -455,6 +467,52 @@ const generateCertificateForCourse = async (userId, courseId) => {
           throw new Error('Quiz final non réussi');
         }
       }
+    }
+
+    // Marquer comme complété si conditions remplies (cours live) même si pas encore marqué
+    let isCompleted = enrollment.status === 'completed';
+    const progressPercentage = Number(enrollment.progress_percentage || 0);
+
+    const courseEndPassed =
+      course.course_end_date && new Date(course.course_end_date) <= new Date();
+
+    // Si cours live : date de fin passée + évaluation réussie => compléter
+    if (!isCompleted && course.course_type === 'live' && courseEndPassed) {
+      isCompleted = true;
+      await pool.execute(
+        `
+          UPDATE enrollments
+          SET status = 'completed',
+              progress_percentage = 100,
+              completed_at = IFNULL(completed_at, NOW())
+          WHERE id = ?
+        `,
+        [enrollment.id]
+      );
+      console.log(
+        `✅ [Certificate] Enrollment ${enrollment.id} marqué completed (live terminé + évaluation réussie)`
+      );
+    }
+
+    // Si pas live : accepter progression déjà à 100% même si status pas encore maj
+    if (!isCompleted && progressPercentage >= 100) {
+      isCompleted = true;
+      await pool.execute(
+        `
+          UPDATE enrollments
+          SET status = 'completed',
+              completed_at = IFNULL(completed_at, NOW())
+          WHERE id = ?
+        `,
+        [enrollment.id]
+      );
+      console.log(
+        `✅ [Certificate] Enrollment ${enrollment.id} marqué completed (progress 100%)`
+      );
+    }
+
+    if (!isCompleted) {
+      throw new Error('Cours non complété');
     }
 
     // Vérifier qu'un certificat n'existe pas déjà

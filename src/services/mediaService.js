@@ -2,6 +2,7 @@ const { pool } = require('../config/database');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
+const MinioService = require('./minioService');
 
 /**
  * Service de gestion des médias (upload, download, delete)
@@ -94,27 +95,38 @@ class MediaService {
 
   /**
    * Configurer multer selon le content_type
+   * Utilise MinIO si disponible, sinon stockage local
    */
   static getMulterConfig(contentType) {
-    const uploadDir = path.join(__dirname, '../../uploads', this.getFolderByContentType(contentType));
     const maxSize = this.getMaxFileSize(contentType);
     const allowedMimes = this.getAllowedMimeTypes(contentType);
 
-    const storage = multer.diskStorage({
-      destination: async (req, file, cb) => {
-        try {
-          await fs.mkdir(uploadDir, { recursive: true });
-          cb(null, uploadDir);
-        } catch (error) {
-          cb(error);
+    // Si MinIO est disponible, utiliser le stockage mémoire (pour upload direct vers MinIO)
+    // Sinon, utiliser le stockage disque local
+    let storage;
+    
+    if (MinioService.isAvailable()) {
+      // Stockage mémoire pour MinIO (le fichier sera uploadé directement vers MinIO)
+      storage = multer.memoryStorage();
+    } else {
+      // Stockage disque local (fallback)
+      const uploadDir = path.join(__dirname, '../../uploads', this.getFolderByContentType(contentType));
+      storage = multer.diskStorage({
+        destination: async (req, file, cb) => {
+          try {
+            await fs.mkdir(uploadDir, { recursive: true });
+            cb(null, uploadDir);
+          } catch (error) {
+            cb(error);
+          }
+        },
+        filename: (req, file, cb) => {
+          const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+          const ext = path.extname(file.originalname);
+          cb(null, `${req.user.id || 'anon'}-${uniqueSuffix}${ext}`);
         }
-      },
-      filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        const ext = path.extname(file.originalname);
-        cb(null, `${req.user.id || 'anon'}-${uniqueSuffix}${ext}`);
-      }
-    });
+      });
+    }
 
     const fileFilter = (req, file, cb) => {
       if (allowedMimes.length === 0 || allowedMimes.includes(file.mimetype)) {
@@ -135,30 +147,71 @@ class MediaService {
 
   /**
    * Sauvegarder les informations d'un fichier uploadé en base
+   * Utilise MinIO si disponible, sinon stockage local
    */
   static async saveMediaFile(file, contentType, userId, lessonId = null, courseId = null) {
     const fileCategory = this.getFileCategory(contentType);
-    const storagePath = file.path;
-    const url = `/uploads/${this.getFolderByContentType(contentType)}/${file.filename}`;
-    
-    // Pour l'instant, on utilise le stockage local
-    // Plus tard, on pourra adapter pour MinIO/S3
+    let storageType = 'local';
+    let storagePath = null;
+    let url = null;
+    let filename = file.filename;
+    let bucketName = null;
+    let objectName = null;
+
+    // Si MinIO est disponible, uploader vers MinIO
+    if (MinioService.isAvailable()) {
+      try {
+        const folder = this.getFolderByContentType(contentType);
+        objectName = MinioService.generateObjectName(folder, file.originalname, userId);
+        
+        // Upload vers MinIO
+        const uploadResult = await MinioService.uploadFile(file, objectName, file.mimetype);
+        
+        storageType = 'minio';
+        storagePath = objectName;
+        url = uploadResult.url;
+        filename = path.basename(objectName);
+        bucketName = uploadResult.bucket;
+        
+        // Nettoyer le fichier temporaire local s'il existe
+        if (file.path) {
+          try {
+            await fs.access(file.path);
+            await fs.unlink(file.path);
+          } catch (error) {
+            // Fichier n'existe pas ou erreur d'accès, ignorer
+          }
+        }
+      } catch (error) {
+        console.error('Erreur lors de l\'upload vers MinIO, utilisation du stockage local:', error);
+        // Fallback vers stockage local
+        storagePath = file.path;
+        url = `/uploads/${this.getFolderByContentType(contentType)}/${file.filename}`;
+      }
+    } else {
+      // Stockage local
+      storagePath = file.path;
+      url = `/uploads/${this.getFolderByContentType(contentType)}/${file.filename}`;
+    }
+
     const insertQuery = `
       INSERT INTO media_files (
         lesson_id, course_id, filename, original_filename,
         file_type, file_category, file_size, storage_type,
-        storage_path, url, uploaded_by, uploaded_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'local', ?, ?, ?, NOW())
+        bucket_name, storage_path, url, uploaded_by, uploaded_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
     `;
 
     const [result] = await pool.execute(insertQuery, [
       lessonId,
       courseId,
-      file.filename,
+      filename,
       file.originalname,
       file.mimetype,
       fileCategory,
       file.size,
+      storageType,
+      bucketName,
       storagePath,
       url,
       userId
@@ -169,11 +222,13 @@ class MediaService {
       media_file_id: result.insertId,
       url,
       storage_path: storagePath,
-      filename: file.filename,
+      filename: filename,
       original_filename: file.originalname,
       file_size: file.size,
       file_type: file.mimetype,
-      file_category: fileCategory
+      file_category: fileCategory,
+      storage_type: storageType,
+      bucket_name: bucketName
     };
   }
 
@@ -237,10 +292,20 @@ class MediaService {
       throw new Error('Fichier média non trouvé');
     }
 
-    // Supprimer le fichier physique
+    // Supprimer le fichier physique selon le type de stockage
     try {
-      const filePath = path.join(__dirname, '../../', file.url);
-      await fs.unlink(filePath);
+      if (file.storage_type === 'minio' && file.storage_path) {
+        // Supprimer depuis MinIO
+        await MinioService.deleteFile(file.storage_path);
+      } else if (file.storage_type === 'local' && file.url) {
+        // Supprimer depuis le stockage local
+        const filePath = path.join(__dirname, '../../', file.url);
+        try {
+          await fs.unlink(filePath);
+        } catch (error) {
+          console.warn('Fichier local non trouvé lors de la suppression:', error.message);
+        }
+      }
     } catch (error) {
       console.warn('Erreur lors de la suppression du fichier physique:', error.message);
     }
@@ -270,9 +335,34 @@ class MediaService {
    * Obtenir le chemin de téléchargement
    */
   static getDownloadPath(file) {
-    // Pour l'instant, retourner l'URL
-    // Plus tard, on pourra générer un lien signé pour MinIO/S3
+    // Si c'est un fichier MinIO, retourner l'URL publique
+    if (file.storage_type === 'minio' && file.url) {
+      return file.url;
+    }
+    // Sinon, retourner l'URL locale
     return file.url;
+  }
+
+  /**
+   * Obtenir l'URL complète d'un fichier média
+   * Gère les fichiers MinIO et locaux
+   */
+  static buildMediaUrl(file) {
+    if (!file) return null;
+
+    // Si c'est déjà une URL complète (MinIO ou autre), la retourner
+    if (file.url && (file.url.startsWith('http://') || file.url.startsWith('https://'))) {
+      return file.url;
+    }
+
+    // Si c'est un fichier MinIO avec storage_path, construire l'URL
+    if (file.storage_type === 'minio' && file.storage_path) {
+      return MinioService.getPublicUrl(file.storage_path);
+    }
+
+    // Sinon, construire l'URL locale
+    const apiUrl = process.env.API_URL || `http://localhost:${process.env.PORT || 5000}`;
+    return file.url ? `${apiUrl}${file.url}` : null;
   }
 }
 

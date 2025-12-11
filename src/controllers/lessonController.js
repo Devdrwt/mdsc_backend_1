@@ -20,6 +20,7 @@ const createLesson = async (req, res) => {
 
     // Insérer la leçon avec support modules et content_type
     const { module_id, content_type = 'text', media_file_id, content_url, content_text, is_required = true } = req.body;
+    const published = typeof is_published === 'boolean' ? is_published : true;
 
     const insertQuery = `
       INSERT INTO lessons (
@@ -32,7 +33,7 @@ const createLesson = async (req, res) => {
     const [result] = await pool.execute(insertQuery, [
       courseId, module_id || null, title, content_type, media_file_id || null, content_url || null,
       description, content || null, content_text || null, video_url || null,
-      duration_minutes || 0, order_index || 0, is_required, is_published || false
+      duration_minutes || 0, order_index || 0, is_required, published
     ]);
 
     const newLessonId = result.insertId;

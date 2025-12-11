@@ -1094,7 +1094,6 @@ const getAllCourses = async (req, res) => {
         c.is_published,
         c.price,
         c.currency,
-        c.difficulty,
         c.created_at,
         c.updated_at,
         u.first_name as instructor_first_name,

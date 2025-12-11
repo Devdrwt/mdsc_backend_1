@@ -3,6 +3,85 @@ const { sanitizeValue, convertToMySQLDateTime } = require('../utils/sanitize');
 const { buildMediaUrl, formatInstructorMetadata } = require('../utils/media');
 const { v4: uuidv4 } = require('uuid');
 const ModuleService = require('../services/moduleService');
+const JitsiService = require('../services/jitsiService');
+
+/**
+ * Créer automatiquement une session live pour un cours
+ * @param {number} courseId - ID du cours
+ * @param {number} instructorId - ID de l'instructeur
+ * @param {string} courseTitle - Titre du cours
+ * @param {Date} startDate - Date de début
+ * @param {Date} endDate - Date de fin
+ * @param {number} maxParticipants - Nombre max de participants
+ * @returns {Promise<Object|null>} - Session créée ou null en cas d'erreur
+ */
+const createAutoLiveSession = async (courseId, instructorId, courseTitle, startDate, endDate, maxParticipants) => {
+  try {
+    // Vérifier si une session existe déjà pour ce cours
+    const [existingSessions] = await pool.execute(
+      'SELECT id FROM live_sessions WHERE course_id = ? LIMIT 1',
+      [courseId]
+    );
+
+    if (existingSessions.length > 0) {
+      console.log(`⚠️ Une session live existe déjà pour le cours ${courseId}`);
+      return null;
+    }
+
+    // Générer le nom de salle Jitsi (temporaire, sera mis à jour avec l'ID de session)
+    const tempSessionId = Date.now();
+    const jitsiRoomName = JitsiService.generateRoomName(courseId, tempSessionId);
+    const jitsiRoomPassword = JitsiService.generateRoomPassword();
+
+    // Créer la session avec le titre par défaut
+    const sessionTitle = `Session principale - ${courseTitle}`;
+    
+    const [result] = await pool.execute(
+      `INSERT INTO live_sessions (
+        course_id, instructor_id, title, description,
+        scheduled_start_at, scheduled_end_at,
+        jitsi_room_name, jitsi_server_url, jitsi_room_password,
+        max_participants, is_recording_enabled, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled')`,
+      [
+        courseId,
+        instructorId,
+        sanitizeValue(sessionTitle),
+        sanitizeValue(`Session principale pour le cours "${courseTitle}"`),
+        convertToMySQLDateTime(startDate),
+        convertToMySQLDateTime(endDate),
+        jitsiRoomName,
+        process.env.JITSI_SERVER_URL || 'https://meet.jit.si',
+        jitsiRoomPassword,
+        maxParticipants || 50,
+        1 // Enregistrement activé par défaut
+      ]
+    );
+
+    const sessionId = result.insertId;
+
+    // Mettre à jour le nom de salle avec le vrai sessionId
+    const finalRoomName = JitsiService.generateRoomName(courseId, sessionId);
+    await pool.execute(
+      'UPDATE live_sessions SET jitsi_room_name = ? WHERE id = ?',
+      [finalRoomName, sessionId]
+    );
+
+    // Récupérer la session créée
+    const [sessions] = await pool.execute(
+      'SELECT * FROM live_sessions WHERE id = ?',
+      [sessionId]
+    );
+
+    console.log(`✅ Session live créée automatiquement pour le cours ${courseId} (session ID: ${sessionId})`);
+    return sessions[0] || null;
+
+  } catch (error) {
+    console.error('❌ Erreur lors de la création automatique de la session live:', error);
+    // Ne pas faire échouer la création du cours si la session échoue
+    return null;
+  }
+};
 
 const formatCourseRow = (row = {}) => {
   if (!row) {
@@ -20,7 +99,6 @@ const formatCourseRow = (row = {}) => {
     thumbnail_url: buildMediaUrl(row.thumbnail_url),
     video_url: buildMediaUrl(row.video_url),
     language: row.language,
-    difficulty: row.difficulty,
     duration_minutes: row.duration_minutes != null ? Number(row.duration_minutes) : null,
     price: row.price != null ? Number(row.price) : null,
     currency: row.currency,
@@ -77,7 +155,6 @@ const getAllCourses = async (req, res) => {
       page = 1, 
       limit = 10, 
       category, 
-      difficulty, 
       language = 'fr',
       search,
       sort = 'created_at',
@@ -94,11 +171,6 @@ const getAllCourses = async (req, res) => {
     if (category) {
       whereClause += ' AND c.category_id = ?';
       params.push(category);
-    }
-
-    if (difficulty) {
-      whereClause += ' AND c.difficulty = ?';
-      params.push(difficulty);
     }
 
     if (language) {
@@ -426,7 +498,6 @@ const createCourse = async (req, res) => {
       thumbnail_url,
       video_url,
       duration_minutes,
-      difficulty,
       language,
       price,
       currency,
@@ -482,10 +553,10 @@ const createCourse = async (req, res) => {
     const query = `
       INSERT INTO courses (
         title, description, short_description, instructor_id, category_id,
-        thumbnail_url, video_url, duration_minutes, difficulty, language,
+        thumbnail_url, video_url, duration_minutes, language,
         price, currency, max_students, enrollment_deadline, course_start_date, course_end_date,
         course_type, is_sequential, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')
     `;
 
     const [result] = await pool.execute(query, [
@@ -497,7 +568,6 @@ const createCourse = async (req, res) => {
       sanitizeValue(thumbnail_url),
       sanitizeValue(video_url),
       sanitizeValue(duration_minutes),
-      sanitizeValue(difficulty),
       sanitizeValue(language),
       sanitizeValue(price),
       sanitizeValue(currency),
@@ -509,12 +579,62 @@ const createCourse = async (req, res) => {
       sanitizeValue(is_sequential)
     ]);
 
+    const courseId = result.insertId;
+
+    // Si c'est un cours live, créer automatiquement une session Jitsi
+    let liveSession = null;
+    if (course_type === 'live' && course_start_date && course_end_date) {
+      console.log(`🔄 [Course Create] Création automatique de la session Jitsi pour le cours live ${courseId}...`);
+      liveSession = await createAutoLiveSession(
+        courseId,
+        instructor_id,
+        title,
+        course_start_date,
+        course_end_date,
+        max_students
+      );
+      
+      if (liveSession) {
+        console.log(`✅ [Course Create] Session Jitsi créée automatiquement (ID: ${liveSession.id}) pour le cours ${courseId}`);
+      } else {
+        console.log(`⚠️ [Course Create] Échec de la création automatique de la session pour le cours ${courseId}`);
+      }
+    }
+
+    // Préparer la réponse avec toutes les informations de la session
+    const responseData = {
+      course_id: courseId
+    };
+
+    // Si une session a été créée automatiquement, inclure toutes les informations
+    if (liveSession) {
+      responseData.live_session = {
+        id: liveSession.id,
+        title: liveSession.title,
+        description: liveSession.description,
+        scheduled_start_at: liveSession.scheduled_start_at,
+        scheduled_end_at: liveSession.scheduled_end_at,
+        jitsi_room_name: liveSession.jitsi_room_name,
+        jitsi_server_url: liveSession.jitsi_server_url,
+        max_participants: liveSession.max_participants,
+        is_recording_enabled: liveSession.is_recording_enabled === 1 || liveSession.is_recording_enabled === true,
+        status: liveSession.status,
+        created_at: liveSession.created_at
+      };
+      responseData.session_created_automatically = true;
+    } else if (course_type === 'live') {
+      // Si c'est un cours live mais qu'aucune session n'a été créée
+      responseData.live_session = null;
+      responseData.session_created_automatically = false;
+      responseData.session_creation_message = 'La session n\'a pas pu être créée automatiquement. Veuillez la créer manuellement.';
+    }
+
     res.status(201).json({
       success: true,
-      message: 'Cours créé avec succès',
-      data: {
-        course_id: result.insertId
-      }
+      message: liveSession 
+        ? 'Cours créé avec succès. Session Jitsi créée automatiquement.' 
+        : 'Cours créé avec succès',
+      data: responseData
     });
 
   } catch (error) {
@@ -557,7 +677,7 @@ const updateCourse = async (req, res) => {
     // Construire dynamiquement la requête de mise à jour
     const allowedFields = [
       'title', 'description', 'short_description', 'category_id',
-      'thumbnail_url', 'video_url', 'duration_minutes', 'difficulty',
+      'thumbnail_url', 'video_url', 'duration_minutes',
       'language', 'price', 'currency', 'max_students',
       'enrollment_deadline', 'course_start_date', 'course_end_date',
       'is_published', 'is_featured', 'course_type', 'is_sequential' // NOUVEAU
@@ -615,9 +735,75 @@ const updateCourse = async (req, res) => {
 
     await pool.execute(query, values);
 
+    // Récupérer les données du cours mis à jour pour vérifier si on doit créer une session
+    const [updatedCourses] = await pool.execute(
+      'SELECT id, title, course_type, course_start_date, course_end_date, max_students, instructor_id FROM courses WHERE id = ?',
+      [id]
+    );
+
+    const updatedCourse = updatedCourses[0];
+
+    // Si le cours est maintenant un cours live, vérifier si une session existe
+    let liveSession = null;
+    if (updatedCourse && updatedCourse.course_type === 'live' && 
+        updatedCourse.course_start_date && updatedCourse.course_end_date) {
+      
+      // Vérifier si une session existe déjà
+      const [existingSessions] = await pool.execute(
+        'SELECT * FROM live_sessions WHERE course_id = ? ORDER BY created_at DESC LIMIT 1',
+        [id]
+      );
+
+      if (existingSessions.length > 0) {
+        // Une session existe déjà, la retourner
+        liveSession = existingSessions[0];
+        console.log(`ℹ️ [Course Update] Session existante trouvée pour le cours ${id} (session ID: ${liveSession.id})`);
+      } else {
+        // Si aucune session n'existe, créer automatiquement une session
+        console.log(`🔄 [Course Update] Création automatique de la session Jitsi pour le cours live ${id}...`);
+        liveSession = await createAutoLiveSession(
+          id,
+          updatedCourse.instructor_id,
+          updatedCourse.title,
+          updatedCourse.course_start_date,
+          updatedCourse.course_end_date,
+          updatedCourse.max_students
+        );
+
+        if (liveSession) {
+          console.log(`✅ [Course Update] Session live créée automatiquement lors de la mise à jour du cours ${id} (session ID: ${liveSession.id})`);
+        }
+      }
+    }
+
+    // Préparer la réponse
+    const responseData = {
+      course_id: id
+    };
+
+    // Si une session existe ou a été créée, inclure ses informations
+    if (liveSession) {
+      responseData.live_session = {
+        id: liveSession.id,
+        title: liveSession.title,
+        description: liveSession.description,
+        scheduled_start_at: liveSession.scheduled_start_at,
+        scheduled_end_at: liveSession.scheduled_end_at,
+        jitsi_room_name: liveSession.jitsi_room_name,
+        jitsi_server_url: liveSession.jitsi_server_url,
+        max_participants: liveSession.max_participants,
+        is_recording_enabled: liveSession.is_recording_enabled === 1 || liveSession.is_recording_enabled === true,
+        status: liveSession.status,
+        created_at: liveSession.created_at
+      };
+    }
+
     res.json({
       success: true,
-      message: 'Cours mis à jour avec succès'
+      message: liveSession 
+        ? 'Cours mis à jour avec succès. Session Jitsi disponible.' 
+        : 'Cours mis à jour avec succès',
+      data: responseData
     });
 
   } catch (error) {
@@ -689,7 +875,7 @@ const addLesson = async (req, res) => {
       order_index,
       order,
       is_required = true,
-      is_published = false
+      is_published
     } = req.body;
     const userId = req.user?.id ?? req.user?.userId;
 
@@ -731,6 +917,8 @@ const addLesson = async (req, res) => {
       finalOrderIndex = nextOrder;
     }
 
+    const published = typeof is_published === 'boolean' ? is_published : true;
+
     const query = `
       INSERT INTO lessons (
         course_id, module_id, title, description, content, content_text, content_url,
@@ -753,7 +941,7 @@ const addLesson = async (req, res) => {
       sanitizeValue(content_type),
       sanitizeValue(media_file_id) || null,
       sanitizeValue(is_required) !== false,
-      sanitizeValue(is_published) === true
+      sanitizeValue(published) === true
     ]);
 
     const newLessonId = result.insertId;
@@ -1285,7 +1473,6 @@ const getFavoriteCourses = async (req, res) => {
       limit = 10,
       search = '',
       category,
-      difficulty,
       sort = 'created_at',
       order = 'DESC'
     } = req.query;
@@ -1314,12 +1501,6 @@ const getFavoriteCourses = async (req, res) => {
     if (category) {
       whereClause += ' AND c.category_id = ?';
       params.push(category);
-    }
-
-    // Filtre par difficulté
-    if (difficulty) {
-      whereClause += ' AND c.difficulty = ?';
-      params.push(difficulty);
     }
 
     // Validation du tri
@@ -1862,7 +2043,6 @@ const getInstructorCourses = async (req, res) => {
       description: course.description,
       thumbnail_url: buildMediaUrl(course.thumbnail_url),
       price: course.price,
-      difficulty: course.difficulty,
       language: course.language,
       duration_minutes: course.duration_minutes,
       is_published: course.is_published,

@@ -204,23 +204,161 @@ router.post('/upload',
 // Upload multiple files
 router.post('/upload-bulk',
   authenticateToken,
-  // D'abord parser les champs du formulaire (sans les fichiers) pour obtenir content_type
-  (req, res, next) => {
+  // Parser tous les champs (texte + fichiers) avec .any() pour accepter n'importe quel nom de champ
+  async (req, res, next) => {
     const multer = require('multer');
-    const parseFields = multer().none();
-    parseFields(req, res, (err) => {
+    const path = require('path');
+    const fs = require('fs').promises;
+    
+    // Configuration temporaire pour parser tous les fichiers (validation faite après)
+    const tempStorage = multer.diskStorage({
+      destination: async (req, file, cb) => {
+        try {
+          const tempDir = path.join(__dirname, '../../uploads/temp');
+          await fs.mkdir(tempDir, { recursive: true });
+          cb(null, tempDir);
+        } catch (error) {
+          cb(error);
+        }
+      },
+      filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        const ext = path.extname(file.originalname);
+        cb(null, `temp-${uniqueSuffix}${ext}`);
+      }
+    });
+    
+    // Parser avec .any() pour accepter n'importe quel nom de champ (files, files[], etc.)
+    const parseAll = multer({ 
+      storage: tempStorage,
+      limits: { fileSize: 150 * 1024 * 1024 } // 150MB max
+    }).any();
+    
+    parseAll(req, res, async (err) => {
       if (err) return next(err);
       
-      const { content_type } = req.body;
+      // Récupérer content_type depuis req.body ou req.query
+      // Note: avec multer().any(), les champs texte devraient être dans req.body
+      let content_type = req.body?.content_type || req.query?.content_type;
+      
+      // Si content_type n'est pas fourni, essayer de le déduire depuis le premier fichier
+      if (!content_type && req.files && req.files.length > 0) {
+        const firstFile = req.files[0];
+        const mimeType = firstFile.mimetype;
+        
+        // Mapper les types MIME vers content_type
+        const mimeToContentType = {
+          'video/mp4': 'video',
+          'video/webm': 'video',
+          'video/quicktime': 'video',
+          'video/x-msvideo': 'video',
+          'video/x-matroska': 'video',
+          'application/pdf': 'document',
+          'application/msword': 'document',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'document',
+          'application/vnd.ms-excel': 'document',
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'document',
+          'application/vnd.ms-powerpoint': 'presentation',
+          'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'presentation',
+          'audio/mpeg': 'audio',
+          'audio/wav': 'audio',
+          'audio/ogg': 'audio',
+          'audio/mp4': 'audio',
+          'image/jpeg': 'image',
+          'image/png': 'image',
+          'image/gif': 'image',
+          'image/webp': 'image',
+          'application/zip': 'h5p'
+        };
+        
+        content_type = mimeToContentType[mimeType];
+      }
+      
+      // Debug: logger les données reçues (uniquement en développement)
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('📤 Upload bulk - req.body:', req.body);
+        console.log('📤 Upload bulk - req.query:', req.query);
+        console.log('📤 Upload bulk - req.files count:', req.files?.length || 0);
+        console.log('📤 Upload bulk - content_type détecté:', content_type);
+      }
+      
       if (!content_type) {
+        // Nettoyer les fichiers temporaires si content_type manquant
+        if (req.files) {
+          for (const file of req.files) {
+            try {
+              await fs.unlink(file.path);
+            } catch (e) {
+              // Ignorer
+            }
+          }
+        }
         return res.status(400).json({
           success: false,
-          message: 'content_type est requis'
+          message: 'content_type est requis. Envoyez-le dans le FormData avec la clé "content_type" ou dans les query params.',
+          debug: process.env.NODE_ENV !== 'production' ? {
+            bodyKeys: Object.keys(req.body || {}),
+            queryKeys: Object.keys(req.query || {}),
+            filesCount: req.files?.length || 0,
+            firstFileMime: req.files?.[0]?.mimetype
+          } : undefined
         });
       }
       
-      const upload = MediaService.getMulterConfig(content_type).array('files', 10);
-      upload(req, res, next);
+      // Valider les types MIME selon content_type
+      const allowedMimes = MediaService.getAllowedMimeTypes(content_type);
+      if (allowedMimes.length > 0 && req.files) {
+        const invalidFiles = req.files.filter(file => !allowedMimes.includes(file.mimetype));
+        if (invalidFiles.length > 0) {
+          // Nettoyer les fichiers temporaires
+          for (const file of req.files) {
+            try {
+              await fs.unlink(file.path);
+            } catch (e) {
+              // Ignorer
+            }
+          }
+          return res.status(400).json({
+            success: false,
+            message: `Type de fichier non autorisé. Types acceptés: ${allowedMimes.join(', ')}`
+          });
+        }
+      }
+      
+      // S'assurer que content_type est dans req.body pour le contrôleur
+      req.body.content_type = content_type;
+      
+      // Déplacer les fichiers vers le bon dossier selon content_type
+      if (req.files && req.files.length > 0) {
+        const finalDir = path.join(__dirname, '../../uploads', MediaService.getFolderByContentType(content_type));
+        await fs.mkdir(finalDir, { recursive: true });
+        
+        for (const file of req.files) {
+          try {
+            const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+            const ext = path.extname(file.originalname);
+            const finalFilename = `${req.user.id || 'anon'}-${uniqueSuffix}${ext}`;
+            const finalPath = path.join(finalDir, finalFilename);
+            
+            await fs.rename(file.path, finalPath);
+            
+            // Mettre à jour les propriétés du fichier
+            file.destination = finalDir;
+            file.filename = finalFilename;
+            file.path = finalPath;
+          } catch (error) {
+            console.error('Erreur lors du déplacement du fichier:', error);
+            // Nettoyer en cas d'erreur
+            try {
+              await fs.unlink(file.path);
+            } catch (e) {
+              // Ignorer
+            }
+          }
+        }
+      }
+      
+      next();
     });
   },
   mediaController.uploadBulkFiles

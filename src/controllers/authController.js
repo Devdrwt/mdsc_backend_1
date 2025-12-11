@@ -719,8 +719,15 @@ exports.getProfile = async (req, res) => {
   try {
     const userId = req.user?.id ?? req.user?.userId;
 
+    // Récupérer toutes les informations de l'utilisateur
     const [users] = await connection.query(
-      'SELECT id, email, first_name, last_name, role, is_email_verified, created_at, last_login_at FROM users WHERE id = ?',
+      `SELECT 
+        id, email, first_name, last_name, role, 
+        is_email_verified, email_verified_at,
+        is_active, phone, organization, country, npi,
+        created_at, updated_at, last_login_at 
+       FROM users 
+       WHERE id = ?`,
       [userId]
     );
 
@@ -731,35 +738,161 @@ exports.getProfile = async (req, res) => {
       });
     }
 
-    // Récupérer le dernier avatar depuis user_files
-    const [avatarRows] = await connection.query(
-      `SELECT file_name
+    const user = users[0];
+    const apiUrl = process.env.API_URL || `http://localhost:${process.env.PORT || 5000}`;
+
+    // Récupérer tous les fichiers de l'utilisateur
+    const [filesRows] = await connection.query(
+      `SELECT 
+        id, file_type, file_name, original_name, file_size,
+        mime_type, is_verified, verified_at, created_at
        FROM user_files
-       WHERE user_id = ? AND file_type = 'profile_picture'
-       ORDER BY created_at DESC
-       LIMIT 1`,
+       WHERE user_id = ?
+       ORDER BY file_type, created_at DESC`,
       [userId]
     );
 
-    const apiUrl = process.env.API_URL || `http://localhost:${process.env.PORT || 5000}`;
-    const avatarUrl = avatarRows.length && avatarRows[0].file_name
-      ? `${apiUrl}/uploads/profiles/${avatarRows[0].file_name}`
-      : null;
+    // Organiser les fichiers par type
+    const files = {
+      profile_picture: null,
+      identity_document: null,
+      certificate: [],
+      other: []
+    };
+
+    filesRows.forEach(file => {
+      const fileUrl = file.file_name 
+        ? `${apiUrl}/uploads/profiles/${file.file_name}`
+        : null;
+      
+      const fileData = {
+        id: file.id,
+        fileName: file.file_name,
+        originalName: file.original_name,
+        fileSize: file.file_size,
+        mimeType: file.mime_type,
+        isVerified: Boolean(file.is_verified),
+        verifiedAt: file.verified_at,
+        createdAt: file.created_at,
+        url: fileUrl
+      };
+
+      if (file.file_type === 'profile_picture') {
+        files.profile_picture = fileData;
+      } else if (file.file_type === 'identity_document') {
+        files.identity_document = fileData;
+      } else if (file.file_type === 'certificate') {
+        files.certificate.push(fileData);
+      } else {
+        files.other.push(fileData);
+      }
+    });
+
+    // Récupérer les statistiques selon le rôle
+    let statistics = {};
+
+    if (user.role === 'student') {
+      // Statistiques étudiant
+      const [enrollmentStats] = await connection.query(
+        `SELECT 
+          COUNT(*) as total_enrollments,
+          SUM(CASE WHEN completed_at IS NOT NULL THEN 1 ELSE 0 END) as completed_courses,
+          SUM(CASE WHEN completed_at IS NULL THEN 1 ELSE 0 END) as active_courses,
+          AVG(progress_percentage) as avg_progress
+         FROM enrollments
+         WHERE user_id = ? AND is_active = TRUE`,
+        [userId]
+      );
+
+      const [badgeStats] = await connection.query(
+        `SELECT COUNT(*) as total_badges
+         FROM user_badges
+         WHERE user_id = ?`,
+        [userId]
+      );
+
+      const [certificateStats] = await connection.query(
+        `SELECT COUNT(*) as total_certificates
+         FROM certificates
+         WHERE user_id = ?`,
+        [userId]
+      );
+
+      statistics = {
+        enrollments: {
+          total: Number(enrollmentStats[0]?.total_enrollments || 0),
+          completed: Number(enrollmentStats[0]?.completed_courses || 0),
+          active: Number(enrollmentStats[0]?.active_courses || 0),
+          averageProgress: Number(enrollmentStats[0]?.avg_progress || 0)
+        },
+        badges: {
+          total: Number(badgeStats[0]?.total_badges || 0)
+        },
+        certificates: {
+          total: Number(certificateStats[0]?.total_certificates || 0)
+        }
+      };
+    } else if (user.role === 'instructor') {
+      // Statistiques instructeur
+      const [courseStats] = await connection.query(
+        `SELECT 
+          COUNT(*) as total_courses,
+          SUM(CASE WHEN is_published = TRUE THEN 1 ELSE 0 END) as published_courses,
+          SUM(CASE WHEN is_published = FALSE THEN 1 ELSE 0 END) as draft_courses
+         FROM courses
+         WHERE instructor_id = ?`,
+        [userId]
+      );
+
+      const [studentStats] = await connection.query(
+        `SELECT COUNT(DISTINCT e.user_id) as total_students
+         FROM enrollments e
+         JOIN courses c ON e.course_id = c.id
+         WHERE c.instructor_id = ? AND e.is_active = TRUE`,
+        [userId]
+      );
+
+      statistics = {
+        courses: {
+          total: Number(courseStats[0]?.total_courses || 0),
+          published: Number(courseStats[0]?.published_courses || 0),
+          drafts: Number(courseStats[0]?.draft_courses || 0)
+        },
+        students: {
+          total: Number(studentStats[0]?.total_students || 0)
+        }
+      };
+    }
 
     res.json({
       success: true,
       data: {
         user: {
-          id: users[0].id,
-          email: users[0].email,
-          firstName: users[0].first_name,
-          lastName: users[0].last_name,
-          role: users[0].role,
-          isEmailVerified: users[0].is_email_verified,
-          createdAt: users[0].created_at,
-          lastLoginAt: users[0].last_login_at,
-          avatarUrl
-        }
+          id: user.id,
+          email: user.email,
+          firstName: user.first_name,
+          lastName: user.last_name,
+          fullName: `${user.first_name} ${user.last_name}`,
+          role: user.role,
+          phone: user.phone,
+          organization: user.organization,
+          country: user.country,
+          npi: user.npi,
+          isEmailVerified: Boolean(user.is_email_verified),
+          emailVerifiedAt: user.email_verified_at,
+          isActive: Boolean(user.is_active),
+          createdAt: user.created_at,
+          updatedAt: user.updated_at,
+          lastLoginAt: user.last_login_at,
+          avatarUrl: files.profile_picture?.url || null
+        },
+        files: {
+          profilePicture: files.profile_picture,
+          identityDocument: files.identity_document,
+          certificates: files.certificate,
+          other: files.other
+        },
+        statistics
       }
     });
 
@@ -767,7 +900,8 @@ exports.getProfile = async (req, res) => {
     console.error('Erreur get profile:', error);
     res.status(500).json({
       success: false,
-      message: 'Erreur lors de la récupération du profil'
+      message: 'Erreur lors de la récupération du profil',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   } finally {
     connection.release();
@@ -779,8 +913,16 @@ exports.updateProfile = async (req, res) => {
   const connection = await pool.getConnection();
   
   try {
-    const { firstName, lastName, email } = req.body;
-    const userId = req.user.userId;
+    const { 
+      firstName, 
+      lastName, 
+      email, 
+      phone, 
+      organization, 
+      country, 
+      npi 
+    } = req.body;
+    const userId = req.user?.id ?? req.user?.userId;
 
     // Vérifier que l'email n'est pas déjà utilisé par un autre utilisateur
     if (email) {
@@ -812,6 +954,22 @@ exports.updateProfile = async (req, res) => {
     if (email !== undefined) {
       updates.push('email = ?');
       values.push(email);
+    }
+    if (phone !== undefined) {
+      updates.push('phone = ?');
+      values.push(phone || null);
+    }
+    if (organization !== undefined) {
+      updates.push('organization = ?');
+      values.push(organization || null);
+    }
+    if (country !== undefined) {
+      updates.push('country = ?');
+      values.push(country || null);
+    }
+    if (npi !== undefined) {
+      updates.push('npi = ?');
+      values.push(npi || null);
     }
 
     if (updates.length === 0) {

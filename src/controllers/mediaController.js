@@ -101,7 +101,12 @@ const uploadBulkFiles = async (req, res) => {
       });
     }
 
-    if (!req.files || req.files.length === 0) {
+    // req.files peut être un tableau (multer.any) ou un objet (multer.fields)
+    const filesArray = Array.isArray(req.files)
+      ? req.files
+      : (req.files ? Object.values(req.files).flat() : []);
+
+    if (!filesArray || filesArray.length === 0) {
       return res.status(400).json({
         success: false,
         message: 'Aucun fichier fourni'
@@ -116,7 +121,7 @@ const uploadBulkFiles = async (req, res) => {
     }
 
     const results = await MediaService.uploadBulkFiles(
-      req.files,
+      filesArray,
       content_type,
       userId,
       lesson_id || null,

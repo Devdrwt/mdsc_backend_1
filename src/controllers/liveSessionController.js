@@ -59,6 +59,23 @@ const createSession = async (req, res) => {
       });
     }
 
+    // Vérifier si une session existe déjà pour ce cours (éviter les doublons)
+    const [existingSessions] = await pool.execute(
+      'SELECT * FROM live_sessions WHERE course_id = ? ORDER BY created_at DESC LIMIT 1',
+      [courseId]
+    );
+
+    if (existingSessions.length > 0) {
+      // Une session existe déjà, retourner la session existante au lieu d'en créer une nouvelle
+      console.log(`ℹ️ [LiveSession] Session existante trouvée pour le cours ${courseId} (session ID: ${existingSessions[0].id})`);
+      return res.status(200).json({
+        success: true,
+        message: 'Une session existe déjà pour ce cours',
+        data: existingSessions[0],
+        is_existing: true
+      });
+    }
+
     // Générer le nom de salle Jitsi (temporaire, sera mis à jour avec l'ID de session)
     const tempSessionId = Date.now();
     const jitsiRoomName = JitsiService.generateRoomName(courseId, tempSessionId);
@@ -452,7 +469,7 @@ const startSession = async (req, res) => {
       [sessionId]
     );
 
-    // Générer le JWT pour l'instructeur
+    // Générer le JWT pour l'instructeur (avec rôle moderator pour les droits de modération)
     const user = req.user;
     const expiresAt = new Date(session.scheduled_end_at);
     const jwt = JitsiService.generateJWT({
@@ -460,7 +477,7 @@ const startSession = async (req, res) => {
       userId: userId,
       userName: `${user.first_name || ''} ${user.last_name || ''}`.trim(),
       userEmail: user.email || '',
-      role: 'instructor',
+      role: 'moderator', // Utiliser 'moderator' pour donner les droits de modération
       expiresAt
     });
 
@@ -706,7 +723,7 @@ const joinSession = async (req, res) => {
       userId: userId,
       userName: `${user.first_name || ''} ${user.last_name || ''}`.trim(),
       userEmail: user.email || '',
-      role: session.instructor_id === userId ? 'instructor' : 'participant',
+      role: session.instructor_id === userId ? 'moderator' : 'participant', // Utiliser 'moderator' pour l'instructeur
       expiresAt
     });
 
@@ -951,7 +968,7 @@ const getJitsiToken = async (req, res) => {
     // Déterminer le rôle réel
     let actualRole = role;
     if (session.instructor_id === userId) {
-      actualRole = 'instructor';
+      actualRole = 'moderator'; // Utiliser 'moderator' pour donner les droits de modération à l'instructeur
     }
 
     // Générer le JWT

@@ -679,16 +679,43 @@ const getEvaluation = async (req, res) => {
            ORDER BY order_index ASC`,
           [question.id]
         );
+        
+        // Formater les réponses selon le type de question
+        let formattedAnswers = answers.map(a => ({
+          id: a.id,
+          text: a.answer_text,
+          isCorrect: a.is_correct === 1 || a.is_correct === true,
+          orderIndex: a.order_index
+        }));
+        
+        // Déterminer correct_answer selon le type de question (logique identique aux quiz)
+        let correctAnswer = null;
+        if (question.question_type === 'true_false') {
+          // Pour vrai/faux, trouver la réponse correcte et la convertir en "true" ou "false"
+          // MySQL retourne is_correct comme 0 ou 1 (number) ou true/false (boolean)
+          const correct = answers.find(a => a.is_correct === 1 || a.is_correct === true);
+          if (correct) {
+            correctAnswer = correct.answer_text === 'Vrai' ? 'true' : 'false';
+          }
+        } else if (question.question_type === 'multiple_choice') {
+          // Pour QCM, retourner le texte de la réponse correcte
+          const correct = answers.find(a => a.is_correct === 1 || a.is_correct === true);
+          if (correct) {
+            correctAnswer = correct.answer_text;
+          }
+        } else if (question.question_type === 'short_answer') {
+          // Pour réponse courte, retourner la réponse correcte
+          if (answers.length > 0) {
+            correctAnswer = answers[0].answer_text;
+          }
+        }
+        
         return {
           ...question,
           points: Number(question.points) || 0, // S'assurer que points est un nombre
           order_index: Number(question.order_index) || 0,
-          answers: answers.map(a => ({
-            id: a.id,
-            text: a.answer_text,
-            isCorrect: a.is_correct === 1 || a.is_correct === true,
-            orderIndex: a.order_index
-          }))
+          answers: formattedAnswers,
+          correct_answer: correctAnswer // Ajouter le champ correct_answer
         };
       })
     );
@@ -1431,8 +1458,40 @@ const createEvaluation = async (req, res) => {
     if (questions && Array.isArray(questions)) {
       const { sanitizeValue } = require('../utils/sanitize');
       
+      // ÉTAPE 1: Normaliser les questions (comme dans moduleQuizController)
       for (let i = 0; i < questions.length; i++) {
         const question = questions[i];
+        const questionType = question.question_type || 'multiple_choice';
+        
+        // Pour les questions Vrai/Faux : normaliser correct_answer en booléen
+        if (questionType === 'true_false' && question.correct_answer !== undefined) {
+          // Accepter différents formats : true/false, "true"/"false", "Vrai"/"Faux", 1/0
+          if (typeof question.correct_answer === 'string') {
+            const answerLower = question.correct_answer.toLowerCase().trim();
+            if (answerLower === 'vrai' || answerLower === 'true' || answerLower === '1') {
+              question.correct_answer = true;
+            } else if (answerLower === 'faux' || answerLower === 'false' || answerLower === '0') {
+              question.correct_answer = false;
+            }
+          } else if (question.correct_answer === 1 || question.correct_answer === '1') {
+            question.correct_answer = true;
+          } else if (question.correct_answer === 0 || question.correct_answer === '0') {
+            question.correct_answer = false;
+          }
+        }
+        
+        // Pour les questions à réponse courte : s'assurer que correct_answer est une chaîne
+        if (questionType === 'short_answer' && question.correct_answer !== undefined) {
+          if (typeof question.correct_answer !== 'string') {
+            question.correct_answer = String(question.correct_answer);
+          }
+        }
+      }
+      
+      // ÉTAPE 2: Créer les questions et réponses (comme dans moduleQuizController)
+      for (let i = 0; i < questions.length; i++) {
+        const question = questions[i];
+        const questionType = question.question_type || 'multiple_choice';
         
         // Pour les évaluations finales, on utilise course_evaluation_id (quiz_id peut être NULL)
         const [questionResult] = await pool.execute(
@@ -1443,7 +1502,7 @@ const createEvaluation = async (req, res) => {
             null, // NULL pour les évaluations finales
             evaluationId, // Lien vers l'évaluation finale via course_evaluation_id
             sanitizeValue(question.question_text),
-            sanitizeValue(question.question_type || 'multiple_choice'),
+            sanitizeValue(questionType),
             sanitizeValue(question.points || 1),
             question.order_index !== undefined ? question.order_index : i
           ]
@@ -1451,8 +1510,8 @@ const createEvaluation = async (req, res) => {
 
         const questionId = questionResult.insertId;
 
-        // Gérer les réponses selon le type de question
-        if (question.question_type === 'multiple_choice' && question.options && Array.isArray(question.options)) {
+        // Gérer les réponses selon le type de question (logique identique aux quiz)
+        if (questionType === 'multiple_choice' && question.options && Array.isArray(question.options)) {
           // QCM : créer plusieurs réponses depuis options
           for (let j = 0; j < question.options.length; j++) {
             const option = question.options[j];
@@ -1460,25 +1519,26 @@ const createEvaluation = async (req, res) => {
                              (typeof question.correct_answer === 'string' && question.correct_answer.trim() === option.trim());
             await pool.execute(
               `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
-              [questionId, sanitizeValue(option), isCorrect, j]
+              [questionId, sanitizeValue(option), isCorrect ? 1 : 0, j]
             );
           }
-        } else if (question.question_type === 'true_false' && question.correct_answer !== undefined) {
-          // Vrai/Faux : créer deux réponses (true et false)
+        } else if (questionType === 'true_false' && question.correct_answer !== undefined) {
+          // Vrai/Faux : créer deux réponses (logique identique aux quiz)
+          // À ce stade, correct_answer est déjà normalisé en booléen (true/false)
           const correctAnswer = question.correct_answer === true || question.correct_answer === 'true';
           await pool.execute(
             `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
-            [questionId, 'Vrai', correctAnswer, 0]
+            [questionId, 'Vrai', correctAnswer ? 1 : 0, 0]
           );
           await pool.execute(
             `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
-            [questionId, 'Faux', !correctAnswer, 1]
+            [questionId, 'Faux', correctAnswer ? 0 : 1, 1]
           );
-        } else if (question.question_type === 'short_answer' && question.correct_answer) {
+        } else if (questionType === 'short_answer' && question.correct_answer) {
           // Réponse courte : stocker la réponse correcte dans quiz_answers
           await pool.execute(
             `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
-            [questionId, sanitizeValue(question.correct_answer), true, 0]
+            [questionId, sanitizeValue(question.correct_answer), 1, 0]
           );
         }
       }
@@ -1744,10 +1804,10 @@ const getCourseEvaluations = async (req, res) => {
             text: answer.answer_text,
             is_correct: answer.is_correct === 1 || answer.is_correct === true
           }));
-          // Trouver la réponse correcte (true ou false)
+          // Trouver la réponse correcte (true ou false) - logique identique aux quiz
           const correct = answers.find(a => a.is_correct === 1 || a.is_correct === true);
           if (correct) {
-            correctAnswer = correct.text === 'Vrai' ? 'true' : 'false';
+            correctAnswer = correct.answer_text === 'Vrai' ? 'true' : 'false';
           }
         } else if (question.question_type === 'short_answer') {
           // Pour réponse courte, stocker la réponse correcte
@@ -1887,9 +1947,40 @@ const updateEvaluation = async (req, res) => {
         [evaluationId]
       );
 
-      // Créer les nouvelles questions (même logique que createEvaluation)
+      // ÉTAPE 1: Normaliser les questions (comme dans moduleQuizController)
       for (let i = 0; i < questions.length; i++) {
         const question = questions[i];
+        const questionType = question.question_type || 'multiple_choice';
+        
+        // Pour les questions Vrai/Faux : normaliser correct_answer en booléen
+        if (questionType === 'true_false' && question.correct_answer !== undefined) {
+          // Accepter différents formats : true/false, "true"/"false", "Vrai"/"Faux", 1/0
+          if (typeof question.correct_answer === 'string') {
+            const answerLower = question.correct_answer.toLowerCase().trim();
+            if (answerLower === 'vrai' || answerLower === 'true' || answerLower === '1') {
+              question.correct_answer = true;
+            } else if (answerLower === 'faux' || answerLower === 'false' || answerLower === '0') {
+              question.correct_answer = false;
+            }
+          } else if (question.correct_answer === 1 || question.correct_answer === '1') {
+            question.correct_answer = true;
+          } else if (question.correct_answer === 0 || question.correct_answer === '0') {
+            question.correct_answer = false;
+          }
+        }
+        
+        // Pour les questions à réponse courte : s'assurer que correct_answer est une chaîne
+        if (questionType === 'short_answer' && question.correct_answer !== undefined) {
+          if (typeof question.correct_answer !== 'string') {
+            question.correct_answer = String(question.correct_answer);
+          }
+        }
+      }
+      
+      // ÉTAPE 2: Créer les nouvelles questions et réponses (logique identique aux quiz)
+      for (let i = 0; i < questions.length; i++) {
+        const question = questions[i];
+        const questionType = question.question_type || 'multiple_choice';
         
         const [questionResult] = await pool.execute(
           `INSERT INTO quiz_questions (
@@ -1899,7 +1990,7 @@ const updateEvaluation = async (req, res) => {
             null,
             evaluationId,
             sanitizeValue(question.question_text),
-            sanitizeValue(question.question_type || 'multiple_choice'),
+            sanitizeValue(questionType),
             sanitizeValue(question.points || 1),
             sanitizeValue(question.order_index !== undefined ? question.order_index : i)
           ]
@@ -1907,31 +1998,33 @@ const updateEvaluation = async (req, res) => {
 
         const questionId = questionResult.insertId;
 
-        // Gérer les réponses selon le type de question
-        if (question.question_type === 'multiple_choice' && question.options && Array.isArray(question.options)) {
+        // Gérer les réponses selon le type de question (logique identique aux quiz)
+        if (questionType === 'multiple_choice' && question.options && Array.isArray(question.options)) {
           for (let j = 0; j < question.options.length; j++) {
             const option = question.options[j];
             const isCorrect = question.correct_answer === option || 
                              (typeof question.correct_answer === 'string' && question.correct_answer.trim() === option.trim());
             await pool.execute(
               `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
-              [questionId, sanitizeValue(option), isCorrect, j]
+              [questionId, sanitizeValue(option), isCorrect ? 1 : 0, j]
             );
           }
-        } else if (question.question_type === 'true_false' && question.correct_answer !== undefined) {
+        } else if (questionType === 'true_false' && question.correct_answer !== undefined) {
+          // Vrai/Faux : créer deux réponses (logique identique aux quiz)
+          // À ce stade, correct_answer est déjà normalisé en booléen (true/false)
           const correctAnswer = question.correct_answer === true || question.correct_answer === 'true';
           await pool.execute(
             `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
-            [questionId, 'Vrai', correctAnswer, 0]
+            [questionId, 'Vrai', correctAnswer ? 1 : 0, 0]
           );
           await pool.execute(
             `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
-            [questionId, 'Faux', !correctAnswer, 1]
+            [questionId, 'Faux', correctAnswer ? 0 : 1, 1]
           );
-        } else if (question.question_type === 'short_answer' && question.correct_answer) {
+        } else if (questionType === 'short_answer' && question.correct_answer) {
           await pool.execute(
             `INSERT INTO quiz_answers (question_id, answer_text, is_correct, order_index) VALUES (?, ?, ?, ?)`,
-            [questionId, sanitizeValue(question.correct_answer), true, 0]
+            [questionId, sanitizeValue(question.correct_answer), 1, 0]
           );
         }
       }

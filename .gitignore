@@ -42,3 +42,5 @@ build/
 uploads/
 !uploads/.gitkeep
 
+# Docs locaux à ne pas versionner
+local_docs/

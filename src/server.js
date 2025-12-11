@@ -8,6 +8,7 @@ if (!process.env.GOBIPAY_PLATFORM_MONEY) warnMissing.push('GOBIPAY_PLATFORM_MONE
 const express = require('express');
 const cors = require('cors');
 const session = require('express-session');
+const client = require('prom-client');
 
 // Fallback loader: si certaines variables manquent, lire manuellement le .env
 try {
@@ -81,6 +82,10 @@ const adminPaymentConfigRoutes = require('./routes/adminPaymentConfigRoutes');
 const reminderRoutes = require('./routes/reminderRoutes');
 
 const app = express();
+
+// Metrics Prometheus
+const metricsRegister = new client.Registry();
+client.collectDefaultMetrics({ register: metricsRegister });
 
 // Middleware
 // CORS avancé: support liste d'origines (FRONTEND_URLS=sep par virgules) et credentials
@@ -387,6 +392,17 @@ app.use('/api', ratingRoutes);
 app.use('/api', forumRoutes);
 app.use('/api', liveSessionRoutes);
 app.use('/api/testimonials', testimonialsRoutes);
+
+// Endpoint Prometheus
+app.get('/metrics', async (req, res) => {
+  try {
+    res.set('Content-Type', metricsRegister.contentType);
+    res.end(await metricsRegister.metrics());
+  } catch (e) {
+    console.error('❌ Erreur metrics:', e);
+    res.status(500).end('Metrics error');
+  }
+});
 
 // Gestion des erreurs 404
 app.use((req, res) => {

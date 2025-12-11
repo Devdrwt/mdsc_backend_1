@@ -14,3 +14,4 @@ MODIFY COLUMN payment_method ENUM('card', 'mobile_money', 'bank_transfer', 'cash
 -- UPDATE payments SET payment_method = 'other' WHERE payment_method NOT IN ('card', 'mobile_money', 'bank_transfer', 'cash', 'other', 'kkiapay', 'gobipay', 'fedapay');
 
 
+

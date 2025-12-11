@@ -16,6 +16,7 @@ async function migrateUserFiles() {
         file_path VARCHAR(500) NOT NULL,
         file_size INT NOT NULL,
         mime_type VARCHAR(100) NOT NULL,
+        storage_type ENUM('minio', 's3', 'local') DEFAULT 'local',
         is_verified BOOLEAN DEFAULT FALSE,
         verified_at TIMESTAMP NULL,
         verified_by INT NULL,
@@ -25,7 +26,8 @@ async function migrateUserFiles() {
         FOREIGN KEY (verified_by) REFERENCES users(id) ON DELETE SET NULL,
         INDEX idx_user (user_id),
         INDEX idx_type (file_type),
-        INDEX idx_verified (is_verified)
+        INDEX idx_verified (is_verified),
+        INDEX idx_storage_type (storage_type)
       )
     `);
     

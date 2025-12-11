@@ -80,10 +80,52 @@ const uploadFile = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Erreur lors de l\'upload:', error);
+    console.error('❌ [MEDIA] ========== ERREUR UPLOAD (CONTROLLER) ==========');
+    console.error('❌ [MEDIA] Erreur brute:', error);
+    console.error('❌ [MEDIA] Type d\'erreur:', error.constructor.name);
+    console.error('❌ [MEDIA] Détails:', {
+      message: error.message,
+      code: error.code,
+      name: error.name,
+      stack: error.stack, // Stack complet
+      originalError: error.originalError ? {
+        message: error.originalError.message,
+        code: error.originalError.code,
+        name: error.originalError.name,
+        stack: error.originalError.stack,
+        allProperties: Object.getOwnPropertyNames(error.originalError)
+      } : null,
+      allPropertyNames: Object.getOwnPropertyNames(error),
+      keys: Object.keys(error || {})
+    });
+    console.error('❌ [MEDIA] =================================================');
+    
+    // Construire un message d'erreur détaillé
+    let errorMessage = 'Erreur lors de l\'upload du fichier';
+    let errorCode = null;
+    let errorDetails = null;
+    
+    if (error.message) {
+      errorMessage = error.message;
+    } else if (error.originalError && error.originalError.message) {
+      errorMessage = error.originalError.message;
+      errorCode = error.originalError.code;
+    } else if (error.code) {
+      errorMessage = `Erreur MinIO (${error.code})`;
+      errorCode = error.code;
+    }
+    
+    // Toujours inclure le code d'erreur et les détails pour faciliter le debugging
+    errorDetails = {
+      code: errorCode || error.code,
+      message: error.message || error.toString(),
+      originalMessage: error.originalError ? error.originalError.message : null
+    };
+    
     res.status(500).json({
       success: false,
-      message: error.message || 'Erreur lors de l\'upload du fichier'
+      message: errorMessage,
+      error: errorDetails
     });
   }
 };

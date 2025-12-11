@@ -170,9 +170,14 @@ app.use((req, res, next) => {
 app.use(express.json({ 
   charset: 'utf-8',
   type: ['application/json', 'application/json; charset=utf-8', 'text/json'],
-  strict: false 
+  strict: false,
+  limit: '210mb' // Limite pour les requêtes JSON (légèrement supérieure à 200MB pour les métadonnées)
 }));
-app.use(express.urlencoded({ extended: true, charset: 'utf-8' }));
+app.use(express.urlencoded({ 
+  extended: true, 
+  charset: 'utf-8',
+  limit: '210mb' // Limite pour les données URL encodées
+}));
 
 // Middleware pour s'assurer que toutes les réponses JSON ont le charset UTF-8
 app.use((req, res, next) => {
@@ -247,72 +252,8 @@ app.use((req, res, next) => {
   next();
 });
 
-// Servir les fichiers statiques (uploads)
-// Important : cette route doit être avant les routes API pour éviter les conflits
-const uploadsPath = path.join(__dirname, '../uploads');
-
-// Route pour servir les fichiers statiques avec headers de protection
-app.use('/uploads', express.static(uploadsPath, {
-  setHeaders: (res, filePath, stat) => {
-    // Ajouter les en-têtes CORS pour les fichiers statiques
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-    res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache 1 an
-    
-    // Pour les PDF, s'assurer que le Content-Type est correct et limiter les actions
-    if (filePath.toLowerCase().endsWith('.pdf')) {
-      res.setHeader('Content-Type', 'application/pdf');
-      // Utiliser 'inline' pour afficher dans le navigateur, mais sans suggérer de téléchargement
-      res.setHeader('Content-Disposition', 'inline; filename="' + path.basename(filePath) + '"');
-      // Empêcher la mise en cache pour éviter les téléchargements via le cache
-      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-      res.setHeader('Pragma', 'no-cache');
-      res.setHeader('Expires', '0');
-      // Headers pour limiter certaines fonctionnalités
-      res.setHeader('X-Content-Type-Options', 'nosniff');
-    }
-    
-    // Pour les fichiers PowerPoint, servir avec Content-Disposition: inline
-    if (filePath.toLowerCase().endsWith('.pptx') || filePath.toLowerCase().endsWith('.ppt')) {
-      if (filePath.toLowerCase().endsWith('.pptx')) {
-        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
-      } else {
-        res.setHeader('Content-Type', 'application/vnd.ms-powerpoint');
-      }
-      // Utiliser 'inline' pour éviter le téléchargement automatique
-      res.setHeader('Content-Disposition', 'inline; filename="' + path.basename(filePath) + '"');
-      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-      res.setHeader('Pragma', 'no-cache');
-      res.setHeader('Expires', '0');
-      res.setHeader('X-Content-Type-Options', 'nosniff');
-    }
-    
-    // Pour les fichiers audio, servir avec Content-Disposition: inline et protection
-    if (filePath.toLowerCase().endsWith('.mp3') || 
-        filePath.toLowerCase().endsWith('.wav') || 
-        filePath.toLowerCase().endsWith('.ogg') || 
-        filePath.toLowerCase().endsWith('.m4a') ||
-        filePath.toLowerCase().endsWith('.aac')) {
-      if (filePath.toLowerCase().endsWith('.mp3')) {
-        res.setHeader('Content-Type', 'audio/mpeg');
-      } else if (filePath.toLowerCase().endsWith('.wav')) {
-        res.setHeader('Content-Type', 'audio/wav');
-      } else if (filePath.toLowerCase().endsWith('.ogg')) {
-        res.setHeader('Content-Type', 'audio/ogg');
-      } else if (filePath.toLowerCase().endsWith('.m4a')) {
-        res.setHeader('Content-Type', 'audio/mp4');
-      } else if (filePath.toLowerCase().endsWith('.aac')) {
-        res.setHeader('Content-Type', 'audio/aac');
-      }
-      // Utiliser 'inline' pour éviter le téléchargement automatique
-      res.setHeader('Content-Disposition', 'inline; filename="' + path.basename(filePath) + '"');
-      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-      res.setHeader('Pragma', 'no-cache');
-      res.setHeader('Expires', '0');
-      res.setHeader('X-Content-Type-Options', 'nosniff');
-    }
-  }
-}));
+// Les fichiers sont maintenant servis depuis MinIO via /api/media/uploads
+// Plus besoin de servir les fichiers statiques depuis le système de fichiers local
 
 // Servir les fichiers statiques du dossier public (pour les pages de test)
 const publicPath = path.join(__dirname, '../public');
@@ -321,14 +262,7 @@ if (fs.existsSync(publicPath)) {
   console.log('✅ Dossier public accessible:', publicPath);
 }
 
-// Log pour vérifier que le dossier uploads est accessible
-if (process.env.NODE_ENV === 'development') {
-  if (fs.existsSync(uploadsPath)) {
-    console.log('✅ Dossier uploads accessible:', uploadsPath);
-  } else {
-    console.warn('⚠️ Dossier uploads non trouvé:', uploadsPath);
-  }
-}
+// Les fichiers sont maintenant stockés sur MinIO, plus besoin de vérifier le dossier uploads local
 
 // Routes
 app.get('/health', (req, res) => {

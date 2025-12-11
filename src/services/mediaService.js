@@ -13,7 +13,7 @@ class MediaService {
     video: {
       formats: ['mp4', 'webm', 'mov', 'avi', 'mkv'],
       mimeTypes: ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska'],
-      maxSize: 150 * 1024 * 1024, // 150MB
+      maxSize: 200 * 1024 * 1024, // 200MB
       category: 'video'
     },
     document: {
@@ -24,32 +24,32 @@ class MediaService {
                   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                   'application/vnd.ms-powerpoint',
                   'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
-      maxSize: 150 * 1024 * 1024, // 150MB
+      maxSize: 200 * 1024 * 1024, // 200MB
       category: 'document'
     },
     audio: {
       formats: ['mp3', 'wav', 'ogg', 'm4a'],
       mimeTypes: ['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4'],
-      maxSize: 150 * 1024 * 1024, // 150MB
+      maxSize: 200 * 1024 * 1024, // 200MB
       category: 'audio'
     },
     presentation: {
       formats: ['ppt', 'pptx'],
       mimeTypes: ['application/vnd.ms-powerpoint',
                   'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
-      maxSize: 150 * 1024 * 1024, // 150MB
+      maxSize: 200 * 1024 * 1024, // 200MB
       category: 'presentation'
     },
     h5p: {
       formats: ['h5p', 'zip'],
       mimeTypes: ['application/zip', 'application/x-h5p'],
-      maxSize: 150 * 1024 * 1024, // 150MB
+      maxSize: 200 * 1024 * 1024, // 200MB
       category: 'h5p'
     },
     image: {
       formats: ['jpg', 'jpeg', 'png', 'gif', 'webp'],
       mimeTypes: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
-      maxSize: 150 * 1024 * 1024, // 150MB
+      maxSize: 200 * 1024 * 1024, // 200MB
       category: 'image'
     }
   };
@@ -82,7 +82,7 @@ class MediaService {
    */
   static getMaxFileSize(contentType) {
     const config = this.CONTENT_TYPE_CONFIG[contentType];
-    return config ? config.maxSize : 150 * 1024 * 1024; // Default 150MB
+    return config ? config.maxSize : 200 * 1024 * 1024; // Default 200MB
   }
 
   /**
@@ -101,32 +101,13 @@ class MediaService {
     const maxSize = this.getMaxFileSize(contentType);
     const allowedMimes = this.getAllowedMimeTypes(contentType);
 
-    // Si MinIO est disponible, utiliser le stockage mémoire (pour upload direct vers MinIO)
-    // Sinon, utiliser le stockage disque local
-    let storage;
-    
-    if (MinioService.isAvailable()) {
-      // Stockage mémoire pour MinIO (le fichier sera uploadé directement vers MinIO)
-      storage = multer.memoryStorage();
-    } else {
-      // Stockage disque local (fallback)
-      const uploadDir = path.join(__dirname, '../../uploads', this.getFolderByContentType(contentType));
-      storage = multer.diskStorage({
-        destination: async (req, file, cb) => {
-          try {
-            await fs.mkdir(uploadDir, { recursive: true });
-            cb(null, uploadDir);
-          } catch (error) {
-            cb(error);
-          }
-        },
-        filename: (req, file, cb) => {
-          const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-          const ext = path.extname(file.originalname);
-          cb(null, `${req.user.id || 'anon'}-${uniqueSuffix}${ext}`);
-        }
-      });
+    // MinIO est OBLIGATOIRE - utiliser uniquement memoryStorage
+    if (!MinioService.isAvailable()) {
+      throw new Error('MinIO n\'est pas disponible. Le stockage de fichiers nécessite MinIO.');
     }
+
+    // Stockage mémoire pour MinIO (le fichier sera uploadé directement vers MinIO)
+    const storage = multer.memoryStorage();
 
     const fileFilter = (req, file, cb) => {
       if (allowedMimes.length === 0 || allowedMimes.includes(file.mimetype)) {
@@ -154,44 +135,114 @@ class MediaService {
     let storageType = 'local';
     let storagePath = null;
     let url = null;
-    let filename = file.filename;
+    let filename = file.filename || null;
     let bucketName = null;
     let objectName = null;
 
-    // Si MinIO est disponible, uploader vers MinIO
-    if (MinioService.isAvailable()) {
-      try {
-        const folder = this.getFolderByContentType(contentType);
-        objectName = MinioService.generateObjectName(folder, file.originalname, userId);
-        
-        // Upload vers MinIO
-        const uploadResult = await MinioService.uploadFile(file, objectName, file.mimetype);
-        
-        storageType = 'minio';
-        storagePath = objectName;
-        url = uploadResult.url;
-        filename = path.basename(objectName);
-        bucketName = uploadResult.bucket;
-        
-        // Nettoyer le fichier temporaire local s'il existe
-        if (file.path) {
-          try {
-            await fs.access(file.path);
-            await fs.unlink(file.path);
-          } catch (error) {
-            // Fichier n'existe pas ou erreur d'accès, ignorer
-          }
+    // MinIO est OBLIGATOIRE - pas de fallback local
+    if (!MinioService.isAvailable()) {
+      throw new Error('MinIO n\'est pas disponible. Le stockage de fichiers nécessite MinIO.');
+    }
+
+    try {
+      const folder = this.getFolderByContentType(contentType);
+      const originalName = file.originalname || 'unnamed-file';
+      objectName = MinioService.generateObjectName(folder, originalName, userId);
+      
+      // Upload vers MinIO
+      const uploadResult = await MinioService.uploadFile(file, objectName, file.mimetype || 'application/octet-stream');
+      
+      storageType = 'minio';
+      storagePath = objectName;
+      url = uploadResult.url;
+      filename = path.basename(objectName);
+      bucketName = uploadResult.bucket;
+      
+      // Nettoyer le fichier temporaire local s'il existe
+      if (file.path) {
+        try {
+          await fs.access(file.path);
+          await fs.unlink(file.path);
+        } catch (error) {
+          // Fichier n'existe pas ou erreur d'accès, ignorer
         }
-      } catch (error) {
-        console.error('Erreur lors de l\'upload vers MinIO, utilisation du stockage local:', error);
-        // Fallback vers stockage local
-        storagePath = file.path;
-        url = `/uploads/${this.getFolderByContentType(contentType)}/${file.filename}`;
       }
-    } else {
-      // Stockage local
-      storagePath = file.path;
-      url = `/uploads/${this.getFolderByContentType(contentType)}/${file.filename}`;
+    } catch (error) {
+      console.error('❌ [MEDIA SERVICE] Erreur lors de l\'upload vers MinIO:', error);
+      console.error('❌ [MEDIA SERVICE] Détails:', {
+        message: error.message,
+        code: error.code,
+        stack: error.stack
+      });
+      
+      // Préserver l'erreur originale avec un message amélioré
+      let errorMessage = error.message || error.toString() || 'Erreur inconnue lors de l\'upload vers MinIO';
+      let errorCode = error.code;
+      
+      // Si l'erreur originale a un message vide, essayer de l'extraire depuis l'erreur originale
+      if (!errorMessage || errorMessage === 'Error' || errorMessage === error.toString()) {
+        const originalError = error.originalError || error;
+        
+        // Logger toutes les propriétés de l'erreur pour debugging
+        console.error('🔍 [MEDIA SERVICE] ========== ANALYSE ERREUR ORIGINALE ==========');
+        console.error('🔍 [MEDIA SERVICE] Analyse erreur originale:', {
+          name: originalError.name,
+          message: originalError.message,
+          code: originalError.code,
+          toString: originalError.toString(),
+          stack: originalError.stack, // Stack complet
+          keys: Object.keys(originalError || {}),
+          allPropertyNames: Object.getOwnPropertyNames(originalError),
+          originalError: originalError
+        });
+        console.error('🔍 [MEDIA SERVICE] ===============================================');
+        
+        // Essayer d'extraire depuis plusieurs sources
+        const errorStr = JSON.stringify(originalError, null, 2) + originalError.toString() + (originalError.stack || '');
+        
+        // Logger la chaîne complète pour debugging
+        console.error('🔍 [MEDIA SERVICE] Chaîne d\'erreur complète:', errorStr.substring(0, 10000)); // Premiers 10000 caractères
+        
+        const codeMatch = errorStr.match(/<Code>([^<]+)<\/Code>/i);
+        const messageMatch = errorStr.match(/<Message>([^<]+)<\/Message>/i);
+        
+        if (codeMatch) {
+          errorCode = codeMatch[1];
+          console.error('🔍 [MEDIA SERVICE] Code d\'erreur extrait:', errorCode);
+          console.error('🔍 [MEDIA SERVICE] Match complet:', codeMatch[0]);
+        } else {
+          console.error('⚠️  [MEDIA SERVICE] Aucun code d\'erreur trouvé dans la chaîne');
+        }
+        if (messageMatch) {
+          errorMessage = messageMatch[1];
+          console.error('🔍 [MEDIA SERVICE] Message d\'erreur extrait:', errorMessage);
+          console.error('🔍 [MEDIA SERVICE] Match complet:', messageMatch[0]);
+        } else {
+          console.error('⚠️  [MEDIA SERVICE] Aucun message d\'erreur trouvé dans la chaîne');
+        }
+        
+        // Utiliser le message de l'erreur originale si disponible
+        if (originalError.message && originalError.message !== 'Error' && originalError.message.trim() !== '') {
+          errorMessage = originalError.message;
+        }
+      }
+      
+      // Améliorer le message selon le type d'erreur
+      if (errorCode === 'ECONNREFUSED' || errorCode === 'ETIMEDOUT') {
+        errorMessage = `Impossible de se connecter à MinIO (${process.env.MINIO_ENDPOINT}:${process.env.MINIO_PORT}). Vérifiez la configuration réseau.`;
+      } else if (errorCode === 'InvalidAccessKeyId' || errorCode === 'SignatureDoesNotMatch' || errorCode === 'AccessDenied') {
+        errorMessage = 'Erreur d\'authentification MinIO. Vérifiez MINIO_ACCESS_KEY et MINIO_SECRET_KEY.';
+      } else if (errorCode === 'NoSuchBucket') {
+        errorMessage = `Le bucket ${MinioService.defaultBucket} n'existe pas.`;
+      } else if (!errorMessage || errorMessage === 'Error' || errorMessage.trim() === '') {
+        errorMessage = errorCode ? `Erreur MinIO (${errorCode})` : 'Erreur lors de l\'upload vers MinIO';
+      }
+      
+      const enhancedError = new Error(`Échec de l'upload vers MinIO: ${errorMessage}`);
+      enhancedError.originalError = error;
+      enhancedError.code = errorCode || error.code;
+      enhancedError.originalMessage = error.message;
+      throw enhancedError;
     }
 
     const insertQuery = `
@@ -202,19 +253,43 @@ class MediaService {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
     `;
 
+    // S'assurer qu'aucune valeur n'est undefined (convertir en null)
+    // IMPORTANT: storage_path et url sont NOT NULL dans la table
+    // Avec MinIO obligatoire, ces valeurs doivent toujours être définies
+    const safeLessonId = lessonId !== undefined ? lessonId : null;
+    const safeCourseId = courseId !== undefined ? courseId : null;
+    const safeFilename = filename !== undefined && filename !== null ? filename : 'unnamed-file';
+    const safeOriginalName = file.originalname !== undefined && file.originalname !== null ? file.originalname : 'unnamed-file';
+    const safeMimeType = file.mimetype !== undefined && file.mimetype !== null ? file.mimetype : 'application/octet-stream';
+    const safeFileCategory = fileCategory !== undefined && fileCategory !== null ? fileCategory : 'other';
+    const safeFileSize = file.size !== undefined && file.size !== null ? file.size : 0;
+    const safeStorageType = storageType !== undefined ? storageType : 'minio';
+    const safeBucketName = bucketName !== undefined ? bucketName : null;
+    // storage_path est NOT NULL - avec MinIO, il doit toujours être défini (objectName)
+    if (!storagePath) {
+      throw new Error('storage_path ne peut pas être null. Erreur lors de l\'upload vers MinIO.');
+    }
+    const safeStoragePath = storagePath;
+    // url est NOT NULL - avec MinIO, il doit toujours être défini
+    if (!url) {
+      throw new Error('url ne peut pas être null. Erreur lors de l\'upload vers MinIO.');
+    }
+    const safeUrl = url;
+    const safeUserId = userId !== undefined && userId !== null ? userId : null;
+
     const [result] = await pool.execute(insertQuery, [
-      lessonId,
-      courseId,
-      filename,
-      file.originalname,
-      file.mimetype,
-      fileCategory,
-      file.size,
-      storageType,
-      bucketName,
-      storagePath,
-      url,
-      userId
+      safeLessonId,
+      safeCourseId,
+      safeFilename,
+      safeOriginalName,
+      safeMimeType,
+      safeFileCategory,
+      safeFileSize,
+      safeStorageType,
+      safeBucketName,
+      safeStoragePath,
+      safeUrl,
+      safeUserId
     ]);
 
     return {

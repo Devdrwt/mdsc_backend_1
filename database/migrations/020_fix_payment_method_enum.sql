@@ -15,3 +15,7 @@ MODIFY COLUMN payment_method ENUM('card', 'mobile_money', 'bank_transfer', 'cash
 
 
 
+
+
+
+

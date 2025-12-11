@@ -1,7 +1,9 @@
 const Minio = require('minio');
 const path = require('path');
 const fs = require('fs').promises;
-const { Readable } = require('stream');
+const fsSync = require('fs');
+const { Readable, PassThrough } = require('stream');
+const os = require('os');
 
 /**
  * Service de gestion du stockage MinIO
@@ -24,12 +26,24 @@ class MinioService {
       port: parseInt(process.env.MINIO_PORT || '9000'),
       useSSL: process.env.MINIO_USE_SSL === 'true',
       accessKey: process.env.MINIO_ACCESS_KEY,
-      secretKey: process.env.MINIO_SECRET_KEY
+      secretKey: process.env.MINIO_SECRET_KEY,
+      // Forcer region pour éviter les problèmes de signature
+      region: process.env.MINIO_REGION || 'us-east-1'
     };
+
+    console.log('🔧 [MINIO] Configuration:', {
+      endPoint: minioConfig.endPoint,
+      port: minioConfig.port,
+      useSSL: minioConfig.useSSL,
+      region: minioConfig.region,
+      hasAccessKey: !!minioConfig.accessKey,
+      hasSecretKey: !!minioConfig.secretKey,
+      bucket: process.env.MINIO_BUCKET_NAME || 'mdsc-files'
+    });
 
     // Vérifier que les clés d'accès sont configurées
     if (!minioConfig.accessKey || !minioConfig.secretKey) {
-      console.warn('⚠️  MinIO non configuré. Les fichiers seront stockés localement.');
+      console.error('❌ [MINIO] MinIO non configuré. MINIO_ACCESS_KEY et MINIO_SECRET_KEY sont requis.');
       this.isInitialized = false;
       return null;
     }
@@ -38,16 +52,58 @@ class MinioService {
       this.client = new Minio.Client(minioConfig);
       this.defaultBucket = process.env.MINIO_BUCKET_NAME || 'mdsc-files';
       this.isInitialized = true;
-      console.log('✅ MinIO client initialisé:', minioConfig.endPoint);
+      console.log('✅ [MINIO] Client initialisé:', {
+        endpoint: minioConfig.endPoint,
+        port: minioConfig.port,
+        useSSL: minioConfig.useSSL,
+        bucket: this.defaultBucket
+      });
       
-      // S'assurer que le bucket existe
-      this.ensureBucketExists();
+      // S'assurer que le bucket existe (en arrière-plan, ne pas bloquer)
+      this.ensureBucketExists().catch(err => {
+        console.error('❌ [MINIO] Erreur lors de la vérification du bucket:', err);
+      });
       
       return this.client;
     } catch (error) {
-      console.error('❌ Erreur lors de l\'initialisation de MinIO:', error);
+      console.error('❌ [MINIO] Erreur lors de l\'initialisation:', error);
+      console.error('❌ [MINIO] Détails:', {
+        message: error.message,
+        code: error.code,
+        stack: error.stack
+      });
       this.isInitialized = false;
       return null;
+    }
+  }
+
+  /**
+   * Tester la connexion MinIO et s'assurer que le bucket existe
+   */
+  static async testConnection() {
+    if (!this.client || !this.defaultBucket) {
+      throw new Error('Client ou bucket non défini');
+    }
+
+    try {
+      console.log('🔍 [MINIO] Test de connexion...');
+      
+      // Tester la connexion en listant les buckets
+      await this.client.listBuckets();
+      console.log('✅ [MINIO] Connexion réussie');
+      
+      // S'assurer que le bucket existe
+      await this.ensureBucketExists();
+    } catch (error) {
+      console.error('❌ [MINIO] Erreur lors du test de connexion:', error);
+      console.error('❌ [MINIO] Détails:', {
+        message: error.message,
+        code: error.code,
+        endpoint: process.env.MINIO_ENDPOINT,
+        port: process.env.MINIO_PORT,
+        useSSL: process.env.MINIO_USE_SSL
+      });
+      throw error;
     }
   }
 
@@ -55,13 +111,18 @@ class MinioService {
    * S'assurer que le bucket existe, sinon le créer
    */
   static async ensureBucketExists() {
-    if (!this.client || !this.defaultBucket) return;
+    if (!this.client || !this.defaultBucket) {
+      console.warn('⚠️  [MINIO] Client ou bucket non défini');
+      return;
+    }
 
     try {
+      console.log(`🔍 [MINIO] Vérification du bucket: ${this.defaultBucket}`);
       const exists = await this.client.bucketExists(this.defaultBucket);
       if (!exists) {
+        console.log(`📦 [MINIO] Création du bucket: ${this.defaultBucket}`);
         await this.client.makeBucket(this.defaultBucket, process.env.MINIO_REGION || 'us-east-1');
-        console.log(`✅ Bucket créé: ${this.defaultBucket}`);
+        console.log(`✅ [MINIO] Bucket créé: ${this.defaultBucket}`);
         
         // Configurer la politique du bucket pour permettre l'accès public en lecture
         const policy = {
@@ -78,13 +139,21 @@ class MinioService {
         
         try {
           await this.client.setBucketPolicy(this.defaultBucket, JSON.stringify(policy));
-          console.log(`✅ Politique publique configurée pour le bucket ${this.defaultBucket}`);
+          console.log(`✅ [MINIO] Politique publique configurée pour le bucket ${this.defaultBucket}`);
         } catch (policyError) {
-          console.warn('⚠️  Impossible de configurer la politique publique:', policyError.message);
+          console.warn('⚠️  [MINIO] Impossible de configurer la politique publique:', policyError.message);
         }
+      } else {
+        console.log(`✅ [MINIO] Bucket existe déjà: ${this.defaultBucket}`);
       }
     } catch (error) {
-      console.error('❌ Erreur lors de la vérification/création du bucket:', error);
+      console.error('❌ [MINIO] Erreur lors de la vérification/création du bucket:', error);
+      console.error('❌ [MINIO] Détails:', {
+        message: error.message,
+        code: error.code,
+        bucket: this.defaultBucket
+      });
+      throw error;
     }
   }
 
@@ -102,7 +171,16 @@ class MinioService {
    * Vérifier si MinIO est disponible
    */
   static isAvailable() {
-    return this.isInitialized && this.client !== null;
+    const available = this.isInitialized && this.client !== null;
+    if (!available) {
+      console.warn('⚠️  [MINIO] MinIO non disponible:', {
+        isInitialized: this.isInitialized,
+        hasClient: !!this.client,
+        endpoint: process.env.MINIO_ENDPOINT,
+        port: process.env.MINIO_PORT
+      });
+    }
+    return available;
   }
 
   /**
@@ -120,22 +198,49 @@ class MinioService {
     try {
       const client = this.getClient();
       let fileStream;
+      let fileSize;
 
-      // Si c'est un fichier multer (avec path)
+      // Si c'est un fichier multer (avec path) - utiliser un stream pour les gros fichiers
       if (file.path && typeof file.path === 'string') {
-        fileStream = await fs.readFile(file.path);
+        fileStream = fsSync.createReadStream(file.path);
+        const stats = await fs.stat(file.path);
+        fileSize = stats.size;
       } 
-      // Si c'est un buffer
+      // Si c'est un buffer direct
       else if (Buffer.isBuffer(file)) {
         fileStream = file;
+        fileSize = file.length;
       }
       // Si c'est un stream
       else if (file instanceof Readable) {
         fileStream = file;
+        fileSize = file.size;
       }
-      // Si c'est un objet avec buffer
+      // Si c'est un objet avec buffer (cas le plus courant avec multer memoryStorage)
       else if (file.buffer) {
-        fileStream = file.buffer;
+        const buffer = file.buffer;
+        const LARGE_FILE_THRESHOLD = 64 * 1024 * 1024; // 64MB
+        
+        // Pour les petits fichiers (PDFs, audio petits) : utiliser directement le buffer
+        // Pour les gros fichiers (vidéos) : créer un fichier temporaire et utiliser un stream
+        if (buffer.length <= LARGE_FILE_THRESHOLD) {
+          fileStream = buffer;
+          fileSize = buffer.length;
+        } else {
+          // Gros fichier : créer un fichier temporaire et utiliser un stream
+          const tempFilePath = path.join(os.tmpdir(), `minio-upload-${Date.now()}-${Math.random().toString(36).substring(7)}`);
+          await fs.writeFile(tempFilePath, buffer);
+          fileStream = fsSync.createReadStream(tempFilePath);
+          fileSize = buffer.length;
+          
+          // Nettoyer le fichier temporaire après l'upload
+          fileStream.on('end', () => {
+            fs.unlink(tempFilePath).catch(() => {});
+          });
+          fileStream.on('error', () => {
+            fs.unlink(tempFilePath).catch(() => {});
+          });
+        }
       }
       else {
         throw new Error('Format de fichier non supporté pour MinIO');
@@ -151,7 +256,7 @@ class MinioService {
         this.defaultBucket,
         objectName,
         fileStream,
-        file.size || fileStream.length,
+        fileSize,
         metaData
       );
 
@@ -162,7 +267,7 @@ class MinioService {
         bucket: this.defaultBucket,
         objectName: objectName,
         url: publicUrl,
-        size: file.size || fileStream.length,
+        size: fileSize,
         contentType: contentType || file.mimetype
       };
     } catch (error) {
@@ -235,10 +340,13 @@ class MinioService {
 
   /**
    * Générer un nom d'objet unique pour MinIO
-   * @param {String} folder - Dossier dans le bucket (ex: 'profiles', 'courses/thumbnails')
+   * Dans MinIO/S3, les "dossiers" sont des préfixes dans les noms d'objets.
+   * Ils sont créés automatiquement lors de l'upload - pas besoin de les créer manuellement.
+   * 
+   * @param {String} folder - Dossier/préfixe dans le bucket (ex: 'profiles', 'courses/thumbnails', 'videos')
    * @param {String} originalFilename - Nom de fichier original
    * @param {String} userId - ID de l'utilisateur (optionnel)
-   * @returns {String} Nom d'objet unique
+   * @returns {String} Nom d'objet unique avec préfixe (ex: 'videos/user123-1234567890-file.mp4')
    */
   static generateObjectName(folder, originalFilename, userId = null) {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -250,10 +358,24 @@ class MinioService {
       ? `${userId}-${uniqueSuffix}${ext}`
       : `${sanitizedBaseName}-${uniqueSuffix}${ext}`;
     
-    // Nettoyer le chemin du dossier
-    const cleanFolder = folder.replace(/^\/+|\/+$/g, '').replace(/\/+/g, '/');
+    // Nettoyer le chemin du dossier/préfixe
+    // Enlever les slashes en début/fin et remplacer les multiples slashes par un seul
+    const cleanFolder = folder ? folder.replace(/^\/+|\/+$/g, '').replace(/\/+/g, '/') : '';
     
-    return cleanFolder ? `${cleanFolder}/${filename}` : filename;
+    // Construire le nom d'objet complet avec préfixe
+    // Exemple: 'videos/user123-1234567890-file.mp4'
+    const objectName = cleanFolder ? `${cleanFolder}/${filename}` : filename;
+    
+    console.log('📁 [MINIO] Génération nom objet:', {
+      folder,
+      cleanFolder,
+      originalFilename,
+      filename,
+      objectName,
+      userId
+    });
+    
+    return objectName;
   }
 
   /**

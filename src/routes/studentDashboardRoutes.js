@@ -10,6 +10,8 @@ const requireStudent = [
 
 router.get('/courses', requireStudent, studentDashboardController.getCourses);
 router.get('/progress/:courseId', requireStudent, studentDashboardController.getCourseProgress);
+// Route alternative pour compatibilité frontend : /api/student/courses/:courseId/progress
+router.get('/courses/:courseId/progress', requireStudent, studentDashboardController.getCourseProgress);
 router.get('/schedule/:courseId', requireStudent, studentDashboardController.getStudentSchedule);
 // Route alternative pour compatibilité frontend : /api/student/courses/:courseId/schedule
 router.get('/courses/:courseId/schedule', requireStudent, studentDashboardController.getStudentSchedule);

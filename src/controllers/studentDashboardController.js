@@ -319,26 +319,65 @@ const getCourseProgress = async (req, res) => {
       [courseId]
     );
 
-    const [quizzes] = await pool.execute(
+    // Récupérer les quiz avec le total_points calculé depuis les questions
+    const [quizzesWithPoints] = await pool.execute(
       `
       SELECT
         q.id,
         q.title,
-        q.total_points,
-        q.pass_percentage,
+        q.passing_score,
+        q.time_limit_minutes,
+        q.max_attempts,
+        COALESCE(SUM(qq.points), 0) as total_points
+      FROM quizzes q
+      LEFT JOIN quiz_questions qq ON qq.quiz_id = q.id AND qq.is_active = TRUE
+      WHERE q.course_id = ?
+        AND q.is_published = TRUE
+      GROUP BY q.id
+    `,
+      [courseId]
+    );
+
+    // Récupérer la dernière tentative pour chaque quiz de cet étudiant
+    const [latestAttempts] = await pool.execute(
+      `
+      SELECT
+        qa.quiz_id,
         qa.score,
         qa.percentage,
         qa.is_passed,
-        qa.completed_at
-      FROM quizzes q
-      LEFT JOIN quiz_attempts qa
-        ON qa.quiz_id = q.id
-       AND qa.user_id = ?
-      WHERE q.course_id = ?
-        AND q.is_published = TRUE
+        qa.completed_at,
+        qa.total_points as attempt_total_points
+      FROM quiz_attempts qa
+      INNER JOIN (
+        SELECT quiz_id, MAX(completed_at) as max_completed_at
+        FROM quiz_attempts
+        WHERE user_id = ? AND completed_at IS NOT NULL
+        GROUP BY quiz_id
+      ) latest ON qa.quiz_id = latest.quiz_id 
+               AND qa.completed_at = latest.max_completed_at
+      WHERE qa.user_id = ?
     `,
-      [studentId, courseId]
+      [studentId, studentId]
     );
+
+    // Combiner les quiz avec leurs tentatives
+    const attemptsMap = new Map();
+    latestAttempts.forEach(attempt => {
+      attemptsMap.set(attempt.quiz_id, attempt);
+    });
+
+    const quizzes = quizzesWithPoints.map(quiz => {
+      const attempt = attemptsMap.get(quiz.id);
+      return {
+        ...quiz,
+        score: attempt?.score || null,
+        percentage: attempt?.percentage || null,
+        is_passed: attempt?.is_passed || null,
+        completed_at: attempt?.completed_at || null,
+        attempt_total_points: attempt?.attempt_total_points || null
+      };
+    });
 
     // Créer un map des médias par lesson_id pour association rapide
     const mediaByLessonId = {};

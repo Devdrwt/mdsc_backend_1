@@ -488,7 +488,7 @@ const getCourseProgress = async (req, res) => {
     // Les leçons sont déjà uniques (une par ID), pas besoin de déduplication
     const lessonsArray = formattedLessons;
 
-    // Récupérer les modules avec leurs quiz de modules et questions
+    // OPTIMISATION: Récupérer tous les modules avec leurs quiz en une seule requête
     const [modules] = await pool.execute(
       `
       SELECT 
@@ -511,164 +511,163 @@ const getCourseProgress = async (req, res) => {
       [courseId]
     );
 
-    // Pour chaque module avec quiz, récupérer les questions (sans les bonnes réponses)
-    const modulesWithQuizzes = await Promise.all(
-      modules.map(async (module) => {
-        if (!module.quiz_id) {
-          return {
-            ...module,
-            quiz: null
-          };
-        }
+    // OPTIMISATION: Récupérer toutes les questions de tous les quiz en une seule requête
+    const moduleQuizIds = modules.filter(m => m.quiz_id).map(m => m.quiz_id);
+    let allQuestions = [];
+    let allAnswers = [];
+    let allAttempts = [];
 
-        // Récupérer les questions du quiz
-        const [questions] = await pool.execute(
+    if (moduleQuizIds.length > 0) {
+      // Récupérer toutes les questions en une seule requête
+      const [questions] = await pool.execute(
+        `
+        SELECT 
+          qq.id,
+          qq.module_quiz_id,
+          qq.question_text,
+          qq.question_type,
+          qq.points,
+          qq.order_index
+        FROM quiz_questions qq
+        WHERE qq.module_quiz_id IN (${moduleQuizIds.map(() => '?').join(',')}) 
+          AND qq.is_active = TRUE
+        ORDER BY qq.module_quiz_id, qq.order_index ASC
+        `,
+        moduleQuizIds
+      );
+      allQuestions = questions;
+
+      // Récupérer toutes les réponses en une seule requête
+      if (questions.length > 0) {
+        const questionIds = questions.map(q => q.id);
+        const [answers] = await pool.execute(
           `
           SELECT 
-            qq.id,
-            qq.question_text,
-            qq.question_type,
-            qq.points,
-            qq.order_index
-          FROM quiz_questions qq
-          WHERE qq.module_quiz_id = ? AND qq.is_active = TRUE
-          ORDER BY qq.order_index ASC
+            id,
+            question_id,
+            answer_text,
+            order_index
+          FROM quiz_answers
+          WHERE question_id IN (${questionIds.map(() => '?').join(',')})
+          ORDER BY question_id, order_index ASC
           `,
-          [module.quiz_id]
+          questionIds
         );
+        allAnswers = answers;
+      }
 
-        console.log(`[getCourseProgress] Module ${module.id}, Quiz ${module.quiz_id}: ${questions.length} questions trouvées`);
+      // Récupérer toutes les tentatives en une seule requête
+      const [attempts] = await pool.execute(
+        `
+        SELECT * FROM quiz_attempts 
+        WHERE enrollment_id = ? AND module_quiz_id IN (${moduleQuizIds.map(() => '?').join(',')})
+        ORDER BY module_quiz_id, started_at DESC
+        `,
+        [enrollment.id, ...moduleQuizIds]
+      );
+      allAttempts = attempts;
+    }
 
-        // Récupérer les options/réponses pour chaque question (sans révéler les bonnes réponses)
-        const questionsWithOptions = await Promise.all(
-          questions.map(async (question) => {
-            const [answers] = await pool.execute(
-              `
-              SELECT 
-                id,
-                answer_text,
-                order_index
-              FROM quiz_answers
-              WHERE question_id = ?
-              ORDER BY order_index ASC
-              `,
-              [question.id]
-            );
+    // Organiser les données en maps pour accès rapide
+    const questionsByQuizId = {};
+    const answersByQuestionId = {};
+    const attemptsByQuizId = {};
 
-            // Pour les questions à choix multiples, retourner les options
-            // Pour les questions vrai/faux, retourner ['Vrai', 'Faux']
-            // Pour les questions à réponse courte, ne pas retourner de réponses
-            let options = [];
-            if (question.question_type === 'multiple_choice') {
-              options = answers.map(a => a.answer_text);
-            } else if (question.question_type === 'true_false') {
-              options = ['Vrai', 'Faux'];
-            }
+    allQuestions.forEach(q => {
+      if (!questionsByQuizId[q.module_quiz_id]) {
+        questionsByQuizId[q.module_quiz_id] = [];
+      }
+      questionsByQuizId[q.module_quiz_id].push(q);
+    });
 
-            // Vérifier si la question est valide (a des options pour les QCM et Vrai/Faux)
-            const isValid = question.question_type === 'short_answer' || options.length > 0;
-            
-            const formattedQuestion = {
-              id: question.id.toString(),
-              question_text: question.question_text || '',
-              question_type: question.question_type,
-              points: parseFloat(question.points) || 0,
-              order_index: question.order_index || 0,
-              options: options,
-              is_valid: isValid, // Indicateur pour le frontend
-              has_options: options.length > 0 // Indicateur explicite
-            };
+    allAnswers.forEach(a => {
+      if (!answersByQuestionId[a.question_id]) {
+        answersByQuestionId[a.question_id] = [];
+      }
+      answersByQuestionId[a.question_id].push(a);
+    });
 
-            if (!isValid) {
-              console.warn(`[getCourseProgress] ⚠️ Question ${question.id} invalide: pas d'options pour type ${question.question_type}`);
-            }
+    allAttempts.forEach(a => {
+      if (!attemptsByQuizId[a.module_quiz_id]) {
+        attemptsByQuizId[a.module_quiz_id] = [];
+      }
+      attemptsByQuizId[a.module_quiz_id].push(a);
+    });
 
-            console.log(`[getCourseProgress] Question ${question.id} formatée:`, {
-              id: formattedQuestion.id,
-              type: formattedQuestion.question_type,
-              options_count: formattedQuestion.options.length,
-              is_valid: formattedQuestion.is_valid
-            });
-
-            return formattedQuestion;
-          })
-        );
-
-        console.log(`[getCourseProgress] Module ${module.id}: ${questionsWithOptions.length} questions formatées`);
-
-        // Récupérer les tentatives précédentes
-        const [attempts] = await pool.execute(
-          `
-          SELECT * FROM quiz_attempts 
-          WHERE enrollment_id = ? AND module_quiz_id = ? 
-          ORDER BY started_at DESC
-          `,
-          [enrollment.id, module.quiz_id]
-        );
-        
-        console.log(`[getCourseProgress] Tentatives pour quiz ${module.quiz_id}, enrollment ${enrollment.id}:`, {
-          attempts_count: attempts.length,
-          max_attempts: module.max_attempts,
-          attempts: attempts.map(a => ({ id: a.id, started_at: a.started_at, score: a.score }))
-        });
-
-        // Filtrer les questions invalides ou les marquer
-        const validQuestions = questionsWithOptions.filter(q => q.is_valid);
-        const invalidQuestionsCount = questionsWithOptions.length - validQuestions.length;
-        
-        if (invalidQuestionsCount > 0) {
-          console.warn(`[getCourseProgress] ⚠️ Quiz ${module.quiz_id}: ${invalidQuestionsCount} question(s) invalide(s) (sans options)`);
-        }
-
-        const attemptsCount = attempts?.length || 0;
-        const maxAttempts = Number(module.max_attempts) || 0;
-        const remainingAttempts = Math.max(0, maxAttempts - attemptsCount);
-        
-        const quizData = {
-          id: module.quiz_id,
-          title: module.quiz_title || '',
-          description: module.quiz_description || '',
-          passing_score: Number(module.passing_score) || 0,
-          time_limit_minutes: Number(module.time_limit_minutes) || 0,
-          max_attempts: maxAttempts,
-          attempts_count: attemptsCount, // Nombre de tentatives effectuées
-          remaining_attempts: remainingAttempts, // Nombre de tentatives restantes
-          is_published: Boolean(module.quiz_is_published),
-          questions: validQuestions, // Ne retourner que les questions valides
-          questions_count: validQuestions.length,
-          invalid_questions_count: invalidQuestionsCount, // Informer le frontend
-          previous_attempts: attempts || [],
-          can_attempt: remainingAttempts > 0
-        };
-
-        console.log(`[getCourseProgress] Quiz ${module.quiz_id} formaté:`, {
-          id: quizData.id,
-          title: quizData.title,
-          questions_count: quizData.questions.length,
-          has_questions: quizData.questions.length > 0
-        });
-
+    // Construire les modules avec leurs quiz (sans requêtes supplémentaires)
+    const modulesWithQuizzes = modules.map((module) => {
+      if (!module.quiz_id) {
         return {
           id: module.id,
           title: module.title || '',
           description: module.description || '',
           order_index: module.order_index || 0,
-          quiz: quizData
+          quiz: null
         };
-      })
-    );
+      }
+
+      const questions = questionsByQuizId[module.quiz_id] || [];
+      const attempts = attemptsByQuizId[module.quiz_id] || [];
+
+      // Formater les questions avec leurs options
+      const questionsWithOptions = questions.map((question) => {
+        const answers = answersByQuestionId[question.id] || [];
+        
+        let options = [];
+        if (question.question_type === 'multiple_choice') {
+          options = answers.map(a => a.answer_text);
+        } else if (question.question_type === 'true_false') {
+          options = ['Vrai', 'Faux'];
+        }
+
+        const isValid = question.question_type === 'short_answer' || options.length > 0;
+        
+        return {
+          id: question.id.toString(),
+          question_text: question.question_text || '',
+          question_type: question.question_type,
+          points: parseFloat(question.points) || 0,
+          order_index: question.order_index || 0,
+          options: options,
+          is_valid: isValid,
+          has_options: options.length > 0
+        };
+      });
+
+      const validQuestions = questionsWithOptions.filter(q => q.is_valid);
+      const invalidQuestionsCount = questionsWithOptions.length - validQuestions.length;
+      const attemptsCount = attempts.length;
+      const maxAttempts = Number(module.max_attempts) || 0;
+      const remainingAttempts = Math.max(0, maxAttempts - attemptsCount);
+      
+      const quizData = {
+        id: module.quiz_id,
+        title: module.quiz_title || '',
+        description: module.quiz_description || '',
+        passing_score: Number(module.passing_score) || 0,
+        time_limit_minutes: Number(module.time_limit_minutes) || 0,
+        max_attempts: maxAttempts,
+        attempts_count: attemptsCount,
+        remaining_attempts: remainingAttempts,
+        is_published: Boolean(module.quiz_is_published),
+        questions: validQuestions,
+        questions_count: validQuestions.length,
+        invalid_questions_count: invalidQuestionsCount,
+        previous_attempts: attempts,
+        can_attempt: remainingAttempts > 0
+      };
+
+      return {
+        id: module.id,
+        title: module.title || '',
+        description: module.description || '',
+        order_index: module.order_index || 0,
+        quiz: quizData
+      };
+    });
 
     const totalLessons = lessonsArray.length;
     const completedLessons = lessonsArray.filter((lesson) => lesson.is_completed).length;
-
-    // Log pour débogage
-    const modulesWithQuiz = modulesWithQuizzes.filter(m => m.quiz !== null);
-    console.log(`[getCourseProgress] Cours ${courseId}: ${modulesWithQuizzes.length} modules, ${modulesWithQuiz.length} avec quiz`);
-    if (modulesWithQuiz.length > 0) {
-      modulesWithQuiz.forEach(m => {
-        console.log(`[getCourseProgress] Module ${m.id} (${m.title}): Quiz ID ${m.quiz.id} avec ${m.quiz.questions?.length || 0} questions`);
-      });
-    }
 
     // Extraire les quiz de modules pour les ajouter à la liste des quiz (pour compatibilité frontend)
     const moduleQuizzes = modulesWithQuizzes
@@ -691,8 +690,6 @@ const getCourseProgress = async (req, res) => {
 
     // Combiner les anciens quiz de cours avec les quiz de modules
     const allQuizzes = [...quizzes, ...moduleQuizzes];
-
-    console.log(`[getCourseProgress] Total quiz: ${quizzes.length} quiz de cours + ${moduleQuizzes.length} quiz de modules = ${allQuizzes.length} total`);
 
     res.json({
       success: true,

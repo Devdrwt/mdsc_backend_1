@@ -112,7 +112,7 @@ const getUserEvaluations = async (req, res) => {
 
     const [evaluations] = await pool.execute(query, [userId]);
 
-    // Récupérer les évaluations finales (course_evaluations) pour les cours auxquels l'utilisateur est inscrit
+    // OPTIMISATION: Récupérer les évaluations finales avec calcul optimisé des modules complétés
     const finalEvaluationsQuery = `
       SELECT 
         ce.id,
@@ -133,45 +133,33 @@ const getUserEvaluations = async (req, res) => {
         MAX(CASE WHEN qa.completed_at IS NOT NULL THEN qa.completed_at END) as passed_at,
         COUNT(DISTINCT CASE WHEN qa.completed_at IS NULL THEN qa.id END) as incomplete_attempts_count,
         MAX(CASE WHEN qa.completed_at IS NULL THEN qa.started_at END) as incomplete_started_at,
-        -- Vérifier si tous les modules sont complétés
-        (
-          SELECT COUNT(DISTINCT m.id) as total_modules
-          FROM modules m
-          WHERE m.course_id = c.id
-        ) as total_modules,
-        (
-          SELECT COUNT(DISTINCT m.id) as completed_modules
-          FROM modules m
-          WHERE m.course_id = c.id
-          AND (
-            -- Un module est complété si toutes ses leçons sont complétées
-            SELECT COUNT(DISTINCT l.id) as total_lessons
-            FROM lessons l
-            WHERE l.module_id = m.id AND l.is_published = TRUE
-          ) = (
-            SELECT COUNT(DISTINCT l.id) as completed_lessons
-            FROM lessons l
-            LEFT JOIN progress p ON l.id = p.lesson_id AND p.enrollment_id = e.id
-            WHERE l.module_id = m.id 
-              AND l.is_published = TRUE 
-              AND p.status = 'completed'
-          )
-          AND (
-            SELECT COUNT(DISTINCT l.id) as total_lessons
-            FROM lessons l
-            WHERE l.module_id = m.id AND l.is_published = TRUE
-          ) > 0
-        ) as completed_modules
+        COUNT(DISTINCT m.id) as total_modules,
+        COUNT(DISTINCT CASE 
+          WHEN module_progress.total_lessons = module_progress.completed_lessons 
+            AND module_progress.total_lessons > 0 
+          THEN m.id 
+        END) as completed_modules
       FROM course_evaluations ce
       INNER JOIN courses c ON ce.course_id = c.id
       INNER JOIN enrollments e ON c.id = e.course_id AND e.user_id = ? AND e.is_active = TRUE
       LEFT JOIN quiz_attempts qa ON ce.id = qa.course_evaluation_id AND qa.user_id = ?
+      LEFT JOIN modules m ON m.course_id = c.id
+      LEFT JOIN (
+        SELECT 
+          m2.id as module_id,
+          COUNT(DISTINCT l.id) as total_lessons,
+          COUNT(DISTINCT CASE WHEN p.status = 'completed' THEN l.id END) as completed_lessons
+        FROM modules m2
+        LEFT JOIN lessons l ON l.module_id = m2.id AND l.is_published = TRUE
+        LEFT JOIN progress p ON l.id = p.lesson_id AND p.enrollment_id = ?
+        GROUP BY m2.id
+      ) module_progress ON m.id = module_progress.module_id
       WHERE ce.is_published = TRUE
       GROUP BY ce.id, c.id, e.id
       ORDER BY ce.created_at DESC
     `;
 
-    const [finalEvaluations] = await pool.execute(finalEvaluationsQuery, [userId, userId]);
+    const [finalEvaluations] = await pool.execute(finalEvaluationsQuery, [userId, userId, userId]);
 
     // Formater les évaluations classiques pour correspondre à l'interface Evaluation du frontend
     const formattedEvaluations = evaluations.map(evaluation => ({
@@ -249,7 +237,7 @@ const getUserEvaluations = async (req, res) => {
       };
     });
 
-    // Récupérer les quiz de modules pour les cours auxquels l'utilisateur est inscrit
+    // OPTIMISATION: Récupérer les quiz de modules avec calcul optimisé des leçons complétées
     const moduleQuizzesQuery = `
       SELECT 
         mq.id,
@@ -268,46 +256,18 @@ const getUserEvaluations = async (req, res) => {
         c.title as course_title,
         c.slug as course_slug,
         e.id as enrollment_id,
-        -- Vérifier si toutes les leçons du module sont complétées
-        (
-          SELECT COUNT(DISTINCT l.id) as total_lessons
-          FROM lessons l
-          WHERE l.module_id = m.id AND l.is_published = TRUE
-        ) as total_lessons,
-        (
-          SELECT COUNT(DISTINCT l.id) as completed_lessons
-          FROM lessons l
-          LEFT JOIN progress p ON l.id = p.lesson_id AND p.enrollment_id = e.id
-          WHERE l.module_id = m.id 
-            AND l.is_published = TRUE 
-            AND p.status = 'completed'
-        ) as completed_lessons,
-        -- Trouver la leçon quiz ou la dernière leçon du module pour la redirection
-        (
-          SELECT l.id
-          FROM lessons l
-          WHERE l.module_id = m.id 
-            AND l.is_published = TRUE
-            AND (l.content_type = 'quiz' OR l.content_type = 'exercise')
-          ORDER BY l.order_index DESC
-          LIMIT 1
-        ) as quiz_lesson_id,
-        -- Si pas de leçon quiz, prendre la dernière leçon du module
-        (
-          SELECT l.id
-          FROM lessons l
-          WHERE l.module_id = m.id 
-            AND l.is_published = TRUE
-          ORDER BY l.order_index DESC
-          LIMIT 1
-        ) as last_lesson_id,
-        -- Meilleur score du quiz
+        COUNT(DISTINCT l.id) as total_lessons,
+        COUNT(DISTINCT CASE WHEN p.status = 'completed' THEN l.id END) as completed_lessons,
+        MAX(CASE WHEN l.content_type IN ('quiz', 'exercise') THEN l.id END) as quiz_lesson_id,
+        MAX(CASE WHEN l.id IS NOT NULL THEN l.id END) as last_lesson_id,
         MAX(CASE WHEN qa.completed_at IS NOT NULL THEN qa.percentage END) as best_score,
         COUNT(DISTINCT CASE WHEN qa.completed_at IS NOT NULL THEN qa.id END) as attempts_count
       FROM module_quizzes mq
       INNER JOIN modules m ON mq.module_id = m.id
       INNER JOIN courses c ON m.course_id = c.id
       INNER JOIN enrollments e ON c.id = e.course_id AND e.user_id = ? AND e.is_active = TRUE
+      LEFT JOIN lessons l ON l.module_id = m.id AND l.is_published = TRUE
+      LEFT JOIN progress p ON l.id = p.lesson_id AND p.enrollment_id = e.id
       LEFT JOIN quiz_attempts qa ON mq.id = qa.module_quiz_id AND qa.user_id = ?
       WHERE mq.is_published = TRUE
       GROUP BY mq.id, m.id, c.id, e.id
@@ -669,56 +629,67 @@ const getEvaluation = async (req, res) => {
       [evaluationId]
     );
 
-    // Récupérer les réponses pour chaque question
-    const questionsWithAnswers = await Promise.all(
-      questions.map(async (question) => {
-        const [answers] = await pool.execute(
-          `SELECT id, answer_text, is_correct, order_index
-           FROM quiz_answers
-           WHERE question_id = ?
-           ORDER BY order_index ASC`,
-          [question.id]
-        );
-        
-        // Formater les réponses selon le type de question
-        let formattedAnswers = answers.map(a => ({
-          id: a.id,
-          text: a.answer_text,
-          isCorrect: a.is_correct === 1 || a.is_correct === true,
-          orderIndex: a.order_index
-        }));
-        
-        // Déterminer correct_answer selon le type de question (logique identique aux quiz)
-        let correctAnswer = null;
-        if (question.question_type === 'true_false') {
-          // Pour vrai/faux, trouver la réponse correcte et la convertir en "true" ou "false"
-          // MySQL retourne is_correct comme 0 ou 1 (number) ou true/false (boolean)
-          const correct = answers.find(a => a.is_correct === 1 || a.is_correct === true);
-          if (correct) {
-            correctAnswer = correct.answer_text === 'Vrai' ? 'true' : 'false';
-          }
-        } else if (question.question_type === 'multiple_choice') {
-          // Pour QCM, retourner le texte de la réponse correcte
-          const correct = answers.find(a => a.is_correct === 1 || a.is_correct === true);
-          if (correct) {
-            correctAnswer = correct.answer_text;
-          }
-        } else if (question.question_type === 'short_answer') {
-          // Pour réponse courte, retourner la réponse correcte
-          if (answers.length > 0) {
-            correctAnswer = answers[0].answer_text;
-          }
+    // OPTIMISATION: Récupérer toutes les réponses en une seule requête
+    let allAnswers = [];
+    if (questions.length > 0) {
+      const questionIds = questions.map(q => q.id);
+      const [answers] = await pool.execute(
+        `SELECT id, question_id, answer_text, is_correct, order_index
+         FROM quiz_answers
+         WHERE question_id IN (${questionIds.map(() => '?').join(',')})
+         ORDER BY question_id, order_index ASC`,
+        questionIds
+      );
+      allAnswers = answers;
+    }
+
+    // Organiser les réponses par question_id
+    const answersByQuestionId = {};
+    allAnswers.forEach(a => {
+      if (!answersByQuestionId[a.question_id]) {
+        answersByQuestionId[a.question_id] = [];
+      }
+      answersByQuestionId[a.question_id].push(a);
+    });
+
+    // Formater les questions avec leurs réponses
+    const questionsWithAnswers = questions.map((question) => {
+      const answers = answersByQuestionId[question.id] || [];
+      
+      // Formater les réponses selon le type de question
+      let formattedAnswers = answers.map(a => ({
+        id: a.id,
+        text: a.answer_text,
+        isCorrect: a.is_correct === 1 || a.is_correct === true,
+        orderIndex: a.order_index
+      }));
+      
+      // Déterminer correct_answer selon le type de question (logique identique aux quiz)
+      let correctAnswer = null;
+      if (question.question_type === 'true_false') {
+        const correct = answers.find(a => a.is_correct === 1 || a.is_correct === true);
+        if (correct) {
+          correctAnswer = correct.answer_text === 'Vrai' ? 'true' : 'false';
         }
-        
-        return {
-          ...question,
-          points: Number(question.points) || 0, // S'assurer que points est un nombre
-          order_index: Number(question.order_index) || 0,
-          answers: formattedAnswers,
-          correct_answer: correctAnswer // Ajouter le champ correct_answer
-        };
-      })
-    );
+      } else if (question.question_type === 'multiple_choice') {
+        const correct = answers.find(a => a.is_correct === 1 || a.is_correct === true);
+        if (correct) {
+          correctAnswer = correct.answer_text;
+        }
+      } else if (question.question_type === 'short_answer') {
+        if (answers.length > 0) {
+          correctAnswer = answers[0].answer_text;
+        }
+      }
+      
+      return {
+        ...question,
+        points: Number(question.points) || 0,
+        order_index: Number(question.order_index) || 0,
+        answers: formattedAnswers,
+        correct_answer: correctAnswer
+      };
+    });
 
     res.json({
       success: true,
@@ -1766,69 +1737,80 @@ const getCourseEvaluations = async (req, res) => {
       [evaluation.id]
     );
 
-    // Récupérer les réponses pour chaque question
-    const questionsWithAnswers = await Promise.all(
-      questions.map(async (question) => {
-        const [answers] = await pool.execute(
-          `SELECT 
-            id,
-            answer_text,
-            is_correct,
-            order_index
-           FROM quiz_answers
-           WHERE question_id = ?
-           ORDER BY order_index ASC`,
-          [question.id]
-        );
+    // OPTIMISATION: Récupérer toutes les réponses en une seule requête
+    let allAnswers = [];
+    if (questions.length > 0) {
+      const questionIds = questions.map(q => q.id);
+      const [answers] = await pool.execute(
+        `SELECT 
+          id,
+          question_id,
+          answer_text,
+          is_correct,
+          order_index
+         FROM quiz_answers
+         WHERE question_id IN (${questionIds.map(() => '?').join(',')})
+         ORDER BY question_id, order_index ASC`,
+        questionIds
+      );
+      allAnswers = answers;
+    }
 
-        // Formater les réponses selon le type de question
-        let formattedAnswers = [];
-        let correctAnswer = null;
+    // Organiser les réponses par question_id
+    const answersByQuestionId = {};
+    allAnswers.forEach(a => {
+      if (!answersByQuestionId[a.question_id]) {
+        answersByQuestionId[a.question_id] = [];
+      }
+      answersByQuestionId[a.question_id].push(a);
+    });
 
-        if (question.question_type === 'multiple_choice') {
-          // Pour les QCM, retourner toutes les options
-          formattedAnswers = answers.map(answer => ({
-            id: answer.id,
-            text: answer.answer_text,
-            is_correct: answer.is_correct === 1 || answer.is_correct === true
-          }));
-          // Trouver la réponse correcte
-          const correct = answers.find(a => a.is_correct === 1 || a.is_correct === true);
-          if (correct) {
-            correctAnswer = correct.answer_text;
-          }
-        } else if (question.question_type === 'true_false') {
-          // Pour vrai/faux, retourner les deux options
-          formattedAnswers = answers.map(answer => ({
-            id: answer.id,
-            text: answer.answer_text,
-            is_correct: answer.is_correct === 1 || answer.is_correct === true
-          }));
-          // Trouver la réponse correcte (true ou false) - logique identique aux quiz
-          const correct = answers.find(a => a.is_correct === 1 || a.is_correct === true);
-          if (correct) {
-            correctAnswer = correct.answer_text === 'Vrai' ? 'true' : 'false';
-          }
-        } else if (question.question_type === 'short_answer') {
-          // Pour réponse courte, stocker la réponse correcte
-          if (answers.length > 0) {
-            correctAnswer = answers[0].answer_text;
-          }
+    // Formater les questions avec leurs réponses
+    const questionsWithAnswers = questions.map((question) => {
+      const answers = answersByQuestionId[question.id] || [];
+
+      // Formater les réponses selon le type de question
+      let formattedAnswers = [];
+      let correctAnswer = null;
+
+      if (question.question_type === 'multiple_choice') {
+        formattedAnswers = answers.map(answer => ({
+          id: answer.id,
+          text: answer.answer_text,
+          is_correct: answer.is_correct === 1 || answer.is_correct === true
+        }));
+        const correct = answers.find(a => a.is_correct === 1 || a.is_correct === true);
+        if (correct) {
+          correctAnswer = correct.answer_text;
         }
+      } else if (question.question_type === 'true_false') {
+        formattedAnswers = answers.map(answer => ({
+          id: answer.id,
+          text: answer.answer_text,
+          is_correct: answer.is_correct === 1 || answer.is_correct === true
+        }));
+        const correct = answers.find(a => a.is_correct === 1 || a.is_correct === true);
+        if (correct) {
+          correctAnswer = correct.answer_text === 'Vrai' ? 'true' : 'false';
+        }
+      } else if (question.question_type === 'short_answer') {
+        if (answers.length > 0) {
+          correctAnswer = answers[0].answer_text;
+        }
+      }
 
-        return {
-          id: question.id,
-          question_text: question.question_text,
-          question_type: question.question_type,
-          points: parseFloat(question.points) || 1,
-          order_index: question.order_index || 0,
-          is_active: question.is_active === 1 || question.is_active === true,
-          options: formattedAnswers.map(a => a.text), // Pour compatibilité avec le frontend
-          answers: formattedAnswers, // Format détaillé
-          correct_answer: correctAnswer
-        };
-      })
-    );
+      return {
+        id: question.id,
+        question_text: question.question_text,
+        question_type: question.question_type,
+        points: parseFloat(question.points) || 1,
+        order_index: question.order_index || 0,
+        is_active: question.is_active === 1 || question.is_active === true,
+        options: formattedAnswers.map(a => a.text),
+        answers: formattedAnswers,
+        correct_answer: correctAnswer
+      };
+    });
 
     res.json({
       success: true,
@@ -2230,47 +2212,59 @@ const getEnrollmentEvaluation = async (req, res) => {
       [evaluation.id]
     );
 
-    // Récupérer les réponses pour chaque question (sans révéler les bonnes réponses pour l'étudiant)
-    const questionsWithOptions = await Promise.all(
-      questions.map(async (question) => {
-        const [answers] = await pool.execute(
-          `SELECT 
-            id,
-            answer_text,
-            order_index
-           FROM quiz_answers
-           WHERE question_id = ?
-           ORDER BY order_index ASC`,
-          [question.id]
-        );
+    // OPTIMISATION: Récupérer toutes les réponses en une seule requête
+    let allAnswers = [];
+    if (questions.length > 0) {
+      const questionIds = questions.map(q => q.id);
+      const [answers] = await pool.execute(
+        `SELECT 
+          id,
+          question_id,
+          answer_text,
+          order_index
+         FROM quiz_answers
+         WHERE question_id IN (${questionIds.map(() => '?').join(',')})
+         ORDER BY question_id, order_index ASC`,
+        questionIds
+      );
+      allAnswers = answers;
+    }
 
-        // Pour les questions à choix multiples, retourner les options
-        // Pour les questions vrai/faux, utiliser les réponses de la base de données
-        // Pour les questions à réponse courte, ne pas retourner de réponses
-        let options = [];
-        if (question.question_type === 'multiple_choice') {
-          options = answers.map(a => ({
-            id: a.id,
-            text: a.answer_text
-          }));
-        } else if (question.question_type === 'true_false') {
-          // Utiliser les réponses stockées dans la base (Vrai/Faux avec leurs IDs)
-          options = answers.map(a => ({
-            id: a.id,
-            text: a.answer_text
-          }));
-        }
+    // Organiser les réponses par question_id
+    const answersByQuestionId = {};
+    allAnswers.forEach(a => {
+      if (!answersByQuestionId[a.question_id]) {
+        answersByQuestionId[a.question_id] = [];
+      }
+      answersByQuestionId[a.question_id].push(a);
+    });
 
-        return {
-          id: question.id.toString(),
-          question_text: question.question_text,
-          question_type: question.question_type,
-          points: Number(question.points) || 0,
-          order_index: Number(question.order_index) || 0,
-          options: options
-        };
-      })
-    );
+    // Formater les questions avec leurs options (sans révéler les bonnes réponses)
+    const questionsWithOptions = questions.map((question) => {
+      const answers = answersByQuestionId[question.id] || [];
+
+      let options = [];
+      if (question.question_type === 'multiple_choice') {
+        options = answers.map(a => ({
+          id: a.id,
+          text: a.answer_text
+        }));
+      } else if (question.question_type === 'true_false') {
+        options = answers.map(a => ({
+          id: a.id,
+          text: a.answer_text
+        }));
+      }
+
+      return {
+        id: question.id.toString(),
+        question_text: question.question_text,
+        question_type: question.question_type,
+        points: Number(question.points) || 0,
+        order_index: Number(question.order_index) || 0,
+        options: options
+      };
+    });
 
     // Récupérer les tentatives précédentes
     const [attempts] = await pool.execute(

@@ -199,12 +199,15 @@ class MinioService {
       const client = this.getClient();
       let fileStream;
       let fileSize;
+      let tempFilePath = null;
+      let useUploadStream = false;
 
       // Si c'est un fichier multer (avec path) - utiliser un stream pour les gros fichiers
       if (file.path && typeof file.path === 'string') {
         fileStream = fsSync.createReadStream(file.path);
         const stats = await fs.stat(file.path);
         fileSize = stats.size;
+        useUploadStream = true;
       } 
       // Si c'est un buffer direct
       else if (Buffer.isBuffer(file)) {
@@ -215,31 +218,35 @@ class MinioService {
       else if (file instanceof Readable) {
         fileStream = file;
         fileSize = file.size;
+        useUploadStream = true;
       }
       // Si c'est un objet avec buffer (cas le plus courant avec multer memoryStorage)
       else if (file.buffer) {
         const buffer = file.buffer;
         const LARGE_FILE_THRESHOLD = 64 * 1024 * 1024; // 64MB
+        const isPDF = (contentType || file.mimetype || '').includes('pdf') || 
+                      (file.originalname || '').toLowerCase().endsWith('.pdf');
         
-        // Pour les petits fichiers (PDFs, audio petits) : utiliser directement le buffer
+        // Pour les PDFs : utiliser directement le buffer (comme l'audio qui fonctionne)
+        // Pour l'audio et autres petits fichiers : utiliser directement le buffer
         // Pour les gros fichiers (vidéos) : créer un fichier temporaire et utiliser un stream
-        if (buffer.length <= LARGE_FILE_THRESHOLD) {
+        if (isPDF) {
+          // PDF : utiliser directement le buffer (comme l'audio qui fonctionne)
+          // Le buffer direct fonctionne pour l'audio, essayons pour les PDFs aussi
+          fileStream = buffer;
+          fileSize = buffer.length;
+          console.log('📄 [MINIO] PDF détecté, utilisation buffer direct (comme audio):', fileSize, 'bytes');
+        } else if (buffer.length <= LARGE_FILE_THRESHOLD) {
+          // Audio et autres petits fichiers : utiliser directement le buffer
           fileStream = buffer;
           fileSize = buffer.length;
         } else {
-          // Gros fichier : créer un fichier temporaire et utiliser un stream
-          const tempFilePath = path.join(os.tmpdir(), `minio-upload-${Date.now()}-${Math.random().toString(36).substring(7)}`);
+          // Gros fichier (vidéos) : créer un fichier temporaire et utiliser un stream
+          tempFilePath = path.join(os.tmpdir(), `minio-upload-${Date.now()}-${Math.random().toString(36).substring(7)}`);
           await fs.writeFile(tempFilePath, buffer);
           fileStream = fsSync.createReadStream(tempFilePath);
           fileSize = buffer.length;
-          
-          // Nettoyer le fichier temporaire après l'upload
-          fileStream.on('end', () => {
-            fs.unlink(tempFilePath).catch(() => {});
-          });
-          fileStream.on('error', () => {
-            fs.unlink(tempFilePath).catch(() => {});
-          });
+          useUploadStream = true;
         }
       }
       else {
@@ -247,18 +254,54 @@ class MinioService {
       }
 
       // Upload vers MinIO
-      const metaData = {
+      // Pour les PDFs : métadonnées minimales (sans original-filename qui peut causer des problèmes)
+      const isPDF = (contentType || file.mimetype || '').includes('pdf') || 
+                    (file.originalname || '').toLowerCase().endsWith('.pdf');
+      
+      const metaData = isPDF ? {
+        'Content-Type': contentType || file.mimetype || 'application/pdf'
+      } : {
         'Content-Type': contentType || file.mimetype || 'application/octet-stream',
         'original-filename': file.originalname || objectName
       };
 
-      await client.putObject(
-        this.defaultBucket,
-        objectName,
-        fileStream,
-        fileSize,
-        metaData
-      );
+      // Pour les vidéos : utiliser putObject avec stream
+      // Pour les PDFs et audio : utiliser putObject avec buffer (comme ça fonctionne pour l'audio)
+      if (useUploadStream) {
+        // PDFs et vidéos : utiliser putObject avec stream (comme ça fonctionne pour les vidéos)
+        console.log('📤 [MINIO] Utilisation putObject avec stream pour:', objectName);
+        
+        // Utiliser putObject avec le stream (MinIO gère automatiquement la fin du stream)
+        await client.putObject(
+          this.defaultBucket,
+          objectName,
+          fileStream,
+          fileSize,
+          metaData
+        );
+        console.log('✅ [MINIO] Upload terminé avec succès');
+      } else {
+        // Audio : utiliser putObject avec buffer
+        await client.putObject(
+          this.defaultBucket,
+          objectName,
+          fileStream,
+          fileSize,
+          metaData
+        );
+      }
+
+      // Nettoyer le fichier temporaire si nécessaire (après que l'upload soit terminé)
+      if (tempFilePath) {
+        try {
+          // Attendre un peu pour être sûr que le stream est complètement fermé
+          await new Promise(resolve => setTimeout(resolve, 500));
+          await fs.unlink(tempFilePath);
+          console.log('🧹 [MINIO] Fichier temporaire nettoyé:', tempFilePath);
+        } catch (error) {
+          console.warn('⚠️  [MINIO] Erreur lors du nettoyage du fichier temporaire:', error.message);
+        }
+      }
 
       // Construire l'URL publique
       const publicUrl = this.getPublicUrl(objectName);

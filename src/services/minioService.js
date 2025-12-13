@@ -28,7 +28,13 @@ class MinioService {
       accessKey: process.env.MINIO_ACCESS_KEY,
       secretKey: process.env.MINIO_SECRET_KEY,
       // Forcer region pour éviter les problèmes de signature
-      region: process.env.MINIO_REGION || 'us-east-1'
+      region: process.env.MINIO_REGION || 'us-east-1',
+      // Ajouter pathStyle pour compatibilité avec MinIO
+      pathStyle: true,
+      // Ajouter transport agent pour HTTPS
+      ...(process.env.MINIO_USE_SSL === 'true' && {
+        transportAgent: require('https').globalAgent
+      })
     };
 
     console.log('🔧 [MINIO] Configuration:', {
@@ -191,7 +197,18 @@ class MinioService {
    * @returns {Promise<Object>} Informations sur le fichier uploadé
    */
   static async uploadFile(file, objectName, contentType) {
+    console.log('🚀 [MINIO] ========== DÉBUT UPLOAD ==========');
+    console.log('📋 [MINIO] Paramètres reçus:', {
+      objectName,
+      contentType,
+      fileType: typeof file,
+      hasBuffer: !!file?.buffer,
+      hasPath: !!file?.path,
+      fileSize: file?.size || file?.buffer?.length || 'unknown'
+    });
+
     if (!this.isAvailable()) {
+      console.error('❌ [MINIO] MinIO non disponible');
       throw new Error('MinIO n\'est pas disponible');
     }
 
@@ -202,54 +219,66 @@ class MinioService {
       let tempFilePath = null;
       let useUploadStream = false;
 
+      console.log('🔍 [MINIO] Analyse du type de fichier...');
+
       // Si c'est un fichier multer (avec path) - utiliser un stream pour les gros fichiers
       if (file.path && typeof file.path === 'string') {
+        console.log('📁 [MINIO] Type: Fichier avec path');
         fileStream = fsSync.createReadStream(file.path);
         const stats = await fs.stat(file.path);
         fileSize = stats.size;
         useUploadStream = true;
+        console.log('✅ [MINIO] Stream créé depuis le path:', file.path);
       } 
       // Si c'est un buffer direct
       else if (Buffer.isBuffer(file)) {
+        console.log('📦 [MINIO] Type: Buffer direct');
         fileStream = file;
         fileSize = file.length;
+        console.log('✅ [MINIO] Buffer direct utilisé:', fileSize, 'bytes');
       }
       // Si c'est un stream
       else if (file instanceof Readable) {
+        console.log('🌊 [MINIO] Type: Stream');
         fileStream = file;
         fileSize = file.size;
         useUploadStream = true;
+        console.log('✅ [MINIO] Stream direct utilisé');
       }
       // Si c'est un objet avec buffer (cas le plus courant avec multer memoryStorage)
       else if (file.buffer) {
+        console.log('💾 [MINIO] Type: Objet avec buffer (multer)');
         const buffer = file.buffer;
-        const LARGE_FILE_THRESHOLD = 64 * 1024 * 1024; // 64MB
+        const LARGE_FILE_THRESHOLD = 50 * 1024 * 1024; // 50MB
         const isPDF = (contentType || file.mimetype || '').includes('pdf') || 
                       (file.originalname || '').toLowerCase().endsWith('.pdf');
         
-        // Pour les PDFs : utiliser directement le buffer (comme l'audio qui fonctionne)
-        // Pour l'audio et autres petits fichiers : utiliser directement le buffer
-        // Pour les gros fichiers (vidéos) : créer un fichier temporaire et utiliser un stream
-        if (isPDF) {
-          // PDF : utiliser directement le buffer (comme l'audio qui fonctionne)
-          // Le buffer direct fonctionne pour l'audio, essayons pour les PDFs aussi
+        console.log('📊 [MINIO] Taille fichier:', {
+          bufferSize: buffer.length,
+          bufferSizeMB: (buffer.length / (1024 * 1024)).toFixed(2) + ' MB',
+          isLarge: buffer.length > LARGE_FILE_THRESHOLD,
+          isPDF
+        });
+
+        // Pour les petits fichiers (<50MB) : buffer direct
+        // Pour les gros fichiers (>50MB) : stream depuis buffer (pour multipart upload)
+        if (buffer.length <= LARGE_FILE_THRESHOLD) {
           fileStream = buffer;
           fileSize = buffer.length;
-          console.log('📄 [MINIO] PDF détecté, utilisation buffer direct (comme audio):', fileSize, 'bytes');
-        } else if (buffer.length <= LARGE_FILE_THRESHOLD) {
-          // Audio et autres petits fichiers : utiliser directement le buffer
-          fileStream = buffer;
-          fileSize = buffer.length;
+          console.log('✅ [MINIO] Petit fichier, buffer direct:', fileSize, 'bytes');
         } else {
-          // Gros fichier (vidéos) : créer un fichier temporaire et utiliser un stream
-          tempFilePath = path.join(os.tmpdir(), `minio-upload-${Date.now()}-${Math.random().toString(36).substring(7)}`);
-          await fs.writeFile(tempFilePath, buffer);
-          fileStream = fsSync.createReadStream(tempFilePath);
+          // Gros fichier : créer un stream depuis le buffer
+          // MinIO utilisera automatiquement le multipart upload
+          console.log('📹 [MINIO] Gros fichier, création d\'un stream depuis le buffer pour multipart upload...');
+          const { Readable } = require('stream');
+          fileStream = Readable.from(buffer);
           fileSize = buffer.length;
           useUploadStream = true;
+          console.log('✅ [MINIO] Stream créé depuis buffer pour multipart upload');
         }
       }
       else {
+        console.error('❌ [MINIO] Format de fichier non reconnu:', typeof file);
         throw new Error('Format de fichier non supporté pour MinIO');
       }
 
@@ -258,53 +287,75 @@ class MinioService {
       const isPDF = (contentType || file.mimetype || '').includes('pdf') || 
                     (file.originalname || '').toLowerCase().endsWith('.pdf');
       
+      // Nettoyer le nom de fichier original pour éviter les problèmes de signature avec caractères spéciaux
+      const cleanOriginalFilename = (file.originalname || objectName)
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '') // Enlever les accents
+        .replace(/[^\x00-\x7F]/g, '') // Enlever les caractères non-ASCII
+        .replace(/\s+/g, '_'); // Remplacer les espaces par des underscores
+      
       const metaData = isPDF ? {
         'Content-Type': contentType || file.mimetype || 'application/pdf'
       } : {
         'Content-Type': contentType || file.mimetype || 'application/octet-stream',
-        'original-filename': file.originalname || objectName
+        'original-filename': cleanOriginalFilename
       };
 
       // Pour les vidéos : utiliser putObject avec stream
       // Pour les PDFs et audio : utiliser putObject avec buffer (comme ça fonctionne pour l'audio)
-      if (useUploadStream) {
-        // PDFs et vidéos : utiliser putObject avec stream (comme ça fonctionne pour les vidéos)
-        console.log('📤 [MINIO] Utilisation putObject avec stream pour:', objectName);
-        
-        // Utiliser putObject avec le stream (MinIO gère automatiquement la fin du stream)
-        await client.putObject(
-          this.defaultBucket,
-          objectName,
-          fileStream,
-          fileSize,
-          metaData
-        );
-        console.log('✅ [MINIO] Upload terminé avec succès');
-      } else {
-        // Audio : utiliser putObject avec buffer
-        await client.putObject(
-          this.defaultBucket,
-          objectName,
-          fileStream,
-          fileSize,
-          metaData
-        );
-      }
+      console.log('📤 [MINIO] Upload vers:', {
+        bucket: this.defaultBucket,
+        objectName,
+        fileSize,
+        useStream: useUploadStream,
+        contentType: metaData['Content-Type'],
+        tempFilePath: tempFilePath || 'N/A',
+        metaData
+      });
 
-      // Nettoyer le fichier temporaire si nécessaire (après que l'upload soit terminé)
-      if (tempFilePath) {
-        try {
-          // Attendre un peu pour être sûr que le stream est complètement fermé
-          await new Promise(resolve => setTimeout(resolve, 500));
-          await fs.unlink(tempFilePath);
-          console.log('🧹 [MINIO] Fichier temporaire nettoyé:', tempFilePath);
-        } catch (error) {
-          console.warn('⚠️  [MINIO] Erreur lors du nettoyage du fichier temporaire:', error.message);
-        }
+      console.log('🔄 [MINIO] Démarrage de putObject...');
+      const startTime = Date.now();
+      
+      // MinIO v8 : utiliser putObject pour tous les cas
+      const uploadPromise = client.putObject(
+        this.defaultBucket,
+        objectName,
+        fileStream,
+        fileSize,
+        metaData
+      );
+
+      // Ajouter des logs de progression
+      const progressInterval = setInterval(() => {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        console.log(`⏳ [MINIO] Upload en cours... ${elapsed}s écoulées`);
+      }, 5000); // Log toutes les 5 secondes
+
+      try {
+        await uploadPromise;
+        clearInterval(progressInterval);
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+        console.log(`✅ [MINIO] Upload terminé avec succès en ${elapsed}s`);
+      } catch (uploadError) {
+        clearInterval(progressInterval);
+        console.error('❌ [MINIO] Erreur lors de putObject:', {
+          message: uploadError.message,
+          code: uploadError.code,
+          stack: uploadError.stack
+        });
+        throw uploadError;
       }
 
       // Construire l'URL publique
       const publicUrl = this.getPublicUrl(objectName);
+      
+      console.log('🎉 [MINIO] Upload complet:', {
+        bucket: this.defaultBucket,
+        objectName,
+        url: publicUrl,
+        size: fileSize
+      });
+      console.log('🏁 [MINIO] ========== FIN UPLOAD ==========');
 
       return {
         bucket: this.defaultBucket,
@@ -314,7 +365,14 @@ class MinioService {
         contentType: contentType || file.mimetype
       };
     } catch (error) {
-      console.error('Erreur lors de l\'upload vers MinIO:', error);
+      console.error('💥 [MINIO] ========== ERREUR UPLOAD ==========');
+      console.error('❌ [MINIO] Erreur lors de l\'upload vers MinIO:', {
+        message: error.message,
+        code: error.code,
+        name: error.name,
+        stack: error.stack
+      });
+      console.error('🏁 [MINIO] ========== FIN ERREUR ==========');
       throw error;
     }
   }

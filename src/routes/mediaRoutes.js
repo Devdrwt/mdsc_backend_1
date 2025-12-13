@@ -80,6 +80,193 @@ router.use('/uploads', async (req, res, next) => {
   }
 });
 
+// ===== ROUTES UPLOAD DIRECT MINIO AVEC URLs PRÉ-SIGNÉES =====
+
+/**
+ * Générer une URL pré-signée pour upload direct vers MinIO
+ * Cette méthode permet d'éviter les timeouts en uploadant directement vers MinIO
+ */
+router.post('/upload/presigned-url',
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { fileName, fileType, contentType, lessonId, moduleId } = req.body;
+
+      // Validation
+      if (!fileName) {
+        return res.status(400).json({
+          success: false,
+          message: 'Le nom du fichier est requis'
+        });
+      }
+
+      // Vérifier que MinIO est disponible
+      if (!MinioService.isAvailable()) {
+        return res.status(503).json({
+          success: false,
+          message: 'MinIO n\'est pas disponible'
+        });
+      }
+
+      // Déterminer le bucket selon le type de fichier
+      let bucket = 'mdsc-files';
+      let folder = 'others';
+
+      if (contentType) {
+        if (contentType.startsWith('video/')) {
+          bucket = 'videos-mdsc';
+          folder = 'modules';
+        } else if (contentType.startsWith('audio/')) {
+          bucket = 'videos-mdsc';
+          folder = 'audio';
+        } else if (contentType === 'application/pdf') {
+          bucket = 'mdsc-files';
+          folder = 'documents';
+        } else if (contentType.startsWith('image/')) {
+          bucket = 'mdsc-files';
+          folder = 'images';
+        }
+      }
+
+      // Générer un nom de fichier unique
+      const timestamp = Date.now();
+      const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
+      const objectName = `${folder}/${timestamp}-${sanitizedFileName}`;
+
+      // Générer URL pré-signée (valide 2 heures)
+      const uploadUrl = await MinioService.getPresignedUploadUrl(bucket, objectName, 7200);
+
+      // Générer l'URL publique finale
+      const publicUrl = MinioService.getPublicUrl(objectName, bucket);
+
+      console.log('✅ [PRESIGNED] URL générée pour:', {
+        fileName: sanitizedFileName,
+        bucket,
+        objectName,
+        contentType,
+        userId: req.user.id
+      });
+
+      res.json({
+        success: true,
+        data: {
+          uploadUrl,
+          objectName,
+          bucket,
+          publicUrl,
+          expiresIn: 7200 // 2 heures
+        }
+      });
+    } catch (error) {
+      console.error('❌ [PRESIGNED] Erreur:', error);
+      res.status(500).json({
+        success: false,
+        message: error.message || 'Erreur lors de la génération de l\'URL'
+      });
+    }
+  }
+);
+
+/**
+ * Confirmer l'upload après que le fichier ait été uploadé directement vers MinIO
+ * Enregistre les métadonnées dans la base de données
+ */
+router.post('/upload/confirm',
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { objectName, bucket, fileName, fileSize, contentType, lessonId, moduleId } = req.body;
+
+      // Validation
+      if (!objectName || !bucket) {
+        return res.status(400).json({
+          success: false,
+          message: 'objectName et bucket sont requis'
+        });
+      }
+
+      // Vérifier que le fichier existe dans MinIO
+      try {
+        const metadata = await MinioService.getFileMetadata(objectName);
+        console.log('✅ [CONFIRM] Fichier vérifié dans MinIO:', {
+          objectName,
+          size: metadata.size,
+          etag: metadata.etag
+        });
+      } catch (error) {
+        return res.status(404).json({
+          success: false,
+          message: 'Le fichier n\'existe pas dans MinIO'
+        });
+      }
+
+      // Déterminer le type de contenu
+      let file_category = 'other';
+      if (contentType) {
+        if (contentType.startsWith('video/')) file_category = 'video';
+        else if (contentType.startsWith('audio/')) file_category = 'audio';
+        else if (contentType.startsWith('image/')) file_category = 'image';
+        else if (contentType === 'application/pdf') file_category = 'document';
+      }
+
+      // Générer l'URL publique
+      const publicUrl = MinioService.getPublicUrl(objectName, bucket);
+
+      // Insérer dans media_files
+      const [result] = await pool.execute(`
+        INSERT INTO media_files (
+          filename, file_path, file_type, file_size, file_category,
+          storage_type, storage_path, url, bucket_name, uploaded_by, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+      `, [
+        fileName || path.basename(objectName),
+        objectName,
+        contentType || 'application/octet-stream',
+        fileSize || 0,
+        file_category,
+        'minio',
+        objectName,
+        publicUrl,
+        bucket,
+        req.user.id
+      ]);
+
+      const mediaFileId = result.insertId;
+
+      // Si lessonId fourni, créer la relation
+      if (lessonId) {
+        await pool.execute(`
+          INSERT INTO lesson_media (lesson_id, media_file_id, media_type, created_at)
+          VALUES (?, ?, ?, NOW())
+        `, [lessonId, mediaFileId, file_category]);
+      }
+
+      console.log('✅ [CONFIRM] Upload enregistré:', {
+        mediaFileId,
+        objectName,
+        lessonId,
+        userId: req.user.id
+      });
+
+      res.json({
+        success: true,
+        data: {
+          mediaFileId,
+          url: publicUrl,
+          objectName,
+          bucket
+        }
+      });
+    } catch (error) {
+      console.error('❌ [CONFIRM] Erreur:', error);
+      res.status(500).json({
+        success: false,
+        message: error.message || 'Erreur lors de la confirmation de l\'upload'
+      });
+    }
+  }
+);
+
 // Upload single file
 router.post('/upload', 
   authenticateToken,

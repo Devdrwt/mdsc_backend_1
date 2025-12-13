@@ -520,6 +520,69 @@ class MinioService {
       throw error;
     }
   }
+
+  /**
+   * Générer une URL pré-signée pour upload direct
+   * @param {String} bucket - Nom du bucket
+   * @param {String} objectName - Nom de l'objet
+   * @param {Number} expirySeconds - Durée de validité en secondes (défaut: 1 heure)
+   * @returns {Promise<String>} URL pré-signée pour upload
+   */
+  static async getPresignedUploadUrl(bucket, objectName, expirySeconds = 3600) {
+    if (!this.isAvailable()) {
+      throw new Error('MinIO n\'est pas disponible');
+    }
+
+    try {
+      const client = this.getClient();
+      
+      console.log('🔗 [MINIO] Génération URL pré-signée:', {
+        bucket,
+        objectName,
+        expirySeconds,
+        expiryMinutes: Math.round(expirySeconds / 60)
+      });
+
+      // Générer URL pré-signée pour PUT (upload)
+      const presignedUrl = await client.presignedPutObject(bucket, objectName, expirySeconds);
+      
+      console.log('✅ [MINIO] URL pré-signée générée:', {
+        objectName,
+        urlLength: presignedUrl.length,
+        validFor: `${Math.round(expirySeconds / 60)} minutes`
+      });
+
+      return presignedUrl;
+    } catch (error) {
+      console.error('❌ [MINIO] Erreur génération URL pré-signée:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Générer une URL pré-signée pour téléchargement
+   * @param {String} bucket - Nom du bucket
+   * @param {String} objectName - Nom de l'objet
+   * @param {Number} expirySeconds - Durée de validité en secondes (défaut: 1 heure)
+   * @returns {Promise<String>} URL pré-signée pour téléchargement
+   */
+  static async getPresignedDownloadUrl(bucket, objectName, expirySeconds = 3600) {
+    if (!this.isAvailable()) {
+      throw new Error('MinIO n\'est pas disponible');
+    }
+
+    try {
+      const client = this.getClient();
+      
+      // Générer URL pré-signée pour GET (download)
+      const presignedUrl = await client.presignedGetObject(bucket, objectName, expirySeconds);
+      
+      return presignedUrl;
+    } catch (error) {
+      console.error('❌ [MINIO] Erreur génération URL téléchargement:', error);
+      throw error;
+    }
+  }
 }
 
 // Initialiser automatiquement au chargement du module

@@ -13,7 +13,7 @@ class MediaService {
     video: {
       formats: ['mp4', 'webm', 'mov', 'avi', 'mkv'],
       mimeTypes: ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska'],
-      maxSize: 200 * 1024 * 1024, // 200MB
+      maxSize: 500 * 1024 * 1024, // 500MB pour les grosses vidéos
       category: 'video'
     },
     document: {
@@ -24,32 +24,32 @@ class MediaService {
                   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                   'application/vnd.ms-powerpoint',
                   'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
-      maxSize: 200 * 1024 * 1024, // 200MB
+      maxSize: 500 * 1024 * 1024, // 500MB pour les gros documents
       category: 'document'
     },
     audio: {
       formats: ['mp3', 'wav', 'ogg', 'm4a'],
       mimeTypes: ['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4'],
-      maxSize: 200 * 1024 * 1024, // 200MB
+      maxSize: 500 * 1024 * 1024, // 500MB pour les gros fichiers audio
       category: 'audio'
     },
     presentation: {
       formats: ['ppt', 'pptx'],
       mimeTypes: ['application/vnd.ms-powerpoint',
                   'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
-      maxSize: 200 * 1024 * 1024, // 200MB
+      maxSize: 500 * 1024 * 1024, // 500MB pour les grosses présentations
       category: 'presentation'
     },
     h5p: {
       formats: ['h5p', 'zip'],
       mimeTypes: ['application/zip', 'application/x-h5p'],
-      maxSize: 200 * 1024 * 1024, // 200MB
+      maxSize: 500 * 1024 * 1024, // 500MB pour les packages H5P
       category: 'h5p'
     },
     image: {
       formats: ['jpg', 'jpeg', 'png', 'gif', 'webp'],
       mimeTypes: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
-      maxSize: 200 * 1024 * 1024, // 200MB
+      maxSize: 500 * 1024 * 1024, // 500MB (images < 10MB généralement)
       category: 'image'
     }
   };
@@ -82,7 +82,7 @@ class MediaService {
    */
   static getMaxFileSize(contentType) {
     const config = this.CONTENT_TYPE_CONFIG[contentType];
-    return config ? config.maxSize : 200 * 1024 * 1024; // Default 200MB
+    return config ? config.maxSize : 500 * 1024 * 1024; // Default 500MB pour les grosses vidéos
   }
 
   /**

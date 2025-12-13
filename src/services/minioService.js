@@ -249,7 +249,7 @@ class MinioService {
       else if (file.buffer) {
         console.log('💾 [MINIO] Type: Objet avec buffer (multer)');
         const buffer = file.buffer;
-        const LARGE_FILE_THRESHOLD = 50 * 1024 * 1024; // 50MB
+        const LARGE_FILE_THRESHOLD = 100 * 1024 * 1024; // 100MB - seuil pour multipart upload
         const isPDF = (contentType || file.mimetype || '').includes('pdf') || 
                       (file.originalname || '').toLowerCase().endsWith('.pdf');
         
@@ -260,8 +260,8 @@ class MinioService {
           isPDF
         });
 
-        // Pour les petits fichiers (<50MB) : buffer direct
-        // Pour les gros fichiers (>50MB) : stream depuis buffer (pour multipart upload)
+        // Pour les petits fichiers (<100MB) : buffer direct
+        // Pour les gros fichiers (>100MB) : stream depuis buffer (pour multipart upload)
         if (buffer.length <= LARGE_FILE_THRESHOLD) {
           fileStream = buffer;
           fileSize = buffer.length;

@@ -102,7 +102,7 @@ router.post('/upload',
     const parseAll = multer({ 
       storage: storage,
       limits: {
-        fileSize: 200 * 1024 * 1024 // 200MB max
+        fileSize: 500 * 1024 * 1024 // 500MB max pour les grosses vidéos
       }
     }).any();
     
@@ -216,7 +216,7 @@ router.post('/upload-bulk',
     // Parser avec .any() pour accepter n'importe quel nom de champ (files, files[], etc.)
     const parseAll = multer({ 
       storage: storage,
-      limits: { fileSize: 150 * 1024 * 1024 } // 150MB max
+      limits: { fileSize: 500 * 1024 * 1024 } // 500MB max pour les grosses vidéos
     }).any();
     
     parseAll(req, res, async (err) => {

@@ -171,12 +171,12 @@ app.use(express.json({
   charset: 'utf-8',
   type: ['application/json', 'application/json; charset=utf-8', 'text/json'],
   strict: false,
-  limit: '210mb' // Limite pour les requêtes JSON (légèrement supérieure à 200MB pour les métadonnées)
+  limit: '550mb' // Limite pour les requêtes JSON (légèrement supérieure à 500MB pour les métadonnées)
 }));
 app.use(express.urlencoded({ 
   extended: true, 
   charset: 'utf-8',
-  limit: '210mb' // Limite pour les données URL encodées
+  limit: '550mb' // Limite pour les données URL encodées (grosses vidéos)
 }));
 
 // Middleware pour s'assurer que toutes les réponses JSON ont le charset UTF-8

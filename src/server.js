@@ -383,7 +383,7 @@ const startServer = async () => {
     });
 
     // Démarrer le serveur
-    app.listen(PORT, () => {
+    const server = app.listen(PORT, () => {
       console.log('\n' + '='.repeat(60));
       console.log('🚀 Serveur d\'authentification MdSC démarré');
       console.log('='.repeat(60));
@@ -402,6 +402,17 @@ const startServer = async () => {
         console.warn('⚠️ Impossible d\'initialiser le scheduler des rappels:', error.message);
       }
     });
+
+    // Configurer les timeouts du serveur HTTP pour les gros uploads
+    server.timeout = 0; // Pas de timeout (géré par MinIO et Multer)
+    server.keepAliveTimeout = 65000; // 65 secondes (plus que le default nginx)
+    server.headersTimeout = 66000; // 66 secondes (plus que keepAliveTimeout)
+    
+    console.log('⏱️  Timeouts serveur HTTP configurés:');
+    console.log('   - server.timeout: 0 (illimité pour uploads longs)');
+    console.log('   - keepAliveTimeout: 65s');
+    console.log('   - headersTimeout: 66s');
+    console.log('');
 
   } catch (error) {
     console.error('❌ Erreur au démarrage du serveur:', error);

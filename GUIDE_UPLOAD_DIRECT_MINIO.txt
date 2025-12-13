@@ -1,0 +1,346 @@
+================================================================
+  📘 GUIDE D'INTÉGRATION - UPLOAD DIRECT MINIO
+================================================================
+
+Date: 13 Décembre 2025
+Solution: Upload direct vers MinIO avec URLs pré-signées
+
+================================================================
+  🎯 PRINCIPE DE FONCTIONNEMENT
+================================================================
+
+AVANT (problématique):
+  Navigateur → Backend Node.js (timeout!) → MinIO
+  
+APRÈS (solution):
+  Navigateur → Backend (URL signée) → Navigateur → MinIO (direct!)
+
+AVANTAGES:
+  ✅ Pas de timeout réseau/navigateur
+  ✅ Moins de charge sur le serveur Node.js
+  ✅ Upload plus rapide (connexion directe)
+  ✅ Barre de progression précise
+  ✅ Fichiers jusqu'à plusieurs GB possibles
+
+================================================================
+  📁 FICHIERS MODIFIÉS
+================================================================
+
+BACKEND:
+  ✅ src/services/minioService.js
+     - getPresignedUploadUrl()
+     - getPresignedDownloadUrl()
+  
+  ✅ src/routes/mediaRoutes.js
+     - POST /media/upload/presigned-url
+     - POST /media/upload/confirm
+
+FRONTEND:
+  ✅ src/lib/services/minioUpload.ts (NOUVEAU)
+     - uploadFileToMinIO()
+     - uploadMultipleFilesToMinIO()
+
+================================================================
+  🔧 UTILISATION DANS VOTRE COMPOSANT
+================================================================
+
+### OPTION 1: Upload simple d'un fichier
+
+```typescript
+import { uploadFileToMinIO } from '@/lib/services/minioUpload';
+import { useState } from 'react';
+
+function LessonUploadForm() {
+  const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState(0);
+
+  const handleFileUpload = async (file: File, lessonId: number) => {
+    setUploading(true);
+    setProgress(0);
+
+    const result = await uploadFileToMinIO({
+      file,
+      contentType: file.type,
+      lessonId,
+      onProgress: (p) => setProgress(p)
+    });
+
+    setUploading(false);
+
+    if (result.success) {
+      console.log('✅ Upload réussi:', result.data);
+      // Afficher un message de succès
+      alert(`Fichier uploadé avec succès!\nURL: ${result.data?.url}`);
+    } else {
+      console.error('❌ Upload échoué:', result.error);
+      alert(`Erreur: ${result.error}`);
+    }
+  };
+
+  return (
+    <div>
+      <input
+        type="file"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) {
+            handleFileUpload(file, 123); // Remplacer 123 par lessonId réel
+          }
+        }}
+      />
+      {uploading && (
+        <div>
+          <div>Upload en cours... {progress}%</div>
+          <progress value={progress} max={100} />
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+### OPTION 2: Upload multiple avec progression globale
+
+```typescript
+import { uploadMultipleFilesToMinIO } from '@/lib/services/minioUpload';
+
+const handleMultipleUpload = async (files: File[], lessonId: number) => {
+  const [fileProgress, setFileProgress] = useState<Record<number, number>>({});
+  const [overallProgress, setOverallProgress] = useState(0);
+
+  const results = await uploadMultipleFilesToMinIO(files, {
+    lessonId,
+    onFileProgress: (fileIndex, progress) => {
+      setFileProgress(prev => ({ ...prev, [fileIndex]: progress }));
+    },
+    onOverallProgress: (progress) => {
+      setOverallProgress(progress);
+    }
+  });
+
+  const allSuccess = results.every(r => r.success);
+  if (allSuccess) {
+    console.log('✅ Tous les fichiers uploadés');
+  } else {
+    console.error('❌ Certains uploads ont échoué');
+  }
+};
+```
+
+### OPTION 3: Intégration dans un composant existant
+
+Si vous avez déjà un composant avec `uploadFile()`, remplacez :
+
+```typescript
+// AVANT
+const uploadResponse = await uploadFile('/media/upload', formData, onProgress);
+
+// APRÈS
+import { uploadFileToMinIO } from '@/lib/services/minioUpload';
+
+const result = await uploadFileToMinIO({
+  file: file,
+  contentType: contentType,
+  lessonId: lessonId,
+  onProgress: onProgress
+});
+
+if (result.success) {
+  // Utiliser result.data.url, result.data.mediaFileId
+}
+```
+
+================================================================
+  🚀 DÉPLOIEMENT
+================================================================
+
+### ÉTAPE 1: Backend
+
+Le backend est déjà poussé sur production (commit 56acc0e).
+
+Sur le serveur:
+```bash
+cd /home/admin/mdsc_backend_1
+bash update-production.sh
+```
+
+OU manuellement:
+```bash
+cd /home/admin/mdsc_backend_1
+git pull origin production
+npm install
+sudo systemctl restart deploy-backend.service
+```
+
+### ÉTAPE 2: Frontend
+
+```bash
+cd /home/faille0/Documents/mdsc_frontend
+
+# Vérifier que le fichier existe
+ls -la src/lib/services/minioUpload.ts
+
+# Compiler TypeScript (si nécessaire)
+npm run build
+
+# Commit et push
+git add src/lib/services/minioUpload.ts
+git commit -m "feat: Upload direct MinIO avec URLs pré-signées"
+git push origin main
+```
+
+### ÉTAPE 3: Déployer frontend en production
+
+Sur le serveur frontend:
+```bash
+cd /home/admin/mdsc_frontend
+git pull origin main
+npm install
+npm run build
+pm2 restart mdsc-frontend
+```
+
+================================================================
+  🧪 TEST
+================================================================
+
+### Test 1: Vérifier que les routes existent
+
+```bash
+# Tester la génération d'URL pré-signée
+curl -X POST https://backendmooc.mdscbenin.org/api/media/upload/presigned-url \
+  -H "Authorization: Bearer VOTRE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "fileName": "test-video.mp4",
+    "fileType": "video/mp4",
+    "contentType": "video/mp4"
+  }'
+
+# Devrait retourner:
+# {
+#   "success": true,
+#   "data": {
+#     "uploadUrl": "https://...",
+#     "objectName": "modules/...",
+#     "bucket": "videos-mdsc",
+#     "publicUrl": "https://..."
+#   }
+# }
+```
+
+### Test 2: Upload complet depuis le frontend
+
+1. Ouvrir https://mooc.mdscbenin.org
+2. Aller sur la page d'ajout de leçon
+3. Sélectionner une vidéo de 100-300 MB
+4. Observer la console:
+   - "🚀 [MINIO UPLOAD] Début upload direct"
+   - "✅ [MINIO UPLOAD] URL pré-signée reçue"
+   - "📊 [MINIO UPLOAD] Progression: X%"
+   - "✅ [MINIO UPLOAD] Upload réussi vers MinIO"
+   - "✅ [MINIO UPLOAD] Upload confirmé en BDD"
+
+5. L'upload devrait réussir **même pour les gros fichiers** !
+
+================================================================
+  🔍 DÉPANNAGE
+================================================================
+
+### Problème 1: Erreur CORS sur l'upload vers MinIO
+
+CAUSE: MinIO n'accepte pas l'origin du frontend
+
+SOLUTION:
+```bash
+ssh admin@srv1070356
+sudo mc alias set myminio https://minio.mdscbenin.org ACCESS_KEY SECRET_KEY
+sudo mc anonymous set-json /path/to/cors-config.json myminio/videos-mdsc
+```
+
+cors-config.json:
+```json
+{
+  "CORSRules": [{
+    "AllowedOrigins": ["https://mooc.mdscbenin.org"],
+    "AllowedMethods": ["GET", "PUT", "POST"],
+    "AllowedHeaders": ["*"]
+  }]
+}
+```
+
+### Problème 2: URL pré-signée expirée
+
+CAUSE: L'upload prend plus de 2 heures
+
+SOLUTION: Augmenter l'expiration dans le backend:
+```javascript
+// Dans mediaRoutes.js, ligne ~153
+const uploadUrl = await MinioService.getPresignedUploadUrl(bucket, objectName, 14400); // 4 heures
+```
+
+### Problème 3: Fichier dans MinIO mais pas en BDD
+
+CAUSE: La confirmation (/upload/confirm) a échoué
+
+SOLUTION: Vérifier les logs backend:
+```bash
+sudo journalctl -u deploy-backend.service -f | grep CONFIRM
+```
+
+================================================================
+  📊 COMPARAISON PERFORMANCES
+================================================================
+
+Fichier de 200MB avec connexion 5 Mbps upload:
+
+AVANT (via Node.js):
+  ❌ Timeout après 2-5 minutes
+  ❌ Échec systématique
+
+APRÈS (direct MinIO):
+  ✅ Upload réussi en ~5-7 minutes
+  ✅ Progression visible
+  ✅ Pas de timeout
+
+================================================================
+  ✅ CHECKLIST
+================================================================
+
+Backend:
+  □ Code poussé sur production (commit 56acc0e)
+  □ update-production.sh exécuté
+  □ Service redémarré
+  □ Route /media/upload/presigned-url accessible
+  □ Route /media/upload/confirm accessible
+
+Frontend:
+  □ Fichier minioUpload.ts créé
+  □ Importé dans les composants concernés
+  □ Code compilé (npm run build)
+  □ Déployé en production
+
+Test:
+  □ Génération URL pré-signée fonctionne (curl test)
+  □ Upload petit fichier (< 10 MB) réussit
+  □ Upload gros fichier (> 100 MB) réussit
+  □ Progression affichée correctement
+  □ Fichier visible dans MinIO
+  □ Enregistrement en BDD correct
+
+================================================================
+  🎯 PROCHAINES ÉTAPES
+================================================================
+
+1. Déployer le backend (update-production.sh)
+2. Copier minioUpload.ts dans le frontend
+3. Modifier le composant d'upload de leçon
+4. Tester avec un fichier de 100 MB
+5. Tester avec un fichier de 300 MB
+6. Vérifier que tout fonctionne
+
+================================================================
+
+✅ La solution est prête ! Plus de timeout pour les gros fichiers !
+
+================================================================

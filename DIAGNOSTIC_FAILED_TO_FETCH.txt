@@ -1,0 +1,297 @@
+================================================================
+  🆘 DIAGNOSTIC ERREUR "Failed to fetch" EN PRODUCTION
+================================================================
+
+Erreur: Failed to fetch sur https://backendmooc.mdscbenin.org/api/media/upload
+Cause probable: CORS, Backend down, ou Nginx
+
+================================================================
+  📋 ÉTAPE 1: VÉRIFIER QUE LE BACKEND RÉPOND
+================================================================
+
+Depuis votre machine locale:
+
+curl -I https://backendmooc.mdscbenin.org/health
+
+✅ RÉSULTAT ATTENDU:
+HTTP/2 200
+content-type: application/json
+
+❌ SI ERREUR:
+- "Connection refused" → Backend down ou port fermé
+- "SSL certificate problem" → Problème certificat
+- "Could not resolve host" → Problème DNS
+- Timeout → Backend trop lent ou bloqué
+
+
+================================================================
+  📋 ÉTAPE 2: TESTER L'ENDPOINT D'UPLOAD
+================================================================
+
+curl -X OPTIONS https://backendmooc.mdscbenin.org/api/media/upload \
+  -H "Origin: https://mooc.mdscbenin.org" \
+  -H "Access-Control-Request-Method: POST" \
+  -H "Access-Control-Request-Headers: authorization,content-type" \
+  -v
+
+✅ RÉSULTAT ATTENDU:
+< HTTP/2 204
+< access-control-allow-origin: https://mooc.mdscbenin.org
+< access-control-allow-credentials: true
+< access-control-allow-methods: GET,POST,PUT,PATCH,DELETE,OPTIONS
+
+❌ SI PAS DE HEADER CORS:
+→ Problème CORS dans le backend
+
+
+================================================================
+  📋 ÉTAPE 3: VÉRIFIER LE SERVICE BACKEND
+================================================================
+
+ssh admin@srv1070356
+
+# Vérifier que le service tourne
+sudo systemctl status deploy-backend.service
+
+# Vérifier le port 5000
+sudo netstat -tlnp | grep :5000
+
+# Voir les derniers logs
+sudo journalctl -u deploy-backend.service -n 50 --no-pager
+
+
+================================================================
+  📋 ÉTAPE 4: VÉRIFIER NGINX
+================================================================
+
+Sur le serveur:
+
+# Vérifier la config Nginx
+sudo nginx -t
+
+# Voir les logs d'erreur Nginx
+sudo tail -100 /var/log/nginx/error.log
+
+# Voir les logs d'accès
+sudo tail -100 /var/log/nginx/access.log | grep upload
+
+
+================================================================
+  🔧 CORRECTIONS POSSIBLES
+================================================================
+
+PROBLÈME 1: Backend down
+-------------------------
+ssh admin@srv1070356
+cd /home/admin/mdsc_backend_1
+sudo systemctl restart deploy-backend.service
+sudo journalctl -u deploy-backend.service -f
+
+
+PROBLÈME 2: CORS mal configuré
+-------------------------------
+Sur le serveur:
+cd /home/admin/mdsc_backend_1
+cat .env | grep FRONTEND_URL
+
+✅ Devrait contenir:
+FRONTEND_URL=https://mooc.mdscbenin.org
+FRONTEND_URLS=https://mooc.mdscbenin.org
+
+❌ Si absent ou incorrect, corriger:
+echo "FRONTEND_URL=https://mooc.mdscbenin.org" >> .env
+echo "FRONTEND_URLS=https://mooc.mdscbenin.org" >> .env
+sudo systemctl restart deploy-backend.service
+
+
+PROBLÈME 3: Nginx bloque les gros uploads
+------------------------------------------
+Vérifier la config Nginx:
+sudo cat /etc/nginx/sites-available/default | grep client_max_body_size
+
+✅ Devrait être:
+client_max_body_size 600M;
+
+❌ Si absent ou trop petit:
+sudo nano /etc/nginx/sites-available/default
+
+Ajouter dans le block server:
+  client_max_body_size 600M;
+  
+Puis:
+sudo nginx -t
+sudo systemctl restart nginx
+
+
+PROBLÈME 4: Timeouts Nginx trop courts
+---------------------------------------
+Vérifier:
+sudo cat /etc/nginx/sites-available/default | grep timeout
+
+✅ Devrait contenir (dans le block location /api/):
+  proxy_connect_timeout 600s;
+  proxy_send_timeout 600s;
+  proxy_read_timeout 600s;
+
+❌ Si absent:
+sudo nano /etc/nginx/sites-available/default
+
+Dans le block location /api/ ajouter:
+  proxy_connect_timeout 600s;
+  proxy_send_timeout 600s;
+  proxy_read_timeout 600s;
+
+Puis:
+sudo nginx -t
+sudo systemctl restart nginx
+
+
+PROBLÈME 5: Certificat SSL invalide
+------------------------------------
+sudo certbot certificates
+
+Si expiré:
+sudo certbot renew
+sudo systemctl restart nginx
+
+
+================================================================
+  📝 CONFIGURATION NGINX COMPLÈTE RECOMMANDÉE
+================================================================
+
+Fichier: /etc/nginx/sites-available/default
+
+server {
+    listen 80;
+    server_name backendmooc.mdscbenin.org;
+    
+    # Redirection HTTPS
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name backendmooc.mdscbenin.org;
+
+    # SSL
+    ssl_certificate /etc/letsencrypt/live/backendmooc.mdscbenin.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/backendmooc.mdscbenin.org/privkey.pem;
+
+    # Limite taille upload
+    client_max_body_size 600M;
+    client_body_timeout 600s;
+    client_header_timeout 600s;
+
+    # Logs
+    access_log /var/log/nginx/backend_access.log;
+    error_log /var/log/nginx/backend_error.log;
+
+    # API Backend
+    location /api/ {
+        proxy_pass http://localhost:5000/api/;
+        proxy_http_version 1.1;
+        
+        # Headers
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # Timeouts pour gros uploads
+        proxy_connect_timeout 600s;
+        proxy_send_timeout 600s;
+        proxy_read_timeout 600s;
+        
+        # Buffer
+        proxy_buffering off;
+        proxy_request_buffering off;
+    }
+
+    # Health check
+    location /health {
+        proxy_pass http://localhost:5000/health;
+        proxy_http_version 1.1;
+    }
+}
+
+
+================================================================
+  🧪 TEST COMPLET APRÈS CORRECTION
+================================================================
+
+1. Tester le health check:
+   curl https://backendmooc.mdscbenin.org/health
+
+2. Tester CORS:
+   curl -X OPTIONS https://backendmooc.mdscbenin.org/api/media/upload \
+     -H "Origin: https://mooc.mdscbenin.org" -v
+
+3. Tester upload (avec un petit fichier):
+   curl -X POST https://backendmooc.mdscbenin.org/api/media/upload \
+     -H "Authorization: Bearer VOTRE_TOKEN" \
+     -F "file=@test.jpg" \
+     -F "content_type=image"
+
+4. Depuis le frontend:
+   - Ouvrir https://mooc.mdscbenin.org
+   - Ouvrir la console (F12)
+   - Essayer d'uploader un fichier
+   - Vérifier qu'il n'y a plus "Failed to fetch"
+
+
+================================================================
+  📊 CHECKLIST DE VÉRIFICATION
+================================================================
+
+Backend:
+  □ Service deploy-backend.service actif
+  □ Port 5000 ouvert (netstat -tlnp | grep :5000)
+  □ FRONTEND_URL correct dans .env
+  □ Logs montrent pas d'erreur au démarrage
+
+Nginx:
+  □ Nginx actif (systemctl status nginx)
+  □ Config valide (nginx -t)
+  □ client_max_body_size 600M
+  □ Timeouts >= 600s
+  □ Certificat SSL valide
+
+Réseau:
+  □ Backend accessible depuis internet
+  □ DNS résolu correctement
+  □ CORS headers présents dans la réponse OPTIONS
+
+Frontend:
+  □ URL backend correcte dans .env.local
+  □ Pas d'erreur console au chargement
+  □ Token d'authentification présent
+
+
+================================================================
+  🆘 SI LE PROBLÈME PERSISTE
+================================================================
+
+Collecter les informations:
+
+1. Logs backend:
+   sudo journalctl -u deploy-backend.service -n 200 > backend.log
+
+2. Logs nginx:
+   sudo tail -200 /var/log/nginx/error.log > nginx-error.log
+   sudo tail -200 /var/log/nginx/access.log > nginx-access.log
+
+3. Test curl complet:
+   curl -X POST https://backendmooc.mdscbenin.org/api/media/upload \
+     -H "Origin: https://mooc.mdscbenin.org" \
+     -H "Authorization: Bearer TOKEN" \
+     -F "file=@test.jpg" \
+     -v 2>&1 | tee curl-test.log
+
+4. Config nginx:
+   sudo cat /etc/nginx/sites-available/default > nginx-config.txt
+
+5. .env backend:
+   cat /home/admin/mdsc_backend_1/.env | grep -E "FRONTEND|PORT" > backend-env.txt
+
+
+================================================================

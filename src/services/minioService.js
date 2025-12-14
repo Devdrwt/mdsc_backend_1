@@ -397,6 +397,33 @@ class MinioService {
   }
 
   /**
+   * Télécharger un fichier depuis MinIO en tant que Buffer (pour manipulation en mémoire)
+   * @param {String} objectName - Nom de l'objet dans MinIO
+   * @returns {Promise<Buffer>} Buffer du fichier
+   */
+  static async downloadFileAsBuffer(objectName) {
+    if (!this.isAvailable()) {
+      throw new Error('MinIO n\'est pas disponible');
+    }
+
+    try {
+      const client = this.getClient();
+      const stream = await client.getObject(this.defaultBucket, objectName);
+      
+      // Convertir le stream en buffer
+      const chunks = [];
+      return new Promise((resolve, reject) => {
+        stream.on('data', (chunk) => chunks.push(chunk));
+        stream.on('end', () => resolve(Buffer.concat(chunks)));
+        stream.on('error', reject);
+      });
+    } catch (error) {
+      console.error('❌ [MINIO] Erreur lors du téléchargement du buffer:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Supprimer un fichier depuis MinIO
    * @param {String} objectName - Nom de l'objet dans MinIO
    * @returns {Promise<Boolean>} Succès de la suppression
@@ -421,22 +448,29 @@ class MinioService {
    * @param {String} objectName - Nom de l'objet dans MinIO
    * @returns {String} URL publique
    */
-  static getPublicUrl(objectName) {
+  /**
+   * Obtenir l'URL publique d'un fichier
+   * @param {String} objectName - Nom de l'objet dans MinIO
+   * @param {String} bucket - Nom du bucket (optionnel, utilise defaultBucket si non spécifié)
+   * @returns {String|null} URL publique du fichier
+   */
+  static getPublicUrl(objectName, bucket = null) {
     if (!this.isAvailable()) {
       return null;
     }
 
+    const targetBucket = bucket || this.defaultBucket;
     const endpoint = process.env.MINIO_ENDPOINT || 'localhost';
     const port = process.env.MINIO_PORT || '9000';
     const useSSL = process.env.MINIO_USE_SSL === 'true';
     const protocol = useSSL ? 'https' : 'http';
-    
+
     // Si une URL publique personnalisée est configurée, l'utiliser
     if (process.env.MINIO_PUBLIC_URL) {
-      return `${process.env.MINIO_PUBLIC_URL}/${this.defaultBucket}/${objectName}`;
+      return `${process.env.MINIO_PUBLIC_URL}/${targetBucket}/${objectName}`;
     }
 
-    return `${protocol}://${endpoint}:${port}/${this.defaultBucket}/${objectName}`;
+    return `${protocol}://${endpoint}:${port}/${targetBucket}/${objectName}`;
   }
 
   /**
@@ -506,17 +540,28 @@ class MinioService {
    * @param {String} objectName - Nom de l'objet dans MinIO
    * @returns {Promise<Object>} Métadonnées du fichier
    */
-  static async getFileMetadata(objectName) {
+  /**
+   * Récupérer les métadonnées d'un fichier
+   * @param {String} objectName - Nom de l'objet dans MinIO
+   * @param {String} bucket - Nom du bucket (optionnel, utilise defaultBucket si non spécifié)
+   * @returns {Promise<Object>} Métadonnées du fichier
+   */
+  static async getFileMetadata(objectName, bucket = null) {
     if (!this.isAvailable()) {
       throw new Error('MinIO n\'est pas disponible');
     }
 
     try {
       const client = this.getClient();
-      const stat = await client.statObject(this.defaultBucket, objectName);
+      const targetBucket = bucket || this.defaultBucket;
+      const stat = await client.statObject(targetBucket, objectName);
       return stat;
     } catch (error) {
-      console.error('Erreur lors de la récupération des métadonnées:', error);
+      console.error('❌ [MINIO] Erreur lors de la récupération des métadonnées:', {
+        objectName,
+        bucket: bucket || this.defaultBucket,
+        error: error.message
+      });
       throw error;
     }
   }

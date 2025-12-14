@@ -187,13 +187,19 @@ router.post('/upload/confirm',
 
       // Vérifier que le fichier existe dans MinIO
       try {
-        const metadata = await MinioService.getFileMetadata(objectName);
+        const metadata = await MinioService.getFileMetadata(objectName, bucket);
         console.log('✅ [CONFIRM] Fichier vérifié dans MinIO:', {
           objectName,
+          bucket,
           size: metadata.size,
           etag: metadata.etag
         });
       } catch (error) {
+        console.error('❌ [CONFIRM] Fichier non trouvé dans MinIO:', {
+          objectName,
+          bucket,
+          error: error.message
+        });
         return res.status(404).json({
           success: false,
           message: 'Le fichier n\'existe pas dans MinIO'
@@ -215,37 +221,30 @@ router.post('/upload/confirm',
       // Insérer dans media_files
       const [result] = await pool.execute(`
         INSERT INTO media_files (
-          filename, file_path, file_type, file_size, file_category,
-          storage_type, storage_path, url, bucket_name, uploaded_by, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+          lesson_id, filename, original_filename, file_type, file_size, file_category,
+          storage_type, storage_path, url, bucket_name, uploaded_by, uploaded_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
       `, [
+        lessonId || null,
         fileName || path.basename(objectName),
-        objectName,
+        fileName || path.basename(objectName),
         contentType || 'application/octet-stream',
         fileSize || 0,
         file_category,
         'minio',
         objectName,
         publicUrl,
-        bucket,
-        req.user.id
+        bucket || 'mdsc-files',
+        req.user?.userId || req.user?.id || null
       ]);
 
       const mediaFileId = result.insertId;
-
-      // Si lessonId fourni, créer la relation
-      if (lessonId) {
-        await pool.execute(`
-          INSERT INTO lesson_media (lesson_id, media_file_id, media_type, created_at)
-          VALUES (?, ?, ?, NOW())
-        `, [lessonId, mediaFileId, file_category]);
-      }
 
       console.log('✅ [CONFIRM] Upload enregistré:', {
         mediaFileId,
         objectName,
         lessonId,
-        userId: req.user.id
+        userId: req.user?.userId || req.user?.id
       });
 
       res.json({

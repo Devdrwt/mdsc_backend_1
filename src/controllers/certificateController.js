@@ -351,18 +351,34 @@ const generateCertificatePDF = async (certificate) => {
          .fill('#666666')
          .text(`N°: ${certificate.certificate_number}`, 50, 420, { align: 'center' });
 
-      // QR Code (si disponible)
-      if (certificate.qr_code_url && fs.existsSync(path.join(__dirname, '../../', certificate.qr_code_url))) {
-        const qrCodePath = path.join(__dirname, '../../', certificate.qr_code_url);
-        doc.image(qrCodePath, doc.page.width - 150, doc.page.height - 150, {
-          fit: [100, 100]
-        });
-        doc.fontSize(8)
-           .fill('#666666')
-           .text('Vérifier en ligne', doc.page.width - 150, doc.page.height - 50, {
-             width: 100,
-             align: 'center'
-           });
+      // QR Code (si disponible depuis MinIO)
+      if (certificate.qr_code_url) {
+        try {
+          console.log('📊 [CERTIFICATE] Téléchargement QR code depuis MinIO:', certificate.qr_code_url);
+          
+          // Extraire l'objectName depuis l'URL MinIO
+          const urlObj = new URL(certificate.qr_code_url);
+          const objectName = urlObj.pathname.split('/').slice(2).join('/'); // Enlever /bucket-name/ du début
+          
+          // Télécharger le QR code depuis MinIO
+          const qrCodeBuffer = await MinioService.downloadFileAsBuffer(objectName);
+          
+          // Ajouter le QR code au PDF
+          doc.image(qrCodeBuffer, doc.page.width - 150, doc.page.height - 150, {
+            fit: [100, 100]
+          });
+          doc.fontSize(8)
+             .fill('#666666')
+             .text('Vérifier en ligne', doc.page.width - 150, doc.page.height - 50, {
+               width: 100,
+               align: 'center'
+             });
+          
+          console.log('✅ [CERTIFICATE] QR code ajouté au PDF');
+        } catch (qrError) {
+          console.warn('⚠️ [CERTIFICATE] Impossible d\'ajouter le QR code:', qrError.message);
+          // Continuer sans le QR code si erreur
+        }
       }
 
       // Signature
@@ -378,15 +394,8 @@ const generateCertificatePDF = async (certificate) => {
          .fill('#666666')
          .text('Cette attestation est délivrée électroniquement et peut être vérifiée en ligne', 50, 520, { align: 'center' });
 
+      // Finaliser le PDF
       doc.end();
-
-      stream.on('finish', () => {
-        resolve(filePath);
-      });
-
-      stream.on('error', (error) => {
-        reject(error);
-      });
 
     } catch (error) {
       reject(error);

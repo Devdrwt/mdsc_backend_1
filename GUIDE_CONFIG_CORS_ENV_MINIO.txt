@@ -1,0 +1,270 @@
+================================================================
+  🔧 CONFIGURATION CORS MINIO VIA VARIABLES D'ENVIRONNEMENT
+================================================================
+
+SERVEUR MINIO: minio.mdscbenin.org
+DATE: 13 Décembre 2025
+
+================================================================
+  📋 VARIABLES D'ENVIRONNEMENT À AJOUTER
+================================================================
+
+Sur le serveur MinIO (minio.mdscbenin.org), ajoutez ces variables :
+
+1. POUR AUTORISER TOUTES LES ORIGINES (Développement):
+   ```bash
+   MINIO_API_CORS_ALLOW_ORIGIN=*
+   ```
+
+2. POUR AUTORISER DES ORIGINES SPÉCIFIQUES (Production):
+   ```bash
+   MINIO_API_CORS_ALLOW_ORIGIN=http://localhost:3000,https://mdcs.drwintech.com
+   ```
+
+================================================================
+  🐳 CONFIGURATION DOCKER COMPOSE
+================================================================
+
+Si MinIO tourne avec Docker Compose, éditez docker-compose.yml :
+
+```yaml
+version: '3.8'
+
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    command: server /data --console-address ":9001"
+    
+    environment:
+      # Credentials
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+      
+      # CORS Configuration - IMPORTANT!
+      MINIO_API_CORS_ALLOW_ORIGIN: "*"
+      # OU pour production:
+      # MINIO_API_CORS_ALLOW_ORIGIN: "http://localhost:3000,https://mdcs.drwintech.com"
+      
+      # Région (optionnel)
+      MINIO_REGION: us-east-1
+    
+    ports:
+      - "9000:9000"  # API
+      - "9001:9001"  # Console Web
+    
+    volumes:
+      - minio-data:/data
+    
+    restart: unless-stopped
+
+volumes:
+  minio-data:
+    driver: local
+```
+
+Puis redémarrez :
+```bash
+docker-compose down
+docker-compose up -d
+```
+
+================================================================
+  🖥️ CONFIGURATION DOCKER RUN
+================================================================
+
+Si vous utilisez docker run directement :
+
+```bash
+docker run -d \
+  --name minio \
+  -p 9000:9000 \
+  -p 9001:9001 \
+  -e "MINIO_ROOT_USER=minioadmin" \
+  -e "MINIO_ROOT_PASSWORD=minioadmin123" \
+  -e "MINIO_API_CORS_ALLOW_ORIGIN=*" \
+  -v /data/minio:/data \
+  minio/minio server /data --console-address ":9001"
+```
+
+Pour production avec origines spécifiques :
+```bash
+docker run -d \
+  --name minio \
+  -p 9000:9000 \
+  -p 9001:9001 \
+  -e "MINIO_ROOT_USER=minioadmin" \
+  -e "MINIO_ROOT_PASSWORD=minioadmin123" \
+  -e "MINIO_API_CORS_ALLOW_ORIGIN=http://localhost:3000,https://mdcs.drwintech.com" \
+  -v /data/minio:/data \
+  minio/minio server /data --console-address ":9001"
+```
+
+================================================================
+  ☁️ CONFIGURATION CLOUD (Render, AWS, GCP, etc.)
+================================================================
+
+### Sur Render.com:
+
+1. Allez dans votre service MinIO
+2. Accédez à l'onglet "Environment"
+3. Ajoutez une nouvelle variable:
+   - Key: `MINIO_API_CORS_ALLOW_ORIGIN`
+   - Value: `*` ou `http://localhost:3000,https://mdcs.drwintech.com`
+4. Sauvegardez et redéployez
+
+### Sur AWS EC2:
+
+1. SSH dans votre instance
+2. Éditez le fichier de configuration Docker ou systemd
+3. Ajoutez la variable d'environnement
+4. Redémarrez MinIO
+
+### Sur Kubernetes:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+spec:
+  template:
+    spec:
+      containers:
+      - name: minio
+        image: minio/minio:latest
+        env:
+        - name: MINIO_ROOT_USER
+          value: "minioadmin"
+        - name: MINIO_ROOT_PASSWORD
+          value: "minioadmin123"
+        - name: MINIO_API_CORS_ALLOW_ORIGIN
+          value: "*"
+```
+
+================================================================
+  ✅ VÉRIFICATION DE LA CONFIGURATION
+================================================================
+
+Après avoir ajouté la variable et redémarré MinIO :
+
+1. Vérifier que MinIO a bien pris en compte la variable:
+   ```bash
+   docker logs minio 2>&1 | grep -i cors
+   ```
+   
+   Devrait afficher quelque chose comme:
+   ```
+   API CORS: Allow Origin set to [*]
+   ```
+
+2. Tester CORS depuis le terminal:
+   ```bash
+   curl -X OPTIONS https://minio.mdscbenin.org/videos-mdsc/ \
+     -H "Origin: http://localhost:3000" \
+     -H "Access-Control-Request-Method: PUT" \
+     -H "Access-Control-Request-Headers: Content-Type" \
+     -v 2>&1 | grep -i "access-control"
+   ```
+   
+   Devrait retourner:
+   ```
+   < access-control-allow-origin: *
+   < access-control-allow-methods: GET, POST, PUT, DELETE, OPTIONS
+   < access-control-allow-headers: Content-Type
+   ```
+
+3. Tester depuis la console navigateur (F12):
+   ```javascript
+   fetch('https://minio.mdscbenin.org/videos-mdsc/', {
+     method: 'OPTIONS',
+     headers: {
+       'Origin': 'http://localhost:3000',
+       'Access-Control-Request-Method': 'PUT'
+     }
+   }).then(r => {
+     console.log('CORS OK:', r.headers.get('access-control-allow-origin'));
+   }).catch(e => console.error('CORS ERROR:', e));
+   ```
+
+================================================================
+  🚨 CONTACT ADMINISTRATEUR MINIO
+================================================================
+
+Comme minio.mdscbenin.org est un serveur distant géré par quelqu'un d'autre,
+vous devez contacter l'administrateur système pour :
+
+1. Ajouter la variable d'environnement MINIO_API_CORS_ALLOW_ORIGIN
+2. Redémarrer le service MinIO
+3. Vérifier que CORS fonctionne
+
+MESSAGE À ENVOYER À L'ADMINISTRATEUR:
+─────────────────────────────────────────────────────────────
+
+Bonjour,
+
+Nous avons besoin de configurer CORS sur notre serveur MinIO 
+(minio.mdscbenin.org) pour permettre les uploads directs depuis 
+notre application web.
+
+Pourriez-vous ajouter cette variable d'environnement :
+
+MINIO_API_CORS_ALLOW_ORIGIN=*
+
+Ou pour plus de sécurité (recommandé en production) :
+
+MINIO_API_CORS_ALLOW_ORIGIN=http://localhost:3000,https://mdcs.drwintech.com
+
+Puis redémarrer le service MinIO.
+
+Cette configuration permettra à notre frontend de faire des uploads 
+directs vers MinIO via des URLs pré-signées, sans passer par notre 
+serveur backend, ce qui évitera les timeouts pour les gros fichiers.
+
+Merci !
+
+─────────────────────────────────────────────────────────────
+
+================================================================
+  🔍 ALTERNATIVE SI VOUS N'AVEZ PAS ACCÈS AU SERVEUR
+================================================================
+
+Si vous ne pouvez pas modifier la configuration du serveur MinIO distant,
+il existe une solution de contournement (PROXY) :
+
+OPTION 1: Proxy via votre backend Node.js
+- Créer une route proxy dans votre API qui redirige vers MinIO
+- Moins performant mais fonctionne sans CORS
+
+OPTION 2: Utiliser un CDN avec CORS (CloudFlare, etc.)
+- Mettre MinIO derrière un CDN qui gère CORS
+- Configure le CDN pour ajouter les headers CORS
+
+OPTION 3: Utiliser MinIO en local
+- Installer MinIO sur votre machine locale pour développement
+- Configurer CORS sur votre instance locale
+
+Voulez-vous que je vous aide à mettre en place l'une de ces alternatives ?
+
+================================================================
+  📞 PROCHAINES ÉTAPES
+================================================================
+
+1. ✅ Contacter l'administrateur de minio.mdscbenin.org
+2. ✅ Demander l'ajout de MINIO_API_CORS_ALLOW_ORIGIN
+3. ✅ Attendre la configuration et le redémarrage
+4. ✅ Tester l'upload depuis votre frontend
+5. ✅ Vérifier que tout fonctionne
+
+OU
+
+1. ✅ Installer MinIO en local pour le développement
+2. ✅ Configurer CORS sur votre instance locale
+3. ✅ Développer et tester en local
+4. ✅ Déployer en production une fois CORS configuré sur le serveur distant
+
+================================================================
+
+Date: 13 Décembre 2025
+Serveur: minio.mdscbenin.org
+Action requise: Configuration CORS par l'administrateur système

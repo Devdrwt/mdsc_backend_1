@@ -91,7 +91,9 @@ const getCourseLessons = async (req, res) => {
         l.duration_minutes, l.order_index, l.is_required, l.is_published, 
         l.created_at, l.updated_at,
         m.title as module_title, m.order_index as module_order,
-        mf.url as media_url, mf.thumbnail_url, mf.file_category
+        mf.url as media_url, mf.thumbnail_url, mf.file_category,
+        mf.file_type, mf.file_size,
+        COALESCE(l.content_url, mf.url) as final_content_url
       FROM lessons l
       LEFT JOIN modules m ON l.module_id = m.id
       LEFT JOIN media_files mf ON l.media_file_id = mf.id
@@ -101,9 +103,15 @@ const getCourseLessons = async (req, res) => {
 
     const [lessons] = await pool.execute(lessonsQuery, [courseId]);
 
+    // Enrichir les leçons avec l'URL finale
+    const enrichedLessons = lessons.map(lesson => ({
+      ...lesson,
+      content_url: lesson.final_content_url || lesson.content_url
+    }));
+
     res.json({
       success: true,
-      data: lessons
+      data: enrichedLessons
     });
 
   } catch (error) {

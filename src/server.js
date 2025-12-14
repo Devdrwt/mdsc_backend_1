@@ -80,6 +80,7 @@ const liveSessionRoutes = require('./routes/liveSessionRoutes');
 const testimonialsRoutes = require('./routes/testimonialsRoutes');
 const adminPaymentConfigRoutes = require('./routes/adminPaymentConfigRoutes');
 const reminderRoutes = require('./routes/reminderRoutes');
+const contactRoutes = require('./routes/contactRoutes');
 
 const app = express();
 
@@ -326,6 +327,7 @@ app.use('/api', ratingRoutes);
 app.use('/api', forumRoutes);
 app.use('/api', liveSessionRoutes);
 app.use('/api/testimonials', testimonialsRoutes);
+app.use('/api/contact', contactRoutes);
 
 // Endpoint Prometheus
 app.get('/metrics', async (req, res) => {

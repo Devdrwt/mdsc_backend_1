@@ -3,82 +3,268 @@ const router = express.Router();
 const path = require('path');
 const mediaController = require('../controllers/mediaController');
 const MediaService = require('../services/mediaService');
+const MinioService = require('../services/minioService');
 const { authenticateToken, authorize } = require('../middleware/auth');
+const { pool } = require('../config/database');
 
-// Servir les fichiers statiques uploadés via /api/media/uploads
-// Cette route doit être avant les autres routes pour éviter les conflits
-const uploadsPath = path.join(__dirname, '../../uploads');
-const fs = require('fs');
+// Servir les fichiers depuis MinIO via /api/media/uploads
+// Tous les fichiers sont maintenant stockés sur MinIO
 
-router.use('/uploads', (req, res, next) => {
-  // Construire le chemin complet du fichier
-  let filePath = path.join(uploadsPath, req.path);
-  
-  // Vérifier que le chemin est sécurisé (pas de directory traversal)
-  const normalizedPath = path.normalize(filePath);
-  if (!normalizedPath.startsWith(path.normalize(uploadsPath))) {
-    return res.status(403).json({ success: false, message: 'Accès interdit' });
-  }
-  
-  // Si le fichier n'existe pas au chemin demandé, chercher dans d'autres dossiers possibles
-  if (!fs.existsSync(filePath)) {
+router.use('/uploads', async (req, res, next) => {
+  try {
     const filename = path.basename(req.path);
-    const possiblePaths = [
-      path.join(uploadsPath, 'courses', 'thumbnails', filename),
-      path.join(uploadsPath, 'courses', 'videos', filename),
-      path.join(uploadsPath, 'profiles', filename),
-      path.join(uploadsPath, 'images', filename),
-      path.join(uploadsPath, 'modules', filename)
-    ];
     
-    // Chercher le fichier dans les dossiers possibles
-    for (const possiblePath of possiblePaths) {
-      if (fs.existsSync(possiblePath)) {
-        filePath = possiblePath;
-        break;
+    // Chercher le fichier dans la base de données (media_files)
+    const [mediaFiles] = await pool.execute(
+      'SELECT * FROM media_files WHERE filename = ? OR url LIKE ? LIMIT 1',
+      [filename, `%/${filename}`]
+    );
+    
+    // Vérifier que MinIO est disponible
+    if (!MinioService.isAvailable()) {
+      return res.status(503).json({
+        success: false,
+        message: 'MinIO n\'est pas disponible. Le stockage de fichiers nécessite MinIO.'
+      });
+    }
+
+    // Le fichier DOIT être dans MinIO
+    if (mediaFiles.length > 0 && mediaFiles[0].storage_type === 'minio' && mediaFiles[0].storage_path) {
+      // Rediriger vers l'URL publique MinIO
+      const minioUrl = MinioService.getPublicUrl(mediaFiles[0].storage_path);
+      if (minioUrl) {
+        return res.redirect(302, minioUrl);
+      }
+      
+      // Si pas d'URL publique, télécharger depuis MinIO et servir
+      try {
+        const fileStream = await MinioService.downloadFile(mediaFiles[0].storage_path);
+        
+        // Déterminer le type MIME
+        const contentType = mediaFiles[0].file_type || 'application/octet-stream';
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache 1 an
+        
+        fileStream.pipe(res);
+        
+        fileStream.on('error', (err) => {
+          console.error('❌ [MEDIA ROUTES] Erreur lors du streaming depuis MinIO:', err);
+          if (!res.headersSent) {
+            res.status(500).json({ 
+              success: false, 
+              message: 'Erreur lors de la récupération du fichier' 
+            });
+          }
+        });
+        return;
+      } catch (error) {
+        console.error('❌ [MEDIA ROUTES] Erreur lors du téléchargement depuis MinIO:', error);
+        return res.status(404).json({ 
+          success: false, 
+          message: 'Fichier non trouvé dans MinIO' 
+        });
       }
     }
+    
+    // Fichier non trouvé dans la base ou pas dans MinIO
+    return res.status(404).json({ 
+      success: false, 
+      message: 'Fichier non trouvé. Tous les fichiers doivent être stockés sur MinIO.' 
+    });
+  } catch (error) {
+    console.error('❌ [MEDIA ROUTES] Erreur lors de la récupération du fichier:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Erreur lors de la récupération du fichier' 
+    });
   }
-  
-  // Vérifier que le fichier existe (après recherche)
-  if (!fs.existsSync(filePath)) {
-    return res.status(404).json({ success: false, message: 'Fichier non trouvé' });
-  }
-  
-  // Vérifier que c'est un fichier (pas un dossier)
-  const stats = fs.statSync(filePath);
-  if (!stats.isFile()) {
-    return res.status(404).json({ success: false, message: 'Fichier non trouvé' });
-  }
-  
-  // Déterminer le type MIME
-  const ext = path.extname(filePath).toLowerCase();
-  const mimeTypes = {
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.png': 'image/png',
-    '.gif': 'image/gif',
-    '.webp': 'image/webp',
-    '.svg': 'image/svg+xml',
-    '.mp4': 'video/mp4',
-    '.webm': 'video/webm',
-    '.pdf': 'application/pdf',
-    '.doc': 'application/msword',
-    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-  };
-  
-  // Définir les en-têtes
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-  res.setHeader('Cache-Control', 'public, max-age=31536000');
-  
-  if (mimeTypes[ext]) {
-    res.setHeader('Content-Type', mimeTypes[ext]);
-  }
-  
-  // Servir le fichier
-  res.sendFile(filePath);
 });
+
+// ===== ROUTES UPLOAD DIRECT MINIO AVEC URLs PRÉ-SIGNÉES =====
+
+/**
+ * Générer une URL pré-signée pour upload direct vers MinIO
+ * Cette méthode permet d'éviter les timeouts en uploadant directement vers MinIO
+ */
+router.post('/upload/presigned-url',
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { fileName, fileType, contentType, lessonId, moduleId } = req.body;
+
+      // Validation
+      if (!fileName) {
+        return res.status(400).json({
+          success: false,
+          message: 'Le nom du fichier est requis'
+        });
+      }
+
+      // Vérifier que MinIO est disponible
+      if (!MinioService.isAvailable()) {
+        return res.status(503).json({
+          success: false,
+          message: 'MinIO n\'est pas disponible'
+        });
+      }
+
+      // Déterminer le bucket selon le type de fichier
+      let bucket = 'mdsc-files';
+      let folder = 'others';
+
+      if (contentType) {
+        if (contentType.startsWith('video/')) {
+          bucket = 'videos-mdsc';
+          folder = 'modules';
+        } else if (contentType.startsWith('audio/')) {
+          bucket = 'videos-mdsc';
+          folder = 'audio';
+        } else if (contentType === 'application/pdf') {
+          bucket = 'mdsc-files';
+          folder = 'documents';
+        } else if (contentType.startsWith('image/')) {
+          bucket = 'mdsc-files';
+          folder = 'images';
+        }
+      }
+
+      // Générer un nom de fichier unique
+      const timestamp = Date.now();
+      const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
+      const objectName = `${folder}/${timestamp}-${sanitizedFileName}`;
+
+      // Générer URL pré-signée (valide 2 heures)
+      const uploadUrl = await MinioService.getPresignedUploadUrl(bucket, objectName, 7200);
+
+      // Générer l'URL publique finale
+      const publicUrl = MinioService.getPublicUrl(objectName, bucket);
+
+      console.log('✅ [PRESIGNED] URL générée pour:', {
+        fileName: sanitizedFileName,
+        bucket,
+        objectName,
+        contentType,
+        userId: req.user.id
+      });
+
+      res.json({
+        success: true,
+        data: {
+          uploadUrl,
+          objectName,
+          bucket,
+          publicUrl,
+          expiresIn: 7200 // 2 heures
+        }
+      });
+    } catch (error) {
+      console.error('❌ [PRESIGNED] Erreur:', error);
+      res.status(500).json({
+        success: false,
+        message: error.message || 'Erreur lors de la génération de l\'URL'
+      });
+    }
+  }
+);
+
+/**
+ * Confirmer l'upload après que le fichier ait été uploadé directement vers MinIO
+ * Enregistre les métadonnées dans la base de données
+ */
+router.post('/upload/confirm',
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { objectName, bucket, fileName, fileSize, contentType, lessonId, moduleId } = req.body;
+
+      // Validation
+      if (!objectName || !bucket) {
+        return res.status(400).json({
+          success: false,
+          message: 'objectName et bucket sont requis'
+        });
+      }
+
+      // Vérifier que le fichier existe dans MinIO
+      try {
+        const metadata = await MinioService.getFileMetadata(objectName, bucket);
+        console.log('✅ [CONFIRM] Fichier vérifié dans MinIO:', {
+          objectName,
+          bucket,
+          size: metadata.size,
+          etag: metadata.etag
+        });
+      } catch (error) {
+        console.error('❌ [CONFIRM] Fichier non trouvé dans MinIO:', {
+          objectName,
+          bucket,
+          error: error.message
+        });
+        return res.status(404).json({
+          success: false,
+          message: 'Le fichier n\'existe pas dans MinIO'
+        });
+      }
+
+      // Déterminer le type de contenu
+      let file_category = 'other';
+      if (contentType) {
+        if (contentType.startsWith('video/')) file_category = 'video';
+        else if (contentType.startsWith('audio/')) file_category = 'audio';
+        else if (contentType.startsWith('image/')) file_category = 'image';
+        else if (contentType === 'application/pdf') file_category = 'document';
+      }
+
+      // Générer l'URL publique
+      const publicUrl = MinioService.getPublicUrl(objectName, bucket);
+
+      // Insérer dans media_files
+      const [result] = await pool.execute(`
+        INSERT INTO media_files (
+          lesson_id, filename, original_filename, file_type, file_size, file_category,
+          storage_type, storage_path, url, bucket_name, uploaded_by, uploaded_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+      `, [
+        lessonId || null,
+        fileName || path.basename(objectName),
+        fileName || path.basename(objectName),
+        contentType || 'application/octet-stream',
+        fileSize || 0,
+        file_category,
+        'minio',
+        objectName,
+        publicUrl,
+        bucket || 'mdsc-files',
+        req.user?.userId || req.user?.id || null
+      ]);
+
+      const mediaFileId = result.insertId;
+
+      console.log('✅ [CONFIRM] Upload enregistré:', {
+        mediaFileId,
+        objectName,
+        lessonId,
+        userId: req.user?.userId || req.user?.id
+      });
+
+      res.json({
+        success: true,
+        data: {
+          mediaFileId,
+          url: publicUrl,
+          objectName,
+          bucket
+        }
+      });
+    } catch (error) {
+      console.error('❌ [CONFIRM] Erreur:', error);
+      res.status(500).json({
+        success: false,
+        message: error.message || 'Erreur lors de la confirmation de l\'upload'
+      });
+    }
+  }
+);
 
 // Upload single file
 router.post('/upload', 
@@ -89,27 +275,20 @@ router.post('/upload',
     const path = require('path');
     const fs = require('fs').promises;
     
-    // Parser tout (champs texte + fichiers) avec une config générique
-    const tempStorage = multer.diskStorage({
-      destination: async (req, file, cb) => {
-        try {
-          const tempDir = path.join(__dirname, '../../uploads/temp');
-          await fs.mkdir(tempDir, { recursive: true });
-          cb(null, tempDir);
-        } catch (error) {
-          cb(error);
-        }
-      },
-      filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, `temp-${uniqueSuffix}-${file.originalname}`);
-      }
-    });
+    // MinIO est OBLIGATOIRE - utiliser uniquement memoryStorage
+    if (!MinioService.isAvailable()) {
+      return res.status(503).json({
+        success: false,
+        message: 'MinIO n\'est pas disponible. Le stockage de fichiers nécessite MinIO.'
+      });
+    }
+    
+    const storage = multer.memoryStorage();
     
     const parseAll = multer({ 
-      storage: tempStorage,
+      storage: storage,
       limits: {
-        fileSize: 150 * 1024 * 1024 // 150MB max
+        fileSize: 500 * 1024 * 1024 // 500MB max pour les grosses vidéos
       }
     }).any();
     
@@ -139,21 +318,43 @@ router.post('/upload',
       // Trouver le fichier 'file'
       const fileObj = req.files.find(f => f.fieldname === 'file');
       if (!fileObj) {
-        // Nettoyer les fichiers temporaires
-        if (req.files) {
-          for (const file of req.files) {
-            try {
-              await fs.unlink(file.path);
-            } catch (e) {
-              // Ignore
-            }
-          }
-        }
+        console.error('❌ [MEDIA ROUTES] Aucun fichier trouvé dans req.files');
+        console.error('❌ [MEDIA ROUTES] req.files:', req.files ? req.files.map(f => ({
+          fieldname: f.fieldname,
+          originalname: f.originalname,
+          mimetype: f.mimetype,
+          size: f.size,
+          hasBuffer: !!f.buffer,
+          bufferLength: f.buffer ? f.buffer.length : 0
+        })) : 'null');
         return res.status(400).json({
           success: false,
           message: 'Aucun fichier trouvé dans le champ "file"'
         });
       }
+      
+      // Vérifier que le fichier a un buffer (obligatoire avec memoryStorage)
+      if (!fileObj.buffer || fileObj.buffer.length === 0) {
+        console.error('❌ [MEDIA ROUTES] Fichier sans buffer ou buffer vide:', {
+          fieldname: fileObj.fieldname,
+          originalname: fileObj.originalname,
+          hasBuffer: !!fileObj.buffer,
+          bufferLength: fileObj.buffer ? fileObj.buffer.length : 0,
+          size: fileObj.size
+        });
+        return res.status(400).json({
+          success: false,
+          message: 'Le fichier est vide ou n\'a pas été correctement chargé'
+        });
+      }
+      
+      console.log('✅ [MEDIA ROUTES] Fichier trouvé:', {
+        fieldname: fileObj.fieldname,
+        originalname: fileObj.originalname,
+        mimetype: fileObj.mimetype,
+        size: fileObj.size,
+        bufferLength: fileObj.buffer.length
+      });
       
       // Valider selon content_type
       const allowedMimes = MediaService.getAllowedMimeTypes(content_type);
@@ -170,30 +371,8 @@ router.post('/upload',
         });
       }
       
-      // Déplacer le fichier vers le bon dossier avec le bon format de nom
-      const finalDir = path.join(__dirname, '../../uploads', MediaService.getFolderByContentType(content_type));
-      await fs.mkdir(finalDir, { recursive: true });
-      
-      // Générer le nom de fichier final selon le format utilisé par MediaService
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      const ext = path.extname(fileObj.originalname);
-      const finalFilename = `${req.user.id || 'anon'}-${uniqueSuffix}${ext}`;
-      const finalPath = path.join(finalDir, finalFilename);
-      
-      await fs.rename(fileObj.path, finalPath);
-      
-      // Mettre à jour req.file avec le chemin final
-      req.file = {
-        ...fileObj,
-        fieldname: fileObj.fieldname,
-        originalname: fileObj.originalname,
-        encoding: fileObj.encoding,
-        mimetype: fileObj.mimetype,
-        size: fileObj.size,
-        destination: finalDir,
-        filename: finalFilename,
-        path: finalPath
-      };
+      // Pour MinIO, le fichier est en mémoire (memoryStorage), on garde l'objet tel quel
+      req.file = fileObj;
       
       next();
     });
@@ -210,28 +389,20 @@ router.post('/upload-bulk',
     const path = require('path');
     const fs = require('fs').promises;
     
-    // Configuration temporaire pour parser tous les fichiers (validation faite après)
-    const tempStorage = multer.diskStorage({
-      destination: async (req, file, cb) => {
-        try {
-          const tempDir = path.join(__dirname, '../../uploads/temp');
-          await fs.mkdir(tempDir, { recursive: true });
-          cb(null, tempDir);
-        } catch (error) {
-          cb(error);
-        }
-      },
-      filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        const ext = path.extname(file.originalname);
-        cb(null, `temp-${uniqueSuffix}${ext}`);
-      }
-    });
+    // MinIO est OBLIGATOIRE - utiliser uniquement memoryStorage
+    if (!MinioService.isAvailable()) {
+      return res.status(503).json({
+        success: false,
+        message: 'MinIO n\'est pas disponible. Le stockage de fichiers nécessite MinIO.'
+      });
+    }
+    
+    const storage = multer.memoryStorage();
     
     // Parser avec .any() pour accepter n'importe quel nom de champ (files, files[], etc.)
     const parseAll = multer({ 
-      storage: tempStorage,
-      limits: { fileSize: 150 * 1024 * 1024 } // 150MB max
+      storage: storage,
+      limits: { fileSize: 500 * 1024 * 1024 } // 500MB max pour les grosses vidéos
     }).any();
     
     parseAll(req, res, async (err) => {
@@ -328,35 +499,7 @@ router.post('/upload-bulk',
       // S'assurer que content_type est dans req.body pour le contrôleur
       req.body.content_type = content_type;
       
-      // Déplacer les fichiers vers le bon dossier selon content_type
-      if (req.files && req.files.length > 0) {
-        const finalDir = path.join(__dirname, '../../uploads', MediaService.getFolderByContentType(content_type));
-        await fs.mkdir(finalDir, { recursive: true });
-        
-        for (const file of req.files) {
-          try {
-            const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-            const ext = path.extname(file.originalname);
-            const finalFilename = `${req.user.id || 'anon'}-${uniqueSuffix}${ext}`;
-            const finalPath = path.join(finalDir, finalFilename);
-            
-            await fs.rename(file.path, finalPath);
-            
-            // Mettre à jour les propriétés du fichier
-            file.destination = finalDir;
-            file.filename = finalFilename;
-            file.path = finalPath;
-          } catch (error) {
-            console.error('Erreur lors du déplacement du fichier:', error);
-            // Nettoyer en cas d'erreur
-            try {
-              await fs.unlink(file.path);
-            } catch (e) {
-              // Ignorer
-            }
-          }
-        }
-      }
+      // Pour MinIO, les fichiers sont en mémoire (memoryStorage), pas besoin de déplacer
       
       next();
     });

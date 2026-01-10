@@ -2,25 +2,15 @@ const { pool } = require('../config/database');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
+const MinioService = require('../services/minioService');
 
 // Configuration multer pour l'upload de fichiers
-const storage = multer.diskStorage({
-  destination: async (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '../../uploads/profiles');
-    try {
-      await fs.mkdir(uploadDir, { recursive: true });
-      cb(null, uploadDir);
-    } catch (error) {
-      cb(error);
-    }
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname);
-    const userId = req.user?.id ?? req.user?.userId ?? 'anon';
-    cb(null, `${userId}-${file.fieldname}-${uniqueSuffix}${ext}`);
-  }
-});
+// MinIO est OBLIGATOIRE - utiliser uniquement memoryStorage
+if (!MinioService.isAvailable()) {
+  throw new Error('MinIO n\'est pas disponible. Le stockage de fichiers nécessite MinIO.');
+}
+
+const storage = multer.memoryStorage(); // Stockage mémoire pour MinIO
 
 const fileFilter = (req, file, cb) => {
   // Accepter tous les types MIME autorisés (profile_picture et identity_document)
@@ -44,7 +34,7 @@ const upload = multer({
   storage: storage,
   fileFilter: fileFilter,
   limits: {
-    fileSize: 150 * 1024 * 1024 // 150MB max
+    fileSize: 500 * 1024 * 1024 // 500MB max pour les grosses vidéos
   }
 });
 
@@ -89,12 +79,18 @@ const uploadProfileFile = async (req, res) => {
     }
 
     // Supprimer l'ancien fichier du même type s'il existe
-    const existingFileQuery = 'SELECT file_path FROM user_files WHERE user_id = ? AND file_type = ?';
+    const existingFileQuery = 'SELECT file_path, storage_type FROM user_files WHERE user_id = ? AND file_type = ?';
     const [existingFiles] = await pool.execute(existingFileQuery, [userId, file_type]);
     
     if (existingFiles.length > 0) {
+      const existingFile = existingFiles[0];
       try {
-        await fs.unlink(existingFiles[0].file_path);
+        // Supprimer selon le type de stockage
+        if (existingFile.storage_type === 'minio' && existingFile.file_path) {
+          await MinioService.deleteFile(existingFile.file_path);
+        } else if (existingFile.file_path) {
+          await fs.unlink(existingFile.file_path);
+        }
       } catch (error) {
         console.log('Fichier précédent non trouvé:', error.message);
       }
@@ -102,27 +98,93 @@ const uploadProfileFile = async (req, res) => {
       await pool.execute('DELETE FROM user_files WHERE user_id = ? AND file_type = ?', [userId, file_type]);
     }
 
+    // MinIO est OBLIGATOIRE - pas de fallback local
+    if (!MinioService.isAvailable()) {
+      return res.status(503).json({
+        success: false,
+        message: 'MinIO n\'est pas disponible. Le stockage de fichiers nécessite MinIO.'
+      });
+    }
+
+    let storageType = 'minio';
+    let storagePath = null;
+    let fileName = null;
+    let fileUrl = null;
+
+    console.log('📤 [UPLOAD] MinIO disponible?', MinioService.isAvailable());
+    console.log('📤 [UPLOAD] Fichier reçu:', {
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+      hasBuffer: !!req.file.buffer,
+      hasPath: !!req.file.path
+    });
+
+    try {
+      const objectName = MinioService.generateObjectName('profiles', req.file.originalname, userId);
+      console.log('📤 [UPLOAD] Upload vers MinIO, objectName:', objectName);
+      
+      const uploadResult = await MinioService.uploadFile(req.file, objectName, req.file.mimetype);
+      
+      storagePath = objectName;
+      fileName = path.basename(objectName);
+      fileUrl = uploadResult.url;
+      
+      console.log('✅ [UPLOAD] Fichier uploadé vers MinIO:', {
+        storageType,
+        storagePath,
+        url: fileUrl
+      });
+      
+      // Nettoyer le fichier temporaire local s'il existe
+      if (req.file.path) {
+        try {
+          await fs.unlink(req.file.path);
+        } catch (error) {
+          console.warn('Impossible de supprimer le fichier temporaire:', error.message);
+        }
+      }
+    } catch (error) {
+      console.error('❌ [UPLOAD] Erreur lors de l\'upload vers MinIO:', error);
+      return res.status(500).json({
+        success: false,
+        message: `Échec de l'upload vers MinIO: ${error.message}`
+      });
+    }
+
+    // Vérifier que storagePath et fileUrl sont définis (obligatoires avec MinIO)
+    if (!storagePath || !fileUrl) {
+      return res.status(500).json({
+        success: false,
+        message: 'Erreur: storage_path ou url non défini après upload MinIO'
+      });
+    }
+
+    // S'assurer qu'aucune valeur n'est undefined (remplacer par null)
+    const safeFileName = fileName || 'unnamed-file';
+    const safeStoragePath = storagePath; // Déjà vérifié ci-dessus
+    const safeOriginalName = req.file.originalname || 'unnamed-file';
+    const safeMimeType = req.file.mimetype || 'application/octet-stream';
+    const safeFileSize = req.file.size || 0;
+
     // Insérer les informations du fichier en base
     const insertQuery = `
       INSERT INTO user_files (
         user_id, file_type, file_name, original_name, file_path,
-        file_size, mime_type, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+        file_size, mime_type, storage_type, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
     `;
 
     const [result] = await pool.execute(insertQuery, [
       userId,
       file_type,
-      req.file.filename || null,
-      req.file.originalname || null,
-      req.file.path || null,
-      req.file.size || 0,
-      req.file.mimetype || null
+      safeFileName,
+      safeOriginalName,
+      safeStoragePath,
+      safeFileSize,
+      safeMimeType,
+      storageType
     ]);
-
-    // Construire l'URL complète du fichier
-    const apiUrl = process.env.API_URL || `http://localhost:${process.env.PORT || 5000}`;
-    const fileUrl = `${apiUrl}/uploads/profiles/${req.file.filename}`;
 
     res.status(201).json({
       success: true,
@@ -130,11 +192,12 @@ const uploadProfileFile = async (req, res) => {
       data: {
         id: result.insertId,
         file_type,
-        file_name: req.file.filename,
-        original_name: req.file.originalname,
-        file_size: req.file.size,
-        mime_type: req.file.mimetype,
-        url: fileUrl
+        file_name: safeFileName,
+        original_name: safeOriginalName,
+        file_size: safeFileSize,
+        mime_type: safeMimeType,
+        url: fileUrl,
+        storage_type: storageType
       }
     });
 
@@ -168,18 +231,27 @@ const getUserFiles = async (req, res) => {
 
     res.json({
       success: true,
-      data: files.map(file => ({
-        id: file.id,
-        file_type: file.file_type,
-        file_name: file.file_name,
-        original_name: file.original_name,
-        file_size: file.file_size,
-        mime_type: file.mime_type,
-        is_verified: file.is_verified,
-        verified_at: file.verified_at,
-        created_at: file.created_at,
-        url: file.file_name ? `${apiUrl}/uploads/profiles/${file.file_name}` : null
-      }))
+      data: files.map(file => {
+        let url = null;
+        if (file.storage_type === 'minio' && file.file_path) {
+          url = MinioService.getPublicUrl(file.file_path);
+        } else if (file.file_name) {
+          url = `${apiUrl}/uploads/profiles/${file.file_name}`;
+        }
+        
+        return {
+          id: file.id,
+          file_type: file.file_type,
+          file_name: file.file_name,
+          original_name: file.original_name,
+          file_size: file.file_size,
+          mime_type: file.mime_type,
+          is_verified: file.is_verified,
+          verified_at: file.verified_at,
+          created_at: file.created_at,
+          url: url
+        };
+      })
     });
 
   } catch (error) {
@@ -208,9 +280,14 @@ const deleteProfileFile = async (req, res) => {
       });
     }
 
-    // Supprimer le fichier physique
+    // Supprimer le fichier physique selon le type de stockage
     try {
-      await fs.unlink(files[0].file_path);
+      const file = files[0];
+      if (file.storage_type === 'minio' && file.file_path) {
+        await MinioService.deleteFile(file.file_path);
+      } else if (file.file_path) {
+        await fs.unlink(file.file_path);
+      }
     } catch (error) {
       console.log('Fichier physique non trouvé:', error.message);
     }
@@ -322,42 +399,12 @@ const getPendingFiles = async (req, res) => {
 };
 
 // Configuration multer pour l'upload de fichiers de cours
-const courseStorage = multer.diskStorage({
-  destination: async (req, file, cb) => {
-    // Déterminer le dossier selon la catégorie
-    let category = null;
-    try {
-      let options = {};
-      try {
-        options = req.body.options ? JSON.parse(req.body.options) : {};
-      } catch (e) {
-        // Ignorer
-      }
-      category = options.category || req.body.category;
-      
-      let uploadDir;
-      if (category === 'course_thumbnail') {
-        uploadDir = path.join(__dirname, '../../uploads/courses/thumbnails');
-      } else if (category === 'course_intro_video') {
-        uploadDir = path.join(__dirname, '../../uploads/courses/videos');
-      } else {
-        // Par défaut, utiliser le dossier profiles (pour compatibilité avec uploads de profil)
-        uploadDir = path.join(__dirname, '../../uploads/profiles');
-      }
-      
-      await fs.mkdir(uploadDir, { recursive: true });
-      cb(null, uploadDir);
-    } catch (error) {
-      cb(error);
-    }
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname);
-    const userId = req.user?.id ?? req.user?.userId ?? 'anon';
-    cb(null, `${userId}-${uniqueSuffix}${ext}`);
-  }
-});
+// MinIO est OBLIGATOIRE - utiliser uniquement memoryStorage
+if (!MinioService.isAvailable()) {
+  throw new Error('MinIO n\'est pas disponible. Le stockage de fichiers nécessite MinIO.');
+}
+
+const courseStorage = multer.memoryStorage(); // Stockage mémoire pour MinIO
 
 const courseFileFilter = (req, file, cb) => {
   try {
@@ -409,7 +456,7 @@ const uploadCourse = multer({
   storage: courseStorage,
   fileFilter: courseFileFilter,
   limits: {
-    fileSize: 150 * 1024 * 1024 // 150MB max
+    fileSize: 500 * 1024 * 1024 // 500MB max pour les grosses vidéos
   }
 });
 
@@ -451,31 +498,70 @@ const uploadCourseFile = async (req, res) => {
     }
 
     // Validation taille selon catégorie
-    if (category === 'course_thumbnail' && req.file.size > 150 * 1024 * 1024) {
+    if (category === 'course_thumbnail' && req.file.size > 500 * 1024 * 1024) {
       return res.status(413).json({
         success: false,
-        message: 'Fichier trop volumineux. Taille maximale: 150 MB'
+        message: 'Fichier trop volumineux. Taille maximale: 500 MB'
       });
     }
     
-    if (category === 'course_intro_video' && req.file.size > 150 * 1024 * 1024) {
+    if (category === 'course_intro_video' && req.file.size > 500 * 1024 * 1024) {
       return res.status(413).json({
         success: false,
-        message: 'Fichier trop volumineux. Taille maximale: 150 MB'
+        message: 'Fichier trop volumineux. Taille maximale: 500 MB'
       });
     }
 
     // Déterminer file_category pour media_files
     const fileCategory = category === 'course_thumbnail' ? 'image' : 'video';
     
-    // Construire l'URL relative pour stockage en base
-    // buildMediaUrl construira l'URL complète lors de la récupération
-    const folder = category === 'course_thumbnail' ? 'courses/thumbnails' : 'courses/videos';
-    const fileUrl = `/uploads/${folder}/${req.file.filename}`;
-    
-    // URL complète pour la réponse (mais on stocke la relative en base)
-    const apiUrl = process.env.API_URL || `http://localhost:${process.env.PORT || 5000}`;
-    const fullFileUrl = `${apiUrl}${fileUrl}`;
+    // MinIO est OBLIGATOIRE - pas de fallback local
+    if (!MinioService.isAvailable()) {
+      return res.status(503).json({
+        success: false,
+        message: 'MinIO n\'est pas disponible. Le stockage de fichiers nécessite MinIO.'
+      });
+    }
+
+    let storageType = 'minio';
+    let storagePath = null;
+    let fileName = null;
+    let fileUrl = null;
+    let fullFileUrl = null;
+
+    try {
+      const folder = category === 'course_thumbnail' ? 'courses/thumbnails' : 'courses/videos';
+      const objectName = MinioService.generateObjectName(folder, req.file.originalname, userId);
+      const uploadResult = await MinioService.uploadFile(req.file, objectName, req.file.mimetype);
+      
+      storagePath = objectName;
+      fileName = path.basename(objectName);
+      fileUrl = uploadResult.url;
+      fullFileUrl = uploadResult.url;
+      
+      // Nettoyer le fichier temporaire local s'il existe
+      if (req.file.path) {
+        try {
+          await fs.unlink(req.file.path);
+        } catch (error) {
+          console.warn('Impossible de supprimer le fichier temporaire:', error.message);
+        }
+      }
+    } catch (error) {
+      console.error('❌ Erreur lors de l\'upload vers MinIO:', error);
+      return res.status(500).json({
+        success: false,
+        message: `Échec de l'upload vers MinIO: ${error.message}`
+      });
+    }
+
+    // Vérifier que storagePath et fileUrl sont définis (obligatoires avec MinIO)
+    if (!storagePath || !fileUrl) {
+      return res.status(500).json({
+        success: false,
+        message: 'Erreur: storage_path ou url non défini après upload MinIO'
+      });
+    }
 
     // Sauvegarder dans media_files
     const insertQuery = `
@@ -484,16 +570,18 @@ const uploadCourseFile = async (req, res) => {
         file_type, file_category, file_size,
         storage_type, storage_path, url,
         uploaded_by, uploaded_at
-      ) VALUES (NULL, ?, ?, ?, ?, ?, 'local', ?, ?, ?, NOW())
+      ) VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
     `;
 
+    // S'assurer qu'aucune valeur n'est undefined
     const [result] = await pool.execute(insertQuery, [
-      req.file.filename,
-      req.file.originalname,
-      req.file.mimetype,
-      fileCategory,
-      req.file.size,
-      req.file.path,
+      fileName || 'unnamed-file',
+      req.file.originalname || 'unnamed-file',
+      req.file.mimetype || 'application/octet-stream',
+      fileCategory || 'other',
+      req.file.size || 0,
+      storageType || 'minio',
+      storagePath,
       fileUrl,
       userId
     ]);
@@ -501,7 +589,7 @@ const uploadCourseFile = async (req, res) => {
     // Générer thumbnail URL (pour images, c'est le même fichier, pour vidéos on pourrait générer plus tard)
     let thumbnailUrl = null;
     if (category === 'course_thumbnail') {
-      thumbnailUrl = fileUrl;
+      thumbnailUrl = fullFileUrl;
     }
 
     // Préparer les métadonnées
@@ -525,7 +613,7 @@ const uploadCourseFile = async (req, res) => {
         mimeType: req.file.mimetype,
         size: req.file.size,
         url: fullFileUrl,
-        storage_path: req.file.path,
+        storage_path: storagePath,
         thumbnailUrl: category === 'course_thumbnail' ? fullFileUrl : thumbnailUrl,
         metadata: metadata,
         createdAt: new Date().toISOString(),

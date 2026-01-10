@@ -80,10 +80,52 @@ const uploadFile = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Erreur lors de l\'upload:', error);
+    console.error('❌ [MEDIA] ========== ERREUR UPLOAD (CONTROLLER) ==========');
+    console.error('❌ [MEDIA] Erreur brute:', error);
+    console.error('❌ [MEDIA] Type d\'erreur:', error.constructor.name);
+    console.error('❌ [MEDIA] Détails:', {
+      message: error.message,
+      code: error.code,
+      name: error.name,
+      stack: error.stack, // Stack complet
+      originalError: error.originalError ? {
+        message: error.originalError.message,
+        code: error.originalError.code,
+        name: error.originalError.name,
+        stack: error.originalError.stack,
+        allProperties: Object.getOwnPropertyNames(error.originalError)
+      } : null,
+      allPropertyNames: Object.getOwnPropertyNames(error),
+      keys: Object.keys(error || {})
+    });
+    console.error('❌ [MEDIA] =================================================');
+    
+    // Construire un message d'erreur détaillé
+    let errorMessage = 'Erreur lors de l\'upload du fichier';
+    let errorCode = null;
+    let errorDetails = null;
+    
+    if (error.message) {
+      errorMessage = error.message;
+    } else if (error.originalError && error.originalError.message) {
+      errorMessage = error.originalError.message;
+      errorCode = error.originalError.code;
+    } else if (error.code) {
+      errorMessage = `Erreur MinIO (${error.code})`;
+      errorCode = error.code;
+    }
+    
+    // Toujours inclure le code d'erreur et les détails pour faciliter le debugging
+    errorDetails = {
+      code: errorCode || error.code,
+      message: error.message || error.toString(),
+      originalMessage: error.originalError ? error.originalError.message : null
+    };
+    
     res.status(500).json({
       success: false,
-      message: error.message || 'Erreur lors de l\'upload du fichier'
+      message: errorMessage,
+      error: errorDetails
     });
   }
 };
@@ -157,9 +199,16 @@ const getMediaFile = async (req, res) => {
       });
     }
 
+    // Construire l'URL complète si nécessaire
+    const { buildMediaUrl } = require('../services/mediaService');
+    const mediaFileWithUrl = {
+      ...mediaFile,
+      url: buildMediaUrl(mediaFile)
+    };
+
     res.json({
       success: true,
-      data: mediaFile
+      data: mediaFileWithUrl
     });
 
   } catch (error) {
@@ -279,6 +328,7 @@ const downloadMediaFile = async (req, res) => {
   try {
     const { id } = req.params;
     const path = require('path');
+    const MinioService = require('../services/minioService');
 
     const mediaFile = await MediaService.getMediaFile(id);
 
@@ -289,7 +339,38 @@ const downloadMediaFile = async (req, res) => {
       });
     }
 
-    // Construire le chemin complet
+    // Si le fichier est dans MinIO, télécharger depuis MinIO
+    if (mediaFile.storage_type === 'minio' && mediaFile.storage_path) {
+      try {
+        const fileStream = await MinioService.downloadFile(mediaFile.storage_path);
+        
+        // Définir les en-têtes
+        res.setHeader('Content-Disposition', `attachment; filename="${mediaFile.original_filename}"`);
+        res.setHeader('Content-Type', mediaFile.file_type || 'application/octet-stream');
+        
+        // Stream le fichier vers la réponse
+        fileStream.pipe(res);
+        
+        fileStream.on('error', (err) => {
+          console.error('Erreur lors du streaming depuis MinIO:', err);
+          if (!res.headersSent) {
+            res.status(500).json({
+              success: false,
+              message: 'Erreur lors du téléchargement du fichier'
+            });
+          }
+        });
+      } catch (error) {
+        console.error('Erreur lors du téléchargement depuis MinIO:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Erreur lors du téléchargement du fichier'
+        });
+      }
+      return;
+    }
+
+    // Sinon, télécharger depuis le stockage local
     const filePath = path.join(__dirname, '../../', mediaFile.url);
 
     res.download(filePath, mediaFile.original_filename, (err) => {

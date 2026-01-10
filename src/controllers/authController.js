@@ -924,8 +924,15 @@ exports.updateProfile = async (req, res) => {
     } = req.body;
     const userId = req.user?.id ?? req.user?.userId;
 
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Utilisateur non authentifié'
+      });
+    }
+
     // Vérifier que l'email n'est pas déjà utilisé par un autre utilisateur
-    if (email) {
+    if (email !== undefined && email !== null && email !== '') {
       const [existingUsers] = await connection.query(
         'SELECT id FROM users WHERE email = ? AND id != ?',
         [email, userId]
@@ -943,33 +950,38 @@ exports.updateProfile = async (req, res) => {
     const updates = [];
     const values = [];
 
-    if (firstName !== undefined) {
+    if (firstName !== undefined && firstName !== null) {
       updates.push('first_name = ?');
-      values.push(firstName);
+      values.push(firstName.trim() || null);
     }
-    if (lastName !== undefined) {
+    if (lastName !== undefined && lastName !== null) {
       updates.push('last_name = ?');
-      values.push(lastName);
+      values.push(lastName.trim() || null);
     }
-    if (email !== undefined) {
+    if (email !== undefined && email !== null && email !== '') {
       updates.push('email = ?');
-      values.push(email);
+      values.push(email.trim());
     }
     if (phone !== undefined) {
       updates.push('phone = ?');
-      values.push(phone || null);
+      // Convertir chaîne vide en null, sinon trimmer
+      values.push(phone && phone.trim() !== '' ? phone.trim() : null);
     }
     if (organization !== undefined) {
       updates.push('organization = ?');
-      values.push(organization || null);
+      // Convertir chaîne vide en null, sinon trimmer
+      values.push(organization && organization.trim() !== '' ? organization.trim() : null);
     }
     if (country !== undefined) {
       updates.push('country = ?');
-      values.push(country || null);
+      // Convertir chaîne vide en null, sinon trimmer et limiter à 3 caractères (code pays)
+      const countryValue = country && country.trim() !== '' ? country.trim().substring(0, 3).toUpperCase() : null;
+      values.push(countryValue);
     }
     if (npi !== undefined) {
       updates.push('npi = ?');
-      values.push(npi || null);
+      // Convertir chaîne vide en null, sinon trimmer
+      values.push(npi && npi.trim() !== '' ? npi.trim() : null);
     }
 
     if (updates.length === 0) {
@@ -979,21 +991,55 @@ exports.updateProfile = async (req, res) => {
       });
     }
 
+    // Ajouter updated_at pour marquer la mise à jour
+    updates.push('updated_at = NOW()');
     values.push(userId);
 
     const updateQuery = `UPDATE users SET ${updates.join(', ')} WHERE id = ?`;
+    
+    console.log('Update profile query:', updateQuery);
+    console.log('Update profile values:', values);
+    
     await connection.query(updateQuery, values);
+
+    // Récupérer l'utilisateur mis à jour pour la réponse
+    const [updatedUsers] = await connection.query(
+      'SELECT id, first_name, last_name, email, phone, organization, country, npi FROM users WHERE id = ?',
+      [userId]
+    );
 
     res.json({
       success: true,
-      message: 'Profil mis à jour avec succès'
+      message: 'Profil mis à jour avec succès',
+      data: {
+        user: updatedUsers[0] || null
+      }
     });
 
   } catch (error) {
     console.error('Erreur update profile:', error);
+    console.error('Stack trace:', error.stack);
+    
+    // Vérifier si c'est une erreur de contrainte de base de données
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(400).json({
+        success: false,
+        message: 'Une valeur en double a été détectée. Veuillez vérifier vos données.'
+      });
+    }
+    
+    // Vérifier si c'est une erreur de validation de données
+    if (error.code === 'ER_DATA_TOO_LONG') {
+      return res.status(400).json({
+        success: false,
+        message: 'Une valeur est trop longue. Veuillez vérifier vos données.'
+      });
+    }
+    
     res.status(500).json({
       success: false,
-      message: 'Erreur lors de la mise à jour du profil'
+      message: error.message || 'Erreur lors de la mise à jour du profil',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   } finally {
     connection.release();

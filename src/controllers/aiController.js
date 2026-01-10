@@ -43,10 +43,15 @@ const createConversation = async (req, res) => {
 // Envoyer un message à l'IA
 const sendMessage = async (req, res) => {
   try {
-    const { conversationId, message, context = 'general' } = req.body;
+    const { conversationId } = req.params; // Récupérer depuis l'URL
+    const { message, context = 'general' } = req.body;
     const userId = req.user?.id ?? req.user?.userId;
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Utilisateur non authentifié' });
+    }
+
+    if (!conversationId) {
+      return res.status(400).json({ success: false, message: 'ID de conversation requis' });
     }
 
     // Vérifier que la conversation appartient à l'utilisateur
@@ -60,6 +65,14 @@ const sendMessage = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'Conversation non trouvée'
+      });
+    }
+
+    // Vérifier que la clé API OpenAI est configurée
+    if (!OPENAI_API_KEY) {
+      return res.status(503).json({
+        success: false,
+        message: 'Le service IA n\'est pas configuré. Veuillez contacter l\'administrateur.'
       });
     }
 
@@ -84,7 +97,10 @@ const sendMessage = async (req, res) => {
     // Préparer les messages pour OpenAI
     const messages = [
       { role: 'system', content: systemPrompt },
-      ...history.map(msg => ({ role: msg.role, content: msg.content })),
+      ...(Array.isArray(history) ? history.map(msg => ({ 
+        role: msg.role || 'user', 
+        content: msg.content || '' 
+      })) : []),
       { role: 'user', content: message }
     ];
 
@@ -130,9 +146,53 @@ const sendMessage = async (req, res) => {
 
   } catch (error) {
     console.error('Erreur lors de l\'envoi du message:', error);
+    
+    // Gérer les erreurs spécifiques d'OpenAI
+    if (error.response) {
+      // Erreur de l'API OpenAI
+      const status = error.response.status;
+      const errorData = error.response.data;
+      const headers = error.response.headers || {};
+      
+      // Vérifier le code d'erreur spécifique d'OpenAI
+      if (status === 401 || headers['x-openai-ide-error-code'] === 'invalid_api_key') {
+        console.error('❌ Clé API OpenAI invalide ou expirée');
+        return res.status(503).json({
+          success: false,
+          message: 'La clé API OpenAI est invalide ou expirée. Veuillez contacter l\'administrateur pour mettre à jour la configuration.'
+        });
+      }
+      
+      if (status === 429) {
+        return res.status(503).json({
+          success: false,
+          message: 'Limite de requêtes OpenAI atteinte. Veuillez réessayer plus tard.'
+        });
+      }
+      
+      const errorMessage = errorData?.error?.message || error.message || 'Erreur inconnue';
+      console.error('❌ Erreur OpenAI:', errorMessage);
+      
+      return res.status(500).json({
+        success: false,
+        message: `Erreur OpenAI: ${errorMessage}`,
+        error: process.env.NODE_ENV === 'development' ? errorData : undefined
+      });
+    }
+    
+    // Erreur de connexion ou autre
+    if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
+      return res.status(503).json({
+        success: false,
+        message: 'Impossible de se connecter au service OpenAI. Veuillez réessayer plus tard.'
+      });
+    }
+    
+    // Erreur générique
     res.status(500).json({
       success: false,
-      message: 'Erreur lors de l\'envoi du message à l\'IA'
+      message: error.message || 'Erreur lors de l\'envoi du message à l\'IA',
+      error: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 };

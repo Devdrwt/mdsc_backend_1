@@ -38,8 +38,9 @@ coverage/
 dist/
 build/
 
-# Uploads (fichiers générés dynamiquement)
+# Uploads et certificats (fichiers générés dynamiquement - maintenant sur MinIO)
 uploads/
+certificates/
 !uploads/.gitkeep
 
 # Docs locaux à ne pas versionner

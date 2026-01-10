@@ -2,8 +2,7 @@ const { pool } = require('../config/database');
 const { sanitizeValue } = require('../utils/sanitize');
 const PDFDocument = require('pdfkit');
 const QRCode = require('qrcode');
-const fs = require('fs');
-const path = require('path');
+const MinioService = require('../services/minioService');
 const { v4: uuidv4 } = require('uuid');
 
 /**
@@ -277,32 +276,30 @@ const approveCertificateRequest = async (req, res) => {
       });
     }
 
-    // Générer le certificat PDF
-    const certificateData = await generateCertificatePDF(request);
-
     // Générer un code unique pour le certificat
     const certificateCode = uuidv4();
     // Générer un numéro de certificat unique pour affichage (format MDSC-XXXXXXXX-BJ)
     const random = Math.floor(10000000 + Math.random() * 90000000); // 8 chiffres aléatoires
     const certificateNumber = `MDSC-${random}-BJ`;
 
-    // Générer le QR code
-    const qrCodeDir = path.join(__dirname, '../../certificates/qrcodes');
-    if (!fs.existsSync(qrCodeDir)) {
-      fs.mkdirSync(qrCodeDir, { recursive: true });
+    // Générer le certificat PDF et l'uploader vers MinIO
+    const certificateData = await generateCertificatePDF(request, certificateCode);
+
+    // Générer et uploader le QR code vers MinIO
+    if (!MinioService.isAvailable()) {
+      throw new Error('MinIO n\'est pas disponible. Le stockage de fichiers nécessite MinIO.');
     }
-    
-    const qrCodePath = path.join(qrCodeDir, `${certificateCode}.png`);
-    // Utiliser certificate_number (format MDSC-XXXXXX-BJ) pour la vérification dans le QR code
+
     const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/verify-certificate/${certificateNumber}`;
-    
-    await QRCode.toFile(qrCodePath, verificationUrl, {
+    const qrCodeBuffer = await QRCode.toBuffer(verificationUrl, {
       errorCorrectionLevel: 'H',
       type: 'png',
       width: 300
     });
 
-    const qrCodeUrl = `/certificates/qrcodes/${certificateCode}.png`;
+    const qrCodeObjectName = MinioService.generateObjectName('certificates/qrcodes', `${certificateCode}.png`);
+    const qrCodeUploadResult = await MinioService.uploadFile(qrCodeBuffer, qrCodeObjectName, 'image/png');
+    const qrCodeUrl = qrCodeUploadResult.url;
 
     // Créer le certificat dans la base de données
     const [certificateResult] = await pool.execute(
@@ -398,28 +395,43 @@ const rejectCertificateRequest = async (req, res) => {
 };
 
 /**
- * Générer le PDF du certificat
+ * Générer le PDF du certificat et l'uploader vers MinIO
  */
-async function generateCertificatePDF(request) {
+async function generateCertificatePDF(request, certificateCode) {
   return new Promise(async (resolve, reject) => {
     try {
+      if (!MinioService.isAvailable()) {
+        throw new Error('MinIO n\'est pas disponible. Le stockage de fichiers nécessite MinIO.');
+      }
+
       const doc = new PDFDocument({
         size: 'LETTER',
         layout: 'landscape',
         margin: 50
       });
 
-      // Créer le dossier de certificats s'il n'existe pas
-      const certDir = path.join(__dirname, '../../uploads/certificates');
-      if (!fs.existsSync(certDir)) {
-        fs.mkdirSync(certDir, { recursive: true });
-      }
-
-      const filename = `certificate_${request.id}_${Date.now()}.pdf`;
-      const filepath = path.join(certDir, filename);
-      const stream = fs.createWriteStream(filepath);
-
-      doc.pipe(stream);
+      // Créer un buffer en mémoire pour le PDF
+      const chunks = [];
+      doc.on('data', chunk => chunks.push(chunk));
+      doc.on('end', async () => {
+        try {
+          const pdfBuffer = Buffer.concat(chunks);
+          
+          // Upload vers MinIO
+          const filename = `certificate_${certificateCode || request.id}_${Date.now()}.pdf`;
+          const objectName = MinioService.generateObjectName('certificates/pdfs', filename);
+          const uploadResult = await MinioService.uploadFile(pdfBuffer, objectName, 'application/pdf');
+          
+          resolve({
+            url: uploadResult.url,
+            qrCodeData: null // QR code généré séparément
+          });
+        } catch (error) {
+          console.error('❌ [CERTIFICATE] Erreur lors de l\'upload du PDF vers MinIO:', error);
+          reject(error);
+        }
+      });
+      doc.on('error', reject);
 
       // Design du certificat
       doc.fontSize(48)
@@ -474,15 +486,6 @@ async function generateCertificatePDF(request) {
          .text(`Date d'émission: ${new Date().toLocaleDateString('fr-FR')}`, { align: 'center' });
 
       doc.end();
-
-      stream.on('finish', () => {
-        resolve({
-          url: `/uploads/certificates/${filename}`,
-          qrCodeData
-        });
-      });
-
-      stream.on('error', reject);
 
     } catch (error) {
       reject(error);

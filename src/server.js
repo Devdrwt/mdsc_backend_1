@@ -8,6 +8,7 @@ if (!process.env.GOBIPAY_PLATFORM_MONEY) warnMissing.push('GOBIPAY_PLATFORM_MONE
 const express = require('express');
 const cors = require('cors');
 const session = require('express-session');
+const client = require('prom-client');
 
 // Fallback loader: si certaines variables manquent, lire manuellement le .env
 try {
@@ -79,8 +80,13 @@ const liveSessionRoutes = require('./routes/liveSessionRoutes');
 const testimonialsRoutes = require('./routes/testimonialsRoutes');
 const adminPaymentConfigRoutes = require('./routes/adminPaymentConfigRoutes');
 const reminderRoutes = require('./routes/reminderRoutes');
+const contactRoutes = require('./routes/contactRoutes');
 
 const app = express();
+
+// Metrics Prometheus
+const metricsRegister = new client.Registry();
+client.collectDefaultMetrics({ register: metricsRegister });
 
 // Middleware
 // CORS avancé: support liste d'origines (FRONTEND_URLS=sep par virgules) et credentials
@@ -165,9 +171,14 @@ app.use((req, res, next) => {
 app.use(express.json({ 
   charset: 'utf-8',
   type: ['application/json', 'application/json; charset=utf-8', 'text/json'],
-  strict: false 
+  strict: false,
+  limit: '550mb' // Limite pour les requêtes JSON (légèrement supérieure à 500MB pour les métadonnées)
 }));
-app.use(express.urlencoded({ extended: true, charset: 'utf-8' }));
+app.use(express.urlencoded({ 
+  extended: true, 
+  charset: 'utf-8',
+  limit: '550mb' // Limite pour les données URL encodées (grosses vidéos)
+}));
 
 // Middleware pour s'assurer que toutes les réponses JSON ont le charset UTF-8
 app.use((req, res, next) => {
@@ -242,72 +253,8 @@ app.use((req, res, next) => {
   next();
 });
 
-// Servir les fichiers statiques (uploads)
-// Important : cette route doit être avant les routes API pour éviter les conflits
-const uploadsPath = path.join(__dirname, '../uploads');
-
-// Route pour servir les fichiers statiques avec headers de protection
-app.use('/uploads', express.static(uploadsPath, {
-  setHeaders: (res, filePath, stat) => {
-    // Ajouter les en-têtes CORS pour les fichiers statiques
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-    res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache 1 an
-    
-    // Pour les PDF, s'assurer que le Content-Type est correct et limiter les actions
-    if (filePath.toLowerCase().endsWith('.pdf')) {
-      res.setHeader('Content-Type', 'application/pdf');
-      // Utiliser 'inline' pour afficher dans le navigateur, mais sans suggérer de téléchargement
-      res.setHeader('Content-Disposition', 'inline; filename="' + path.basename(filePath) + '"');
-      // Empêcher la mise en cache pour éviter les téléchargements via le cache
-      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-      res.setHeader('Pragma', 'no-cache');
-      res.setHeader('Expires', '0');
-      // Headers pour limiter certaines fonctionnalités
-      res.setHeader('X-Content-Type-Options', 'nosniff');
-    }
-    
-    // Pour les fichiers PowerPoint, servir avec Content-Disposition: inline
-    if (filePath.toLowerCase().endsWith('.pptx') || filePath.toLowerCase().endsWith('.ppt')) {
-      if (filePath.toLowerCase().endsWith('.pptx')) {
-        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
-      } else {
-        res.setHeader('Content-Type', 'application/vnd.ms-powerpoint');
-      }
-      // Utiliser 'inline' pour éviter le téléchargement automatique
-      res.setHeader('Content-Disposition', 'inline; filename="' + path.basename(filePath) + '"');
-      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-      res.setHeader('Pragma', 'no-cache');
-      res.setHeader('Expires', '0');
-      res.setHeader('X-Content-Type-Options', 'nosniff');
-    }
-    
-    // Pour les fichiers audio, servir avec Content-Disposition: inline et protection
-    if (filePath.toLowerCase().endsWith('.mp3') || 
-        filePath.toLowerCase().endsWith('.wav') || 
-        filePath.toLowerCase().endsWith('.ogg') || 
-        filePath.toLowerCase().endsWith('.m4a') ||
-        filePath.toLowerCase().endsWith('.aac')) {
-      if (filePath.toLowerCase().endsWith('.mp3')) {
-        res.setHeader('Content-Type', 'audio/mpeg');
-      } else if (filePath.toLowerCase().endsWith('.wav')) {
-        res.setHeader('Content-Type', 'audio/wav');
-      } else if (filePath.toLowerCase().endsWith('.ogg')) {
-        res.setHeader('Content-Type', 'audio/ogg');
-      } else if (filePath.toLowerCase().endsWith('.m4a')) {
-        res.setHeader('Content-Type', 'audio/mp4');
-      } else if (filePath.toLowerCase().endsWith('.aac')) {
-        res.setHeader('Content-Type', 'audio/aac');
-      }
-      // Utiliser 'inline' pour éviter le téléchargement automatique
-      res.setHeader('Content-Disposition', 'inline; filename="' + path.basename(filePath) + '"');
-      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-      res.setHeader('Pragma', 'no-cache');
-      res.setHeader('Expires', '0');
-      res.setHeader('X-Content-Type-Options', 'nosniff');
-    }
-  }
-}));
+// Les fichiers sont maintenant servis depuis MinIO via /api/media/uploads
+// Plus besoin de servir les fichiers statiques depuis le système de fichiers local
 
 // Servir les fichiers statiques du dossier public (pour les pages de test)
 const publicPath = path.join(__dirname, '../public');
@@ -316,14 +263,7 @@ if (fs.existsSync(publicPath)) {
   console.log('✅ Dossier public accessible:', publicPath);
 }
 
-// Log pour vérifier que le dossier uploads est accessible
-if (process.env.NODE_ENV === 'development') {
-  if (fs.existsSync(uploadsPath)) {
-    console.log('✅ Dossier uploads accessible:', uploadsPath);
-  } else {
-    console.warn('⚠️ Dossier uploads non trouvé:', uploadsPath);
-  }
-}
+// Les fichiers sont maintenant stockés sur MinIO, plus besoin de vérifier le dossier uploads local
 
 // Routes
 app.get('/health', (req, res) => {
@@ -387,6 +327,18 @@ app.use('/api', ratingRoutes);
 app.use('/api', forumRoutes);
 app.use('/api', liveSessionRoutes);
 app.use('/api/testimonials', testimonialsRoutes);
+app.use('/api/contact', contactRoutes);
+
+// Endpoint Prometheus
+app.get('/metrics', async (req, res) => {
+  try {
+    res.set('Content-Type', metricsRegister.contentType);
+    res.end(await metricsRegister.metrics());
+  } catch (e) {
+    console.error('❌ Erreur metrics:', e);
+    res.status(500).end('Metrics error');
+  }
+});
 
 // Gestion des erreurs 404
 app.use((req, res) => {
@@ -433,7 +385,7 @@ const startServer = async () => {
     });
 
     // Démarrer le serveur
-    app.listen(PORT, () => {
+    const server = app.listen(PORT, () => {
       console.log('\n' + '='.repeat(60));
       console.log('🚀 Serveur d\'authentification MdSC démarré');
       console.log('='.repeat(60));
@@ -452,6 +404,17 @@ const startServer = async () => {
         console.warn('⚠️ Impossible d\'initialiser le scheduler des rappels:', error.message);
       }
     });
+
+    // Configurer les timeouts du serveur HTTP pour les gros uploads
+    server.timeout = 0; // Pas de timeout (géré par MinIO et Multer)
+    server.keepAliveTimeout = 65000; // 65 secondes (plus que le default nginx)
+    server.headersTimeout = 66000; // 66 secondes (plus que keepAliveTimeout)
+    
+    console.log('⏱️  Timeouts serveur HTTP configurés:');
+    console.log('   - server.timeout: 0 (illimité pour uploads longs)');
+    console.log('   - keepAliveTimeout: 65s');
+    console.log('   - headersTimeout: 66s');
+    console.log('');
 
   } catch (error) {
     console.error('❌ Erreur au démarrage du serveur:', error);
